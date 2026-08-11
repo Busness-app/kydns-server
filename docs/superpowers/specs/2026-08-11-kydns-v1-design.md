@@ -113,6 +113,11 @@ manual record  >  service/alias  >  discovered lease
 Precedence resolves independently within each view, against that view's
 effective set (see [Part 4](#part-4--views)).
 
+Precedence replaces a layer, it does not merge layers. The first manual record
+at a name displaces whatever the service or lease layer put there; further
+manual records at that same name accumulate, so a multi-homed name keeps every
+address the operator authored rather than only the last one written.
+
 ### Validation
 
 Applied in `registry` before anything reaches the store:
@@ -124,9 +129,16 @@ Applied in `registry` before anything reaches the store:
 - No wildcards in v1.
 - A view tag must name a configured view.
 
-The CNAME and alias-collision checks run per view against that view's effective
-set, so an untagged CNAME conflicting with a view-tagged A record at the same
-name is caught.
+The CNAME and alias-collision checks run per view, against that view's
+effective set rather than the raw table.
+
+The fallback rule narrows what can actually conflict. A view-tagged record
+suppresses untagged ones for that view, and a manual record displaces the
+service layer, so an untagged CNAME and a view-tagged A record at the same name
+never appear in one view's effective set — the tagged view sees only the A, the
+default view only the CNAME. The reachable conflict is **two manual records
+sharing a name and a view tag**, or both untagged, where one is a CNAME and the
+other an address record. That is what the per-view check catches.
 
 ### Export and import
 
