@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS tokens (
   created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
   last_used_at INTEGER NOT NULL DEFAULT 0
 );
+-- The CHECK makes a second admin account impossible at the schema level.
+CREATE TABLE IF NOT EXISTS admin (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  password_hash TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
+);
 `
 
 func Open(path string) (*Store, error) {
@@ -358,6 +364,32 @@ func (s *Store) DeleteRecord(id int64) error {
 		return fmt.Errorf("%w: record %d", ErrNotFound, id)
 	}
 	return nil
+}
+
+// SetAdminPassword writes the single admin row.
+func (s *Store) SetAdminPassword(hash string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO admin(id, password_hash, updated_at) VALUES(1, ?, unixepoch())
+		ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash,
+		                              updated_at = excluded.updated_at`, hash)
+	return err
+}
+
+func (s *Store) AdminHash() (string, error) {
+	var hash string
+	err := s.db.QueryRow(`SELECT password_hash FROM admin WHERE id = 1`).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: admin account", ErrNotFound)
+	}
+	return hash, err
+}
+
+func (s *Store) HasAdmin() (bool, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM admin WHERE id = 1`).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (s *Store) PutToken(t Token) (int64, error) {
