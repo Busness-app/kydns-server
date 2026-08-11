@@ -8,11 +8,74 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
+// restartNote is shown wherever a config value is displayed, because the
+// config file is read once at startup.
+const restartNote = "These come from the config file and are read at startup. " +
+	"Editing them requires restarting KyDNS."
+
 type viewRow struct {
 	Name        string
 	Subnets     string
 	Unreachable bool
 	References  int
+}
+
+// configRow is one line of the read-only config display.
+type configRow struct {
+	Key   string
+	Value string
+}
+
+func joinOr(list []string, empty string) string {
+	if len(list) == 0 {
+		return empty
+	}
+	return strings.Join(list, ", ")
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
+}
+
+func secs(n int) string { return strconv.Itoa(n) + "s" }
+
+// configRows renders the loaded config for display. Config holds no secrets
+// today; if a credentialed upstream is ever added, it must be excluded here
+// rather than relying on this list happening to omit it.
+func (s *Server) configRows() []configRow {
+	c := s.o.Config
+	if c == nil {
+		return nil
+	}
+	discovery := c.Discovery.DHCPLeaseFile
+	if discovery == "" {
+		discovery = "off"
+	}
+	return []configRow{
+		{"data_dir", c.DataDir},
+		{"dns.listen", c.DNS.Listen},
+		{"dns.private_domain", c.DNS.PrivateDomain},
+		{"dns.reverse_zones", joinOr(c.DNS.ReverseZones, "none")},
+		{"dns.upstreams", joinOr(c.DNS.Upstreams, "none")},
+		{"dns.allow_query", joinOr(c.DNS.AllowQuery, "none")},
+		{"dns.allow_tailscale", onOff(c.DNS.AllowTailscale)},
+		{"dns.ttl", secs(c.DNS.TTL)},
+		{"dns.cache_min_ttl", secs(c.DNS.CacheMinTTL)},
+		{"dns.cache_max_ttl", secs(c.DNS.CacheMaxTTL)},
+		{"dns.negative_max_ttl", secs(c.DNS.NegativeMaxTTL)},
+		{"dns.cache_entries", strconv.Itoa(c.DNS.CacheEntries)},
+		{"dns.log_queries", onOff(c.DNS.LogQueries)},
+		{"dns.log_client_ip", onOff(c.DNS.LogClientIP)},
+		{"admin.listen", c.Admin.Listen},
+		{"discovery.dhcp_lease_file", discovery},
+		{"discovery.interval", secs(c.Discovery.Interval)},
+		{"health.interval", secs(c.Health.Interval)},
+		{"health.timeout", secs(c.Health.Timeout)},
+		{"health.workers", strconv.Itoa(c.Health.Workers)},
+	}
 }
 
 func (s *Server) settingsData(errMsg, newToken string) map[string]any {
@@ -54,7 +117,8 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 	toks, _ := s.o.Registry.Tokens()
 	return map[string]any{
 		"Title": "Settings", "Nav": "settings",
-		"Views": rows, "Tokens": toks, "NewToken": newToken, "Error": errMsg,
+		"Views": rows, "Tokens": toks, "NewToken": newToken,
+		"Config": s.configRows(), "RestartNote": restartNote, "Error": errMsg,
 	}
 }
 

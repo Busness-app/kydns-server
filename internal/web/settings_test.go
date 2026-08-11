@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/yoshiofthewire/kydns-server/internal/config"
 )
 
 func TestViewCreateAndList(t *testing.T) {
@@ -163,6 +165,69 @@ func TestCacheFlushButton(t *testing.T) {
 	}
 	if srv.o.Cache.Len() != 0 {
 		t.Error("cache not flushed")
+	}
+}
+
+func TestSettingsShowsReadOnlyConfig(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	srv.o.Config = &config.Config{
+		DataDir: "/var/lib/kydns",
+		DNS: config.DNSConfig{
+			Listen: ":53", PrivateDomain: "home.arpa",
+			Upstreams: []string{"1.1.1.1:53"}, AllowQuery: []string{"192.168.0.0/16"},
+			TTL: 60, CacheEntries: 10000,
+		},
+		Admin: config.AdminConfig{Listen: "127.0.0.1:8053"},
+	}
+	body := page(t, h, "/settings", c)
+	for _, want := range []string{
+		"dns.upstreams", "1.1.1.1:53", "dns.private_domain", "home.arpa",
+		"admin.listen", "data_dir", "/var/lib/kydns",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("config view missing %q", want)
+		}
+	}
+	if !strings.Contains(strings.ToLower(body), "restarting kydns") {
+		t.Error("config view does not say a restart is required")
+	}
+}
+
+// allow_tailscale must read as on/off, not Go's true/false, and must be
+// visible so the operator can see why tailnet clients are refused.
+func TestConfigViewShowsAllowTailscale(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	srv.o.Config = &config.Config{DataDir: "/tmp", DNS: config.DNSConfig{AllowTailscale: false}}
+	body := page(t, h, "/settings", c)
+	if !strings.Contains(body, "dns.allow_tailscale") {
+		t.Fatal("config view omits allow_tailscale")
+	}
+	if strings.Contains(body, ">false<") {
+		t.Error("allow_tailscale rendered as Go's false, want off")
+	}
+}
+
+// The section is omitted rather than rendering an empty table when no config
+// is wired in.
+func TestConfigViewAbsentWithoutConfig(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	srv.o.Config = nil
+	if strings.Contains(page(t, h, "/settings", c), "dns.upstreams") {
+		t.Error("config section rendered with no config loaded")
+	}
+}
+
+// Config carries no secrets today; this guards against one being added to the
+// display later without thought.
+func TestConfigViewCarriesNoSecrets(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	srv.o.Config = &config.Config{DataDir: "/tmp", DNS: config.DNSConfig{Listen: ":53"}}
+	postForm(t, h, "/settings/tokens/new", url.Values{"label": {"x"}, "csrf_token": {csrf}}, c)
+	body := page(t, h, "/settings", c)
+	for _, forbidden := range []string{"password_hash", "argon2", "kydns_"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("settings page leaked %q", forbidden)
+		}
 	}
 }
 

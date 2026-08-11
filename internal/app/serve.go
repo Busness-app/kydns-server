@@ -157,7 +157,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return err
 	}
 	web.New(web.Options{
-		Store: st, Registry: reg, API: api,
+		Store: st, Registry: reg, API: api, Config: cfg,
 		Sessions:       auth.NewSessions(time.Hour, 12*time.Hour),
 		Backoff:        auth.NewBackoff(),
 		ACL:            acl,

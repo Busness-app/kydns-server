@@ -9,6 +9,7 @@ import (
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
+	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
@@ -20,6 +21,7 @@ type Options struct {
 	Store          *store.Store
 	Registry       *registry.Registry
 	API            *adminapi.API
+	Config         *config.Config
 	Sessions       *auth.Sessions
 	Backoff        *auth.Backoff
 	ACL            *dnsserver.ACL

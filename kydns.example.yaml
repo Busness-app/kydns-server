@@ -1,0 +1,99 @@
+# KyDNS configuration.
+#
+# Copy to /etc/kydns/kydns.yaml, or pass --config to point somewhere else.
+# Every setting below shows its default, so a file containing nothing but
+# data_dir is a valid configuration.
+#
+# This file is read once at startup. Changing it requires restarting KyDNS.
+# Services, records, views, and API tokens are NOT here — they live in the
+# database and are edited through the web UI or the kydns CLI.
+
+# The only required setting. Holds kydns.db plus the bootstrap and setup
+# tokens. Back this directory up.
+data_dir: /var/lib/kydns
+
+dns:
+  # Address for the DNS server. Both UDP and TCP are bound.
+  # Use 0.0.0.0:53 to serve the whole LAN; :53 needs root or CAP_NET_BIND_SERVICE.
+  listen: ":53"
+
+  # Your private zone. home.arpa is reserved for exactly this purpose
+  # (RFC 8375) and will never collide with a public name.
+  private_domain: home.arpa
+
+  # Networks you want reverse (PTR) lookups for. Records are derived
+  # automatically from service and lease addresses that fall inside them;
+  # you never author PTRs by hand.
+  reverse_zones: []
+  # reverse_zones: ["192.168.1.0/24", "fd00::/64"]
+
+  # Where non-local queries go, tried in order. Plain UDP/TCP only in this
+  # release: no DNS-over-TLS or DNS-over-HTTPS yet.
+  upstreams: ["1.1.1.1:53", "9.9.9.9:53"]
+
+  # Who may query. Default-closed: anything not listed gets REFUSED, so a
+  # KyDNS accidentally exposed to the internet is not an open resolver.
+  # Defaults to loopback plus RFC1918 and ULA.
+  allow_query:
+    - 127.0.0.0/8
+    - ::1/128
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 169.254.0.0/16
+    - fe80::/10
+    - fc00::/7
+
+  # Tailscale addresses are CGNAT (100.64.0.0/10), not RFC1918, so they are
+  # NOT covered by allow_query above. Leave this false unless you use
+  # Tailscale: some ISPs also hand out CGNAT addresses, which would make the
+  # range a standing exposure on a WAN-facing interface.
+  #
+  # While this is false, tailnet clients get REFUSED and the dashboard says so.
+  allow_tailscale: false
+
+  # TTL on every authoritative answer. Low by default because homelab
+  # addresses move, and because a split-horizon client roaming between LAN
+  # and tailnet should re-resolve quickly.
+  ttl: 60
+
+  # Cache bounds for forwarded answers. Upstream TTLs are clamped into
+  # [cache_min_ttl, cache_max_ttl]; negative answers use the SOA MINIMUM
+  # clamped by negative_max_ttl. Authoritative answers are never cached —
+  # they already live in memory.
+  cache_min_ttl: 5
+  cache_max_ttl: 3600
+  negative_max_ttl: 300
+  cache_entries: 10000
+
+  # Query logging is off by default. When on, each query logs its name, type,
+  # rcode, matched view, and duration.
+  log_queries: false
+  # The client IP is a second, separate opt-in: turning on query logging alone
+  # does not record who asked.
+  log_client_ip: false
+
+admin:
+  # The web UI and JSON API. Bound to loopback by default. If you expose this,
+  # put it behind a TLS-terminating reverse proxy — KyDNS speaks plain HTTP.
+  listen: "127.0.0.1:8053"
+
+discovery:
+  # DHCP lease discovery is off until you point at a lease file. KyDNS does
+  # not guess the path. dnsmasq is the supported format today.
+  dhcp_lease_file: ""
+  # dhcp_lease_file: /var/lib/misc/dnsmasq.leases
+
+  # How often to re-read it, in seconds. The zone is only rebuilt when the
+  # lease set actually changed.
+  interval: 30
+
+health:
+  # Health checks run for services that have a check URL, which you set per
+  # service in the UI or with `kydns service add --check`.
+  # Status is informational only: an unhealthy service is still resolved,
+  # so DNS stays deterministic.
+  interval: 30
+  timeout: 5
+  # Concurrent probes. A large registry will not spawn one goroutine each.
+  workers: 8

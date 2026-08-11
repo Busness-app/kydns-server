@@ -82,4 +82,17 @@
     <button class="ghost" type="submit">Flush DNS cache</button>
   </form>
 </div>
+
+{{if .Config}}
+<div class="card">
+  <h3>Configuration</h3>
+  <p class="muted">{{.RestartNote}}</p>
+  <table class="grid">
+    <tr><th>Setting</th><th>Value</th></tr>
+    {{range .Config}}
+    <tr><td><code>{{.Key}}</code></td><td>{{.Value}}</td></tr>
+    {{end}}
+  </table>
+</div>
+{{end}}
 {{end}}
