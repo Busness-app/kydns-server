@@ -84,6 +84,8 @@ func (r *Registry) PutService(svc store.Service) (int64, error) {
 
 func (r *Registry) Services() ([]store.Service, error) { return r.s.Services() }
 
+func (r *Registry) Service(id int64) (store.Service, error) { return r.s.Service(id) }
+
 func (r *Registry) DeleteService(id int64) error {
 	if err := r.s.DeleteService(id); err != nil {
 		return err

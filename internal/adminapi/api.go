@@ -91,6 +91,8 @@ func (a *API) Routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/services", auth(a.listServices))
 	mux.HandleFunc("POST /api/v1/services", auth(a.createService))
+	mux.HandleFunc("GET /api/v1/services/{id}", auth(a.getService))
+	mux.HandleFunc("PATCH /api/v1/services/{id}", auth(a.updateService))
 	mux.HandleFunc("DELETE /api/v1/services/{id}", auth(a.deleteService))
 	mux.HandleFunc("GET /api/v1/records", auth(a.listRecords))
 	mux.HandleFunc("POST /api/v1/records", auth(a.createRecord))
@@ -204,6 +206,44 @@ func (a *API) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+}
+
+func (a *API) getService(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	svc, err := a.reg.Service(id)
+	if err != nil {
+		writeRegistryErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toServiceDTO(svc))
+}
+
+// updateService replaces a service wholesale. Addresses and aliases are
+// rewritten from the body, which is how a tailnet address is added to a name
+// that already exists.
+func (a *API) updateService(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r)
+	if !ok {
+		return
+	}
+	if _, err := a.reg.Service(id); err != nil {
+		writeRegistryErr(w, err)
+		return
+	}
+	var d serviceDTO
+	if !decode(w, r, &d) {
+		return
+	}
+	svc := fromServiceDTO(d)
+	svc.ID = id
+	if _, err := a.reg.PutService(svc); err != nil {
+		writeRegistryErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
 func (a *API) deleteService(w http.ResponseWriter, r *http.Request) {

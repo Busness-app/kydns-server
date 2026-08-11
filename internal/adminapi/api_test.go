@@ -159,6 +159,64 @@ func TestServiceDelete(t *testing.T) {
 	}
 }
 
+func TestGetServiceByID(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok, `{"name":"kypost","addresses":[{"address":"192.168.1.20"}]}`)
+	rec := do(t, h, "GET", "/api/v1/services/1", tok, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("= %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "kypost") {
+		t.Errorf("body = %s", rec.Body)
+	}
+	if rec := do(t, h, "GET", "/api/v1/services/999", tok, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown id = %d, want 404", rec.Code)
+	}
+}
+
+// The Tailscale workflow: a service already exists, and the operator adds a
+// tailnet-tagged address to it without deleting and recreating it.
+func TestPatchServiceAddsViewTaggedAddress(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/views", tok, `{"name":"tailnet","subnets":["100.64.0.0/10"]}`)
+	do(t, h, "POST", "/api/v1/services", tok, `{"name":"kypost","addresses":[{"address":"192.168.1.20"}]}`)
+
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.20"},{"address":"100.101.102.103","view":"tailnet"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+	body := do(t, h, "GET", "/api/v1/services/1", tok, "").Body.String()
+	if !strings.Contains(body, "100.101.102.103") || !strings.Contains(body, "tailnet") {
+		t.Errorf("patched service = %s, want both addresses", body)
+	}
+	if !strings.Contains(body, "192.168.1.20") {
+		t.Errorf("patch dropped the original address: %s", body)
+	}
+	// The update must replace children, not accumulate duplicates.
+	if n := strings.Count(body, "192.168.1.20"); n != 1 {
+		t.Errorf("original address appears %d times, want 1", n)
+	}
+}
+
+func TestPatchUnknownServiceIs404(t *testing.T) {
+	h, tok := newAPI(t)
+	rec := do(t, h, "PATCH", "/api/v1/services/999", tok,
+		`{"name":"ghost","addresses":[{"address":"192.168.1.1"}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("= %d, want 404", rec.Code)
+	}
+}
+
+func TestPatchValidates(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok, `{"name":"kypost","addresses":[{"address":"192.168.1.20"}]}`)
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"name":"kypost","addresses":[{"address":"nope"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("= %d, want 400 for an invalid address", rec.Code)
+	}
+}
+
 // Export must never leak secrets. This is a stated security requirement.
 func TestExportOmitsSecrets(t *testing.T) {
 	h, tok := newAPI(t)
