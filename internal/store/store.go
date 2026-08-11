@@ -359,3 +359,85 @@ func (s *Store) DeleteRecord(id int64) error {
 	}
 	return nil
 }
+
+func (s *Store) PutToken(t Token) (int64, error) {
+	res, err := s.db.Exec(`INSERT INTO tokens(label, hash) VALUES(?, ?)`, t.Label, t.Hash)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (s *Store) Tokens() ([]Token, error) {
+	rows, err := s.db.Query(`SELECT id, label, hash, created_at, last_used_at FROM tokens ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Token
+	for rows.Next() {
+		var t Token
+		if err := rows.Scan(&t.ID, &t.Label, &t.Hash, &t.CreatedAt, &t.LastUsedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) TouchToken(id int64) error {
+	_, err := s.db.Exec(`UPDATE tokens SET last_used_at = unixepoch() WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) DeleteToken(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM tokens WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: token %d", ErrNotFound, id)
+	}
+	return nil
+}
+
+// ReplaceAll wipes registry data and writes the given contents, for
+// import --replace. Tokens and the admin account survive: an import must never
+// lock the operator out.
+func (s *Store) ReplaceAll(views []View, services []Service, records []Record) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, q := range []string{
+		`DELETE FROM records`, `DELETE FROM aliases`,
+		`DELETE FROM service_addresses`, `DELETE FROM services`,
+		`DELETE FROM view_subnets`, `DELETE FROM views`,
+	} {
+		if _, err := tx.Exec(q); err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	for _, v := range views {
+		if err := s.PutView(v); err != nil {
+			return err
+		}
+	}
+	for _, svc := range services {
+		svc.ID = 0
+		if _, err := s.PutService(svc); err != nil {
+			return err
+		}
+	}
+	for _, r := range records {
+		r.ID = 0
+		if _, err := s.PutRecord(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
