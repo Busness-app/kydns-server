@@ -21,6 +21,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery"
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"github.com/yoshiofthewire/kydns-server/internal/web"
@@ -133,6 +134,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Logger:      logger,
 	})
 
+	checker := health.NewChecker(reg,
+		time.Duration(cfg.Health.Interval)*time.Second,
+		time.Duration(cfg.Health.Timeout)*time.Second,
+		cfg.Health.Workers, logger)
+
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
 	api := adminapi.NewAPI(reg, acl, cache)
@@ -171,6 +177,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	if poller != nil {
 		go poller.Run(ctx)
 	}
+	go checker.Run(ctx)
 	logger.Info("kydns started",
 		"dns", cfg.DNS.Listen, "admin", cfg.Admin.Listen, "zone", cfg.PrivateFQDN())
 
