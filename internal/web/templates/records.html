@@ -1,0 +1,47 @@
+{{define "page"}}
+<div class="card">
+  <table class="grid">
+    <tr><th>Name</th><th>Type</th><th>Value</th><th>View</th><th></th></tr>
+    {{range .Records}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td><span class="badge">{{.Type}}</span></td>
+      <td>{{.Value}}</td>
+      <td>{{if .View}}<span class="badge accent">{{.View}}</span>{{else}}<span class="muted">all views</span>{{end}}</td>
+      <td>
+        <form method="post" action="/records/delete">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+      <tr><td colspan="5" class="muted">No manual records. Services cover most needs.</td></tr>
+    {{end}}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add a record</h3>
+  <form class="stack" method="post" action="/records/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="rname">Name</label>
+    <input id="rname" name="name" type="text" placeholder="printer.home.arpa.">
+    <label for="rtype">Type</label>
+    <select id="rtype" name="type">
+      {{range .Types}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+    <label for="rvalue">Value</label>
+    <input id="rvalue" name="value" type="text" placeholder="192.168.1.50">
+    <label for="rview">View</label>
+    <select id="rview" name="view">
+      <option value="">All views</option>
+      {{range .Views}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+    </select>
+    <button type="submit">Add record</button>
+  </form>
+  <p class="muted">A manual record takes precedence over a service or a
+     discovered lease with the same name.</p>
+</div>
+{{end}}

@@ -5,6 +5,7 @@ import "net/http"
 func init() {
 	registerPage("dashboard.html")
 	registerPage("services.html")
+	registerPage("records.html")
 }
 
 // pageRoutes registers the application screens. Tasks 18 to 21 replace these
@@ -17,7 +18,11 @@ func (s *Server) pageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /services/address", s.requireCSRF(s.postServiceAddress))
 	mux.HandleFunc("POST /services/delete", s.requireCSRF(s.postServiceDelete))
 
-	for _, p := range []string{"/records", "/discovered", "/settings"} {
+	mux.HandleFunc("GET /records", s.requireSession(s.getRecords))
+	mux.HandleFunc("POST /records/new", s.requireCSRF(s.postRecordNew))
+	mux.HandleFunc("POST /records/delete", s.requireCSRF(s.postRecordDelete))
+
+	for _, p := range []string{"/discovered", "/settings"} {
 		nav := p[1:]
 		mux.HandleFunc("GET "+p, s.requireSession(func(w http.ResponseWriter, r *http.Request) {
 			s.render(w, r, "dashboard.html", map[string]any{"Title": nav, "Nav": nav})
