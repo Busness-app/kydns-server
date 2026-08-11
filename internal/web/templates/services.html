@@ -1,7 +1,7 @@
 {{define "page"}}
 <div class="card">
   <table class="grid">
-    <tr><th>Name</th><th>Address</th><th>View</th><th>Aliases</th><th></th></tr>
+    <tr><th>Name</th><th>Address</th><th>View</th><th>Aliases</th><th>Health</th><th></th></tr>
     {{range .Services}}
       {{$svc := .}}
       {{range $i, $a := .Addresses}}
@@ -11,6 +11,8 @@
         <td>{{if $a.Tagged}}<span class="badge accent">{{$a.View}}</span>
             {{else}}<span class="muted">{{$a.View}}</span>{{end}}</td>
         <td>{{if eq $i 0}}{{$svc.Aliases}}{{end}}</td>
+        <td>{{if eq $i 0}}<span class="badge{{if eq $svc.Health "down"}} down{{else if eq $svc.Health "up"}} accent{{end}}"
+              data-health-for="{{$svc.ID}}">{{$svc.Health}}</span>{{end}}</td>
         <td>{{if eq $i 0}}
           <form method="post" action="/services/delete">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
@@ -20,10 +22,11 @@
       </tr>
       {{end}}
     {{else}}
-      <tr><td colspan="5" class="muted">No services yet.</td></tr>
+      <tr><td colspan="6" class="muted">No services yet.</td></tr>
     {{end}}
   </table>
 </div>
+<script src="/static/live.js" defer></script>
 
 <div class="card">
   <h3>Add a service</h3>

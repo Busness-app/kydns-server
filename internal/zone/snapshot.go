@@ -96,6 +96,11 @@ func buildIndex(in Input, view, zone string) (*Index, error) {
 	for _, l := range in.Leases {
 		name := qualify(l.Hostname, zone)
 		idx.Forward[name] = []RR{{Name: name, Type: addrType(l.Address), Value: l.Address}}
+		// A lease is a forward record, so it derives a PTR like any other.
+		// Later layers overwrite it, which is precedence working.
+		if addr, err := netip.ParseAddr(l.Address); err == nil && inZones(addr, in.ReverseZones) {
+			idx.Reverse[arpaName(addr)] = name
+		}
 	}
 
 	for _, svc := range in.Services {

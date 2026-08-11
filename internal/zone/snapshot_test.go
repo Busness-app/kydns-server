@@ -109,6 +109,26 @@ func TestLeaseResolvesWhenUnshadowed(t *testing.T) {
 	}
 }
 
+// A discovered lease resolves in reverse as well as forward, so dig -x on a
+// DHCP client works the same as on a service.
+func TestLeaseDerivesPTR(t *testing.T) {
+	s := build(t, Input{Leases: []Lease{{Hostname: "laptop", Address: "192.168.1.77"}}})
+	if got := s.LookupPTR("", "77.1.168.192.in-addr.arpa."); got != "laptop.home.arpa." {
+		t.Errorf("lease PTR = %q, want laptop.home.arpa.", got)
+	}
+}
+
+// A service outranks a lease in reverse just as it does in forward.
+func TestServicePTRBeatsLeasePTR(t *testing.T) {
+	s := build(t, Input{
+		Services: []store.Service{kypost()},
+		Leases:   []Lease{{Hostname: "other", Address: "192.168.1.20"}},
+	})
+	if got := s.LookupPTR("", "20.1.168.192.in-addr.arpa."); got != "kypost.home.arpa." {
+		t.Errorf("PTR = %q, want the service name to win", got)
+	}
+}
+
 func TestPTRDerivedPerView(t *testing.T) {
 	s := build(t, Input{Views: tailnetView(), Services: []store.Service{kypost()}})
 

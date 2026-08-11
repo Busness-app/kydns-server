@@ -139,9 +139,16 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		time.Duration(cfg.Health.Timeout)*time.Second,
 		cfg.Health.Workers, logger)
 
+	leaseFn := func() []dhcp.Lease {
+		if poller == nil {
+			return nil
+		}
+		return poller.Leases()
+	}
+
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache)
+	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses)
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
@@ -159,6 +166,13 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Upstreams:      cfg.DNS.Upstreams,
 		SetupToken:     setupToken,
 		Logger:         logger,
+		Health:         checker.Statuses,
+		Leases: func() func() []dhcp.Lease {
+			if poller == nil {
+				return nil // the screen renders "discovery is off" rather than empty
+			}
+			return leaseFn
+		}(),
 	}).Routes(mux)
 
 	adminSrv := &http.Server{

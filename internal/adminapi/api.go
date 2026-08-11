@@ -14,19 +14,30 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 type API struct {
-	reg   *registry.Registry
-	acl   *dnsserver.ACL
-	cache *dnsserver.Cache
+	reg    *registry.Registry
+	acl    *dnsserver.ACL
+	cache  *dnsserver.Cache
+	leases func() []dhcp.Lease
+	health func() []health.Status
 }
 
 func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) *API {
 	return &API{reg: reg, acl: acl, cache: cache}
+}
+
+// WithProviders attaches discovery and health data. Both are optional, so the
+// API still constructs where neither subsystem is running.
+func (a *API) WithProviders(leases func() []dhcp.Lease, statuses func() []health.Status) *API {
+	a.leases, a.health = leases, statuses
+	return a
 }
 
 type addressDTO struct {
@@ -105,6 +116,9 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/tokens/{id}", auth(a.deleteToken))
 	mux.HandleFunc("GET /api/v1/export", auth(a.export))
 	mux.HandleFunc("POST /api/v1/import", auth(a.importDoc))
+	mux.HandleFunc("GET /api/v1/leases", auth(a.listLeases))
+	mux.HandleFunc("POST /api/v1/leases/{ip}/promote", auth(a.promoteLease))
+	mux.HandleFunc("GET /api/v1/health", auth(a.listHealth))
 	mux.HandleFunc("GET /api/v1/stats", auth(a.stats))
 	mux.HandleFunc("POST /api/v1/cache/flush", auth(a.flushCache))
 }
@@ -480,6 +494,57 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mode": "merge"})
+}
+
+func (a *API) listLeases(w http.ResponseWriter, _ *http.Request) {
+	out := []map[string]any{}
+	if a.leases != nil {
+		for _, l := range a.leases() {
+			out = append(out, map[string]any{
+				"hostname": l.Hostname, "address": l.IP, "mac": l.MAC,
+				"expires": l.Expires.Unix(),
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"leases": out})
+}
+
+// promoteLease makes a discovered name durable. Leases are never persisted, so
+// this is the only path from discovery into the database.
+func (a *API) promoteLease(w http.ResponseWriter, r *http.Request) {
+	ip := r.PathValue("ip")
+	if a.leases == nil {
+		writeErr(w, http.StatusNotFound, "not_found", "ip", "lease discovery is not enabled")
+		return
+	}
+	for _, l := range a.leases() {
+		if l.IP != ip {
+			continue
+		}
+		id, err := a.reg.PutService(store.Service{
+			Name: l.Hostname, Addresses: []store.Address{{Address: l.IP}},
+		})
+		if err != nil {
+			writeRegistryErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": l.Hostname})
+		return
+	}
+	writeErr(w, http.StatusNotFound, "not_found", "ip", "no current lease for "+ip)
+}
+
+func (a *API) listHealth(w http.ResponseWriter, _ *http.Request) {
+	out := []map[string]any{}
+	if a.health != nil {
+		for _, s := range a.health() {
+			out = append(out, map[string]any{
+				"service_id": s.ServiceID, "name": s.Name, "state": s.State,
+				"since": s.Since.Unix(), "last_error": s.LastError,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"health": out})
 }
 
 func (a *API) stats(w http.ResponseWriter, _ *http.Request) {

@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -19,6 +20,7 @@ type serviceRow struct {
 	Name      string
 	Addresses []addressRow
 	Aliases   string
+	Health    string
 }
 
 // allViews is what an untagged address is labelled. A blank cell reads as
@@ -30,9 +32,24 @@ func (s *Server) servicesData(errMsg string) map[string]any {
 	if err != nil && errMsg == "" {
 		errMsg = err.Error()
 	}
+	// Absent health data is "unknown", never a claim that everything is fine.
+	states := map[int64]string{}
+	if s.o.Health != nil {
+		for _, st := range s.o.Health() {
+			states[st.ServiceID] = st.State
+		}
+	}
+
 	rows := make([]serviceRow, 0, len(svcs))
 	for _, svc := range svcs {
-		row := serviceRow{ID: svc.ID, Name: svc.Name, Aliases: strings.Join(svc.Aliases, ", ")}
+		state := states[svc.ID]
+		if state == "" {
+			state = health.StateUnknown
+		}
+		row := serviceRow{
+			ID: svc.ID, Name: svc.Name,
+			Aliases: strings.Join(svc.Aliases, ", "), Health: state,
+		}
 		for _, a := range svc.Addresses {
 			if a.View == "" {
 				row.Addresses = append(row.Addresses, addressRow{Address: a.Address, View: allViews})

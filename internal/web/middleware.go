@@ -9,7 +9,9 @@ import (
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
+	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -26,6 +28,11 @@ type Options struct {
 	Upstreams      []string
 	SetupToken     string
 	Logger         *slog.Logger
+
+	// Leases and Health are nil when discovery or health checking is off,
+	// which the screens render as "not enabled" rather than as empty.
+	Leases func() []dhcp.Lease
+	Health func() []health.Status
 }
 
 type Server struct{ o Options }

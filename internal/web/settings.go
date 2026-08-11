@@ -136,6 +136,3 @@ func (s *Server) getExport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) getDiscovered(w http.ResponseWriter, r *http.Request) {
-	s.render(w, r, "discovered.html", map[string]any{"Title": "Discovered", "Nav": "discovered"})
-}
