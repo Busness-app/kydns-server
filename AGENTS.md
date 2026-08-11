@@ -45,5 +45,5 @@ This repository is currently documentation-only. Keep these documents aligned:
 - `SECURITY.md` — security policy and trust boundaries.
 - `CONTRIBUTING.md` — contribution and verification workflow.
 - `docs/superpowers/specs/2026-08-11-kydns-v1-design.md` — approved v1 design.
-  Single-node; replication deferred to a later spec.
+  Single-node with per-subnet views; replication deferred to a later spec.
 
