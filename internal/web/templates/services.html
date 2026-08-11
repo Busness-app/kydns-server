@@ -1,0 +1,73 @@
+{{define "page"}}
+<div class="card">
+  <table class="grid">
+    <tr><th>Name</th><th>Address</th><th>View</th><th>Aliases</th><th></th></tr>
+    {{range .Services}}
+      {{$svc := .}}
+      {{range $i, $a := .Addresses}}
+      <tr>
+        <td>{{if eq $i 0}}{{$svc.Name}}{{end}}</td>
+        <td>{{$a.Address}}</td>
+        <td>{{if $a.Tagged}}<span class="badge accent">{{$a.View}}</span>
+            {{else}}<span class="muted">{{$a.View}}</span>{{end}}</td>
+        <td>{{if eq $i 0}}{{$svc.Aliases}}{{end}}</td>
+        <td>{{if eq $i 0}}
+          <form method="post" action="/services/delete">
+            <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+            <input type="hidden" name="id" value="{{$svc.ID}}">
+            <button class="danger" type="submit">Remove</button>
+          </form>{{end}}</td>
+      </tr>
+      {{end}}
+    {{else}}
+      <tr><td colspan="5" class="muted">No services yet.</td></tr>
+    {{end}}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add a service</h3>
+  <form class="stack" method="post" action="/services/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="name">Name</label>
+    <input id="name" name="name" type="text" placeholder="kypost">
+    <label for="address">Address</label>
+    <div class="address-row">
+      <input id="address" name="address" type="text" placeholder="192.168.1.20">
+      <select name="view" aria-label="View">
+        <option value="">All views</option>
+        {{range .Views}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+      </select>
+    </div>
+    <label for="aliases">Aliases (comma separated)</label>
+    <input id="aliases" name="aliases" type="text" placeholder="webmail">
+    <label for="check_url">Health check URL (optional)</label>
+    <input id="check_url" name="check_url" type="text" placeholder="https://kypost.home.arpa/health">
+    <button type="submit">Add service</button>
+  </form>
+</div>
+
+{{if .Services}}
+<div class="card">
+  <h3>Add an address to an existing service</h3>
+  <p class="muted">Give one name a different answer per view — a Tailscale
+     address alongside the LAN one, for example.</p>
+  <form class="stack" method="post" action="/services/address">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="svc">Service</label>
+    <select id="svc" name="id">
+      {{range .Services}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+    </select>
+    <label for="addr2">Address</label>
+    <div class="address-row">
+      <input id="addr2" name="address" type="text" placeholder="100.101.102.103">
+      <select name="view" aria-label="View">
+        <option value="">All views</option>
+        {{range .Views}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+      </select>
+    </div>
+    <button type="submit">Add address</button>
+  </form>
+</div>
+{{end}}
+{{end}}
