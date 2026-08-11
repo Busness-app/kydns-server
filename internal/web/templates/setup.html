@@ -1,0 +1,16 @@
+{{define "body"}}
+<div class="centered card">
+  <h2>Set up KyDNS</h2>
+  <p class="muted">The setup token was written to the server log when KyDNS started.</p>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form class="stack" method="post" action="/setup">
+    <label for="token">Setup token</label>
+    <input id="token" name="token" type="text" autofocus>
+    <label for="password">New password (12 characters or more)</label>
+    <input id="password" name="password" type="password" autocomplete="new-password">
+    <label for="confirm">Confirm password</label>
+    <input id="confirm" name="confirm" type="password" autocomplete="new-password">
+    <button type="submit">Create admin account</button>
+  </form>
+</div>
+{{end}}

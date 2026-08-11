@@ -2,28 +2,28 @@
 
 @font-face {
   font-family: "Space Grotesk";
-  src: url("../fonts/Space_Grotesk/SpaceGrotesk-VariableFont_wght.ttf") format("truetype");
+  src: url("/static/fonts/Space_Grotesk/SpaceGrotesk-VariableFont_wght.ttf") format("truetype");
   font-weight: 300 700;
   font-display: swap;
 }
 
 @font-face {
   font-family: "IBM Plex Mono";
-  src: url("../fonts/IBM_Plex_Mono/IBMPlexMono-Regular.ttf") format("truetype");
+  src: url("/static/fonts/IBM_Plex_Mono/IBMPlexMono-Regular.ttf") format("truetype");
   font-weight: 400;
   font-display: swap;
 }
 
 @font-face {
   font-family: "IBM Plex Mono";
-  src: url("../fonts/IBM_Plex_Mono/IBMPlexMono-Medium.ttf") format("truetype");
+  src: url("/static/fonts/IBM_Plex_Mono/IBMPlexMono-Medium.ttf") format("truetype");
   font-weight: 500;
   font-display: swap;
 }
 
 @font-face {
   font-family: "IBM Plex Mono";
-  src: url("../fonts/IBM_Plex_Mono/IBMPlexMono-SemiBold.ttf") format("truetype");
+  src: url("/static/fonts/IBM_Plex_Mono/IBMPlexMono-SemiBold.ttf") format("truetype");
   font-weight: 600;
   font-display: swap;
 }

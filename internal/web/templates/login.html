@@ -1,0 +1,11 @@
+{{define "body"}}
+<div class="centered card">
+  <h2>Sign in</h2>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form class="stack" method="post" action="/login">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" autofocus>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+{{end}}
