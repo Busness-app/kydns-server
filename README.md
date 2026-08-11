@@ -112,33 +112,53 @@ The CLI reads `KYDNS_URL` (default `http://127.0.0.1:8053`) and `KYDNS_TOKEN`.
 
 ### Docker
 
+The container gets **its own IP address on your LAN**, so it owns port 53 there
+and never contends with systemd-resolved or dnsmasq on the host.
+
 ```sh
-cp kydns.example.yaml kydns.yaml    # set data_dir: /var/lib/kydns
+cp .env.example .env          # your interface, subnet, gateway, and IP
+cp kydns.example.yaml kydns.yaml
 docker compose up -d
 docker compose logs kydns | grep setup-token
 ```
 
-The compose file uses **host networking**, so KyDNS binds port 53 on the host
-directly with no port mapping. Note that host networking does not give the
-container its own IP address — it answers on the host's. `docker-compose.yml`
-documents a macvlan alternative if you want a separate LAN address.
+In `kydns.yaml` change two settings from their defaults: `data_dir:
+/var/lib/kydns`, and `admin.listen: "0.0.0.0:8053"`. Leaving admin on
+`127.0.0.1` would bind the *container's* loopback, reachable from nowhere.
 
-Two things that bite:
-
-- **Port 53 is usually taken.** `sudo ss -ulpn 'sport = :53'` will show
-  systemd-resolved, dnsmasq, or avahi holding it. The compose file has the
-  systemd-resolved fix.
-- **Use the named volume for `data_dir`, not a host directory.** The container
-  drops all capabilities except `NET_BIND_SERVICE`, which means it loses
-  `CAP_DAC_OVERRIDE` and cannot write into a directory owned by another user.
-  A bind mount from your home directory fails with `unable to open database
-  file`. Chown it to root if you need one.
-
-The image is distroless and about 29 MB. It has no shell, so read the
-first-run tokens from the volume rather than with `docker exec`:
+Find your values with:
 
 ```sh
-docker run --rm -v kydns_kydns-data:/d busybox cat /d/setup-token
+ip -o -4 route show default                    # interface and gateway
+ip -o -4 addr show dev <interface>             # subnet
+```
+
+Pick a `KYDNS_IP` inside your subnet but **outside the router's DHCP pool**, or
+the router will hand it to something else.
+
+#### Choosing the driver
+
+| Driver | Use when | Why |
+|---|---|---|
+| `ipvlan` (default) | WiFi, or anywhere | Shares the host's MAC, adds an IP |
+| `macvlan` | Wired ethernet | Own MAC; **silently fails over WiFi** — APs reject a second MAC from one station |
+
+#### Three things that bite
+
+- **The host cannot reach the container.** Both drivers deliberately block
+  host-to-container traffic. Everything else on the LAN is fine; only the
+  Docker host itself can't reach KyDNS. That matters if the host resolves
+  through it. `docker-compose.yml` has the shim-interface fix.
+- **Use the named volume for `data_dir`, not a host directory.** The container
+  drops all capabilities except `NET_BIND_SERVICE`, losing `CAP_DAC_OVERRIDE`,
+  so it cannot write into a directory owned by another user. A bind mount from
+  your home directory fails with `unable to open database file`. Chown it to
+  root if you need one.
+- **The image has no shell.** It is distroless, about 29 MB. Read the first-run
+  tokens from the volume rather than with `docker exec`:
+
+```sh
+docker run --rm -v kydns-server_kydns-data:/d busybox cat /d/setup-token
 ```
 
 ## Security model

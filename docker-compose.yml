@@ -5,11 +5,12 @@ services:
     container_name: kydns
     restart: unless-stopped
 
-    # Host networking: the container shares the host's network stack, so it
-    # binds port 53 directly with no port mapping. Note that it does NOT get
-    # its own IP address — it answers on the host's. See the macvlan block at
-    # the bottom of this file if you want a separate address on the LAN.
-    network_mode: host
+    # The container gets its own address on the LAN, so it owns port 53 there
+    # and never contends with systemd-resolved or dnsmasq on the host.
+    # Settings live in .env — copy .env.example and edit.
+    networks:
+      kydns_lan:
+        ipv4_address: ${KYDNS_IP:?set KYDNS_IP in .env}
 
     # Binding port 53 needs this one capability. Everything else is dropped.
     # The process runs as root only because a non-root process cannot use an
@@ -23,7 +24,7 @@ services:
 
     volumes:
       # The config is read once at startup. Read-only: KyDNS never writes it.
-      - ./kydns.yaml:/etc/kydns/kydns.yaml:ro
+      - ${KYDNS_CONFIG:-./kydns.yaml}:/etc/kydns/kydns.yaml:ro
       # Database plus the first-run setup and bootstrap tokens. Back this up.
       #
       # Use a named volume, not a host directory. Dropping ALL capabilities
@@ -40,70 +41,65 @@ services:
         max-size: "10m"
         max-file: "3"
 
+networks:
+  kydns_lan:
+    driver: ${KYDNS_NET_DRIVER:-ipvlan}
+    driver_opts:
+      parent: ${KYDNS_PARENT_IF:?set KYDNS_PARENT_IF in .env}
+    ipam:
+      config:
+        - subnet: ${KYDNS_SUBNET:?set KYDNS_SUBNET in .env}
+          gateway: ${KYDNS_GATEWAY:?set KYDNS_GATEWAY in .env}
+
 volumes:
   kydns-data:
 
 # ---------------------------------------------------------------------------
-# Before you start
+# Setup
 #
-# 1. cp kydns.example.yaml kydns.yaml
-# 2. Set these in kydns.yaml, because the defaults assume a non-container host:
+# 1. cp .env.example .env        and fill in your LAN details
+# 2. cp kydns.example.yaml kydns.yaml
+#
+#    Change two things in kydns.yaml from their defaults:
 #
 #      data_dir: /var/lib/kydns
-#      dns:
-#        listen: "0.0.0.0:53"        # default :53 also works
 #      admin:
-#        listen: "127.0.0.1:8053"    # host loopback only; see note below
+#        listen: "0.0.0.0:8053"
 #
-#    With host networking, admin.listen 127.0.0.1 means the host's loopback:
-#    reachable from the host, not from the LAN. That is the secure default.
-#    To reach the UI from another machine, either tunnel over SSH or put a
-#    TLS-terminating reverse proxy in front of it. Binding 0.0.0.0:8053 exposes
-#    plain HTTP with a password on it to your whole network.
+#    admin.listen MUST NOT stay 127.0.0.1 here. On its own network the
+#    container's loopback is its own, so 127.0.0.1 would be reachable from
+#    nowhere at all. 0.0.0.0:8053 means the container's LAN address only —
+#    it is not on the host. Put a TLS-terminating proxy in front if you want
+#    encryption; KyDNS speaks plain HTTP.
 #
 # 3. docker compose up -d
 # 4. docker compose logs kydns | grep setup-token
-#    Open http://<host>:8053/ and complete setup with that token.
+#    Open http://$KYDNS_IP:8053/ and complete setup with that token.
+# 5. Point a client at $KYDNS_IP for DNS and try:
+#      dig @$KYDNS_IP kypost.home.arpa
 #
-# Port 53 conflicts
+# The host cannot reach the container
 #
-#   Most modern Linux hosts already have something on port 53. Check first:
+#   Both macvlan and ipvlan deliberately block traffic between the host and
+#   its own containers. Everything else on the LAN reaches KyDNS fine; only
+#   the Docker host itself cannot. That matters if the host resolves through
+#   KyDNS, or if KyDNS health-checks a service running on the host.
 #
-#     sudo ss -ulpn 'sport = :53'
+#   Fix with a shim interface on the host, matching your driver. Replace the
+#   interface name, address, and subnet to suit. For ipvlan:
 #
-#   systemd-resolved usually binds 127.0.0.53:53. To free the port:
+#     sudo ip link add kydns-shim link eth0 type ipvlan mode l2
+#     sudo ip addr add 192.168.1.2/32 dev kydns-shim
+#     sudo ip link set kydns-shim up
+#     sudo ip route add 192.168.1.53/32 dev kydns-shim
 #
-#     sudo mkdir -p /etc/systemd/resolved.conf.d
-#     printf '[Resolve]\nDNSStubListener=no\n' | \
-#       sudo tee /etc/systemd/resolved.conf.d/kydns.conf
-#     sudo systemctl restart systemd-resolved
+#   For macvlan, use `type macvlan mode bridge` instead. Either way the shim
+#   is not persistent; add it to systemd-networkd or your distro's equivalent
+#   once it works.
 #
-#   dnsmasq, avahi, or an existing Pi-hole can also hold it.
+# WiFi
 #
-# Giving KyDNS its own IP address instead
-#
-#   Host networking shares the host's address. For a distinct LAN IP, replace
-#   network_mode: host with a macvlan network. Adjust parent, subnet, and
-#   gateway to match your LAN:
-#
-#     services:
-#       kydns:
-#         networks:
-#           lan:
-#             ipv4_address: 192.168.1.53
-#
-#     networks:
-#       lan:
-#         driver: macvlan
-#         driver_opts:
-#           parent: eth0
-#         ipam:
-#           config:
-#             - subnet: 192.168.1.0/24
-#               gateway: 192.168.1.1
-#
-#   With macvlan set admin.listen to 0.0.0.0:8053, since 127.0.0.1 would then
-#   be the container's own loopback and unreachable from anywhere. A macvlan
-#   container also cannot talk to its own host by default, which matters if
-#   KyDNS health-checks a service running on that host.
+#   macvlan does not work over WiFi — the access point drops frames from a
+#   second MAC address. Use KYDNS_NET_DRIVER=ipvlan there, which reuses the
+#   host's MAC. Some APs with client isolation will still interfere.
 # ---------------------------------------------------------------------------

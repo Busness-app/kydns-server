@@ -2,3 +2,7 @@
 *.db
 *.db-wal
 *.db-shm
+
+# Local deployment settings. Copy from the .example files.
+.env
+/kydns.yaml
