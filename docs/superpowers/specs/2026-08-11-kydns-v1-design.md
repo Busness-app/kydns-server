@@ -157,24 +157,60 @@ the store.
 Everything else gets `REFUSED`. Default-closed, so a KyDNS accidentally exposed
 on a WAN interface is not an open resolver.
 
-`allow_tailscale` is a separate boolean, **default true**, that adds
+`allow_tailscale` is a separate boolean, **default false**, that adds
 `100.64.0.0/10` to the permitted set. Tailscale addresses live in CGNAT space
-rather than RFC1918, so without it every tailnet client is refused — a
-confusing failure to diagnose. It is a dedicated flag rather than a default list
-entry so that closing the range is a one-line change: overriding `allow_query`
-itself would otherwise force the operator to restate every other default.
+rather than RFC1918, so tailnet clients are refused until an operator turns this
+on deliberately.
 
-Some ISPs also assign CGNAT addresses, so on a WAN-facing interface this range
-is a small exposure. Operators who do not use Tailscale should set
-`allow_tailscale: false`. The permitted ranges are logged at startup so the
-effective policy is visible.
+Default-closed is the right call because some ISPs also assign CGNAT addresses,
+which would make the range a standing exposure on a WAN-facing interface for
+every operator who does not use Tailscale. It is a dedicated flag rather than a
+default list entry so that opening or closing the range is a one-line change:
+overriding `allow_query` itself would force the operator to restate every other
+default.
 
-If `allow_tailscale` is false while a view holds CIDRs inside `100.64.0.0/10`,
-that view can never match, because the ACL rejects those clients before view
-resolution. This logs a warning rather than failing, since a subnet-router
-deployment may legitimately use other addressing. Because views are registry
-data rather than config, the check runs both at startup and whenever a rebuild
-changes them.
+The flag lives in the config file and is read at startup, so changing it
+requires a restart. That is stated wherever the UI suggests it.
+
+### Making refusals visible
+
+A closed default is only safe if its failure mode is loud. An ACL refusal is
+otherwise invisible — the operator sees a name that will not resolve and no
+indication why, which is the worst possible debugging experience.
+
+The root cause is that refusals are silent for *any* range, not just CGNAT, so
+the fix is general:
+
+- The ACL keeps two counters, refusals total and refusals from within
+  `100.64.0.0/10`, each with a last-seen timestamp. They are exposed on
+  `/stats` and shown on the dashboard.
+- Counters need only a count and a timestamp, not the source address, so this
+  costs nothing against `LOGGING.md` and does not depend on the client-IP flag.
+
+On top of that, one specific banner. The dashboard shows it when **either**
+condition holds:
+
+1. A query from `100.64.0.0/10` was refused within the last hour, or
+2. a view holds CIDRs inside `100.64.0.0/10` while the flag is off — that view
+   can never match, because the ACL rejects those clients before view
+   resolution.
+
+The banner names the condition, the config key, and the restart requirement:
+
+> **Tailscale clients are being refused.** 42 queries from `100.64.0.0/10` were
+> refused in the last hour. If you use Tailscale, set `allow_tailscale: true` in
+> the config file and restart KyDNS.
+
+It is not dismissible, because it clears itself: turn the flag on, or the
+refusals stop. Condition 2 also renders inline beside the offending view in the
+views editor, which is where an operator who just configured a tailnet view will
+be looking.
+
+Both conditions are logged as warnings as well. Because views are registry data
+rather than config, condition 2 is checked at startup and on any rebuild that
+changes views.
+
+The permitted ranges are logged at startup so the effective policy is visible.
 
 ### Authoritative answers
 
@@ -327,7 +363,7 @@ Under `/api/v1`:
 - `GET`/`POST` `/views`; `GET`/`PATCH`/`DELETE` `/views/{name}`
 - `GET` `/leases`; `POST` `/leases/{ip}/promote`
 - `GET` `/health` — per-service status
-- `GET` `/stats` — cache and upstream counters
+- `GET` `/stats` — cache, upstream, and ACL refusal counters
 - `GET` `/export?format=yaml|json`; `POST` `/import?mode=merge|replace`
 - `GET`/`POST`/`DELETE` `/tokens`
 - `POST` `/cache/flush`
@@ -346,7 +382,8 @@ codes: 400 validation, 401 unauthenticated, 403 unauthorized, 404 missing,
 
 Five screens:
 
-1. **Dashboard** — counts, upstream status, cache statistics, health summary.
+1. **Dashboard** — counts, upstream status, cache statistics, health summary,
+   ACL refusal counters, and the Tailscale-refusal banner when it applies.
 2. **Services** — table of name, addresses, aliases, health, and source, plus
    the add/edit form. Addresses are a repeatable row of address plus view, so
    the Tailscale case is one extra row rather than a second service.
@@ -356,7 +393,8 @@ Five screens:
    marked.
 5. **Settings** — views, tokens, import/export, cache flush, read-only config
    view. The views editor takes a name and a CIDR list, and shows which
-   addresses and records reference each view.
+   addresses and records reference each view. A view holding CGNAT CIDRs while
+   `allow_tailscale` is off is flagged inline as unreachable.
 
 Untagged addresses are labelled "all views" in the UI rather than shown with an
 empty view column, since blank would read as "broken" instead of "everywhere".
@@ -396,7 +434,8 @@ and lease tables.
 | `zone` | Precedence, PTR derivation, CNAME chains, collisions, per-view indexes, and untagged fallback |
 | View matcher | Longest-prefix selection, IPv4 and IPv6, no-match falling through to default, duplicate CIDR rejected at write time |
 | `dnsserver` | Real handler on `127.0.0.1:0`, queried with a `miekg/dns` client; a second in-process server acts as the fake upstream. Includes the split-horizon case: the same name queried from two source addresses returns two different answers |
-| ACL | Tailscale range refused with `allow_tailscale: false` and answered with it true |
+| ACL | Tailscale range refused under the default and answered with `allow_tailscale: true`; a refusal increments both counters |
+| Refusal banner | Fires on a recent CGNAT refusal, fires on a CGNAT view with the flag off, and stays absent when neither holds |
 | `cache` | TTL decrement, negative caching, eviction, and single-flight (concurrent misses produce exactly one upstream query) |
 | `store` | Migrations against a temp-file database |
 | `adminapi` | `httptest` against the real handler and a real temp store: auth required, validation errors, and an explicit test that export contains no hashes or credentials |
@@ -453,6 +492,11 @@ services:
 A LAN client matches no view and gets `192.168.1.20`. A tailnet client matches
 `tailnet` and gets `100.101.102.103` only — not both, since a view-tagged
 address for the name exists.
+
+This view requires `allow_tailscale: true`, which is off by default. With it
+off, tailnet clients are refused before view resolution and the view is flagged
+as unreachable in the UI — see
+[Making refusals visible](#making-refusals-visible).
 
 ### Matching
 
