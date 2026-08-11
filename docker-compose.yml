@@ -1,0 +1,109 @@
+services:
+  kydns:
+    build: .
+    image: kydns:latest
+    container_name: kydns
+    restart: unless-stopped
+
+    # Host networking: the container shares the host's network stack, so it
+    # binds port 53 directly with no port mapping. Note that it does NOT get
+    # its own IP address — it answers on the host's. See the macvlan block at
+    # the bottom of this file if you want a separate address on the LAN.
+    network_mode: host
+
+    # Binding port 53 needs this one capability. Everything else is dropped.
+    # The process runs as root only because a non-root process cannot use an
+    # inherited capability without file capabilities on the binary, which do
+    # not survive image transport reliably. One capability and no others is a
+    # smaller surface than the alternative complexity.
+    cap_drop: ["ALL"]
+    cap_add: ["NET_BIND_SERVICE"]
+    security_opt:
+      - no-new-privileges:true
+
+    volumes:
+      # The config is read once at startup. Read-only: KyDNS never writes it.
+      - ./kydns.yaml:/etc/kydns/kydns.yaml:ro
+      # Database plus the first-run setup and bootstrap tokens. Back this up.
+      #
+      # Use a named volume, not a host directory. Dropping ALL capabilities
+      # removes CAP_DAC_OVERRIDE, so the container cannot write into a
+      # directory owned by another user — a bind mount from your home
+      # directory fails with "unable to open database file". If you do want a
+      # bind mount, chown it to root first.
+      - kydns-data:/var/lib/kydns
+
+    # Structured logs go to stdout; let the platform collect them.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  kydns-data:
+
+# ---------------------------------------------------------------------------
+# Before you start
+#
+# 1. cp kydns.example.yaml kydns.yaml
+# 2. Set these in kydns.yaml, because the defaults assume a non-container host:
+#
+#      data_dir: /var/lib/kydns
+#      dns:
+#        listen: "0.0.0.0:53"        # default :53 also works
+#      admin:
+#        listen: "127.0.0.1:8053"    # host loopback only; see note below
+#
+#    With host networking, admin.listen 127.0.0.1 means the host's loopback:
+#    reachable from the host, not from the LAN. That is the secure default.
+#    To reach the UI from another machine, either tunnel over SSH or put a
+#    TLS-terminating reverse proxy in front of it. Binding 0.0.0.0:8053 exposes
+#    plain HTTP with a password on it to your whole network.
+#
+# 3. docker compose up -d
+# 4. docker compose logs kydns | grep setup-token
+#    Open http://<host>:8053/ and complete setup with that token.
+#
+# Port 53 conflicts
+#
+#   Most modern Linux hosts already have something on port 53. Check first:
+#
+#     sudo ss -ulpn 'sport = :53'
+#
+#   systemd-resolved usually binds 127.0.0.53:53. To free the port:
+#
+#     sudo mkdir -p /etc/systemd/resolved.conf.d
+#     printf '[Resolve]\nDNSStubListener=no\n' | \
+#       sudo tee /etc/systemd/resolved.conf.d/kydns.conf
+#     sudo systemctl restart systemd-resolved
+#
+#   dnsmasq, avahi, or an existing Pi-hole can also hold it.
+#
+# Giving KyDNS its own IP address instead
+#
+#   Host networking shares the host's address. For a distinct LAN IP, replace
+#   network_mode: host with a macvlan network. Adjust parent, subnet, and
+#   gateway to match your LAN:
+#
+#     services:
+#       kydns:
+#         networks:
+#           lan:
+#             ipv4_address: 192.168.1.53
+#
+#     networks:
+#       lan:
+#         driver: macvlan
+#         driver_opts:
+#           parent: eth0
+#         ipam:
+#           config:
+#             - subnet: 192.168.1.0/24
+#               gateway: 192.168.1.1
+#
+#   With macvlan set admin.listen to 0.0.0.0:8053, since 127.0.0.1 would then
+#   be the container's own loopback and unreachable from anywhere. A macvlan
+#   container also cannot talk to its own host by default, which matters if
+#   KyDNS health-checks a service running on that host.
+# ---------------------------------------------------------------------------
