@@ -25,9 +25,11 @@ var defaultAllowQuery = []string{
 }
 
 type Config struct {
-	DNS     DNSConfig   `yaml:"dns"`
-	Admin   AdminConfig `yaml:"admin"`
-	DataDir string      `yaml:"data_dir"`
+	DNS       DNSConfig       `yaml:"dns"`
+	Admin     AdminConfig     `yaml:"admin"`
+	Discovery DiscoveryConfig `yaml:"discovery"`
+	Health    HealthConfig    `yaml:"health"`
+	DataDir   string          `yaml:"data_dir"`
 
 	// explicitEmptyDomain records that the operator wrote an empty
 	// private_domain, which must fail rather than silently defaulting.
@@ -52,6 +54,19 @@ type DNSConfig struct {
 
 type AdminConfig struct {
 	Listen string `yaml:"listen"`
+}
+
+// DiscoveryConfig is off unless DHCPLeaseFile is set: KyDNS does not guess at
+// a lease file path.
+type DiscoveryConfig struct {
+	DHCPLeaseFile string `yaml:"dhcp_lease_file"`
+	Interval      int    `yaml:"interval"`
+}
+
+type HealthConfig struct {
+	Interval int `yaml:"interval"`
+	Timeout  int `yaml:"timeout"`
+	Workers  int `yaml:"workers"`
 }
 
 // domainProbe distinguishes an absent private_domain from an explicitly empty
@@ -105,6 +120,10 @@ func (c *Config) applyDefaults() {
 	setInt(&c.DNS.CacheMaxTTL, 3600)
 	setInt(&c.DNS.NegativeMaxTTL, 300)
 	setInt(&c.DNS.CacheEntries, 10000)
+	setInt(&c.Discovery.Interval, 30)
+	setInt(&c.Health.Interval, 30)
+	setInt(&c.Health.Timeout, 5)
+	setInt(&c.Health.Workers, 8)
 	if len(c.DNS.Upstreams) == 0 {
 		c.DNS.Upstreams = []string{"1.1.1.1:53", "9.9.9.9:53"}
 	}

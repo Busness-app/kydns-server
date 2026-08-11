@@ -18,6 +18,8 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
 	"github.com/yoshiofthewire/kydns-server/internal/config"
+	"github.com/yoshiofthewire/kydns-server/internal/discovery"
+	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -52,6 +54,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		reverse = append(reverse, p.Masked())
 	}
 
+	// Declared before the holder so the source closure captures the variable;
+	// it is assigned below, once the holder exists to rebuild.
+	var poller *discovery.Poller
+
 	holder := zone.NewHolder(func() (zone.Input, error) {
 		views, err := st.Views()
 		if err != nil {
@@ -65,8 +71,14 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		if err != nil {
 			return zone.Input{}, err
 		}
+		var leases []zone.Lease
+		if poller != nil {
+			for _, l := range poller.Leases() {
+				leases = append(leases, zone.Lease{Hostname: l.Hostname, Address: l.IP})
+			}
+		}
 		return zone.Input{
-			Views: views, Services: svcs, Records: recs,
+			Views: views, Services: svcs, Records: recs, Leases: leases,
 			Zone: cfg.PrivateFQDN(), ReverseZones: reverse,
 		}, nil
 	})
@@ -82,6 +94,17 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		}
 		return nil
 	})
+
+	if cfg.Discovery.DHCPLeaseFile != "" {
+		poller = discovery.NewPoller(
+			&dhcp.DnsmasqSource{Path: cfg.Discovery.DHCPLeaseFile},
+			time.Duration(cfg.Discovery.Interval)*time.Second,
+			func() {
+				if err := holder.Rebuild(); err != nil {
+					logger.Error("rebuild after lease change failed", "error", err)
+				}
+			}, logger)
+	}
 
 	if err := bootstrapToken(reg, cfg.DataDir, logger); err != nil {
 		return err
@@ -145,6 +168,9 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			errs <- err
 		}
 	}()
+	if poller != nil {
+		go poller.Run(ctx)
+	}
 	logger.Info("kydns started",
 		"dns", cfg.DNS.Listen, "admin", cfg.Admin.Listen, "zone", cfg.PrivateFQDN())
 
