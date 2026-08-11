@@ -1,0 +1,170 @@
+// Package config loads the KyDNS process configuration. It holds process
+// concerns only — listeners, upstreams, the ACL. Views are registry data.
+package config
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"os"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// TailscaleCGNAT is the range added to the ACL by DNSConfig.AllowTailscale.
+const TailscaleCGNAT = "100.64.0.0/10"
+
+// defaultAllowQuery is loopback plus RFC1918 and ULA. CGNAT is deliberately
+// absent: it is gated behind AllowTailscale.
+var defaultAllowQuery = []string{
+	"127.0.0.0/8", "::1/128",
+	"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+	"169.254.0.0/16", "fe80::/10", "fc00::/7",
+}
+
+type Config struct {
+	DNS     DNSConfig   `yaml:"dns"`
+	Admin   AdminConfig `yaml:"admin"`
+	DataDir string      `yaml:"data_dir"`
+
+	// explicitEmptyDomain records that the operator wrote an empty
+	// private_domain, which must fail rather than silently defaulting.
+	explicitEmptyDomain bool
+}
+
+type DNSConfig struct {
+	Listen         string   `yaml:"listen"`
+	PrivateDomain  string   `yaml:"private_domain"`
+	ReverseZones   []string `yaml:"reverse_zones"`
+	Upstreams      []string `yaml:"upstreams"`
+	AllowQuery     []string `yaml:"allow_query"`
+	AllowTailscale bool     `yaml:"allow_tailscale"`
+	TTL            int      `yaml:"ttl"`
+	CacheMinTTL    int      `yaml:"cache_min_ttl"`
+	CacheMaxTTL    int      `yaml:"cache_max_ttl"`
+	NegativeMaxTTL int      `yaml:"negative_max_ttl"`
+	CacheEntries   int      `yaml:"cache_entries"`
+	LogQueries     bool     `yaml:"log_queries"`
+	LogClientIP    bool     `yaml:"log_client_ip"`
+}
+
+type AdminConfig struct {
+	Listen string `yaml:"listen"`
+}
+
+// domainProbe distinguishes an absent private_domain from an explicitly empty
+// one, which plain unmarshalling into a string cannot.
+type domainProbe struct {
+	DNS struct {
+		PrivateDomain *string `yaml:"private_domain"`
+	} `yaml:"dns"`
+}
+
+// Load reads path, applies defaults, and validates. It returns an error rather
+// than a partially usable Config: the process must never run half-configured.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	var c Config
+	if err := yaml.Unmarshal(raw, &c); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	var probe domainProbe
+	_ = yaml.Unmarshal(raw, &probe)
+	c.explicitEmptyDomain = probe.DNS.PrivateDomain != nil && *probe.DNS.PrivateDomain == ""
+
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	return &c, nil
+}
+
+func (c *Config) applyDefaults() {
+	set := func(p *string, v string) {
+		if *p == "" {
+			*p = v
+		}
+	}
+	setInt := func(p *int, v int) {
+		if *p == 0 {
+			*p = v
+		}
+	}
+	set(&c.DNS.Listen, ":53")
+	set(&c.Admin.Listen, "127.0.0.1:8053")
+	if c.DNS.PrivateDomain == "" && !c.explicitEmptyDomain {
+		c.DNS.PrivateDomain = "home.arpa"
+	}
+	setInt(&c.DNS.TTL, 60)
+	setInt(&c.DNS.CacheMinTTL, 5)
+	setInt(&c.DNS.CacheMaxTTL, 3600)
+	setInt(&c.DNS.NegativeMaxTTL, 300)
+	setInt(&c.DNS.CacheEntries, 10000)
+	if len(c.DNS.Upstreams) == 0 {
+		c.DNS.Upstreams = []string{"1.1.1.1:53", "9.9.9.9:53"}
+	}
+	if len(c.DNS.AllowQuery) == 0 {
+		c.DNS.AllowQuery = append([]string(nil), defaultAllowQuery...)
+	}
+}
+
+func (c *Config) validate() error {
+	if c.DataDir == "" {
+		return errors.New("data_dir is required")
+	}
+	if c.DNS.PrivateDomain == "" {
+		return errors.New("dns.private_domain must not be empty")
+	}
+	for _, s := range c.DNS.AllowQuery {
+		if _, err := netip.ParsePrefix(s); err != nil {
+			return fmt.Errorf("dns.allow_query %q: %w", s, err)
+		}
+	}
+	for _, s := range c.DNS.ReverseZones {
+		if _, err := netip.ParsePrefix(s); err != nil {
+			return fmt.Errorf("dns.reverse_zones %q: %w", s, err)
+		}
+	}
+	for _, s := range c.DNS.Upstreams {
+		host, port, err := net.SplitHostPort(s)
+		if err != nil || host == "" || port == "" {
+			return fmt.Errorf("dns.upstreams %q: must be host:port", s)
+		}
+		if _, err := net.LookupPort("udp", port); err != nil {
+			return fmt.Errorf("dns.upstreams %q: bad port", s)
+		}
+	}
+	if c.DNS.CacheMinTTL > c.DNS.CacheMaxTTL {
+		return errors.New("dns.cache_min_ttl exceeds dns.cache_max_ttl")
+	}
+	return nil
+}
+
+// PrivateFQDN returns the private domain as a lowercased FQDN with a trailing
+// dot, the form miekg/dns uses throughout.
+func (c *Config) PrivateFQDN() string {
+	return strings.ToLower(c.DNS.PrivateDomain) + "."
+}
+
+// EffectiveAllowQuery is AllowQuery plus the CGNAT range when AllowTailscale
+// is on. Parsing here means callers never re-parse strings.
+func (c *Config) EffectiveAllowQuery() ([]netip.Prefix, error) {
+	list := append([]string(nil), c.DNS.AllowQuery...)
+	if c.DNS.AllowTailscale {
+		list = append(list, TailscaleCGNAT)
+	}
+	out := make([]netip.Prefix, 0, len(list))
+	for _, s := range list {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return nil, fmt.Errorf("allow_query %q: %w", s, err)
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
+}
