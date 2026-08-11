@@ -1,0 +1,11 @@
+1786000000 aa:bb:cc:dd:ee:01 192.168.1.20 kypost 01:aa:bb:cc:dd:ee:01
+1786000000 aa:bb:cc:dd:ee:02 192.168.1.21 * 01:aa:bb:cc:dd:ee:02
+1786000000 aa:bb:cc:dd:ee:03 192.168.1.22 Living-Room-TV 01:aa:bb:cc:dd:ee:03
+1786000000 aa:bb:cc:dd:ee:04 192.168.1.23 host_with_underscore 01:aa:bb:cc:dd:ee:04
+1786000000 aa:bb:cc:dd:ee:05 192.168.1.24 has.a.dot 01:aa:bb:cc:dd:ee:05
+1 aa:bb:cc:dd:ee:06 192.168.1.25 expired-host 01:aa:bb:cc:dd:ee:06
+1786000000 aa:bb:cc:dd:ee:07 192.168.1.26 nas 01:aa:bb:cc:dd:ee:07
+1786000100 aa:bb:cc:dd:ee:08 192.168.1.27 nas 01:aa:bb:cc:dd:ee:08
+1786000000 aa:bb:cc:dd:ee:09 not-an-ip badaddr 01:aa:bb:cc:dd:ee:09
+garbage line with too few
+1786000000 aa:bb:cc:dd:ee:0a fd00::5 v6host 01:aa:bb:cc:dd:ee:0a
