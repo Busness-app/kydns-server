@@ -16,10 +16,12 @@ import (
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
+	"github.com/yoshiofthewire/kydns-server/internal/auth"
 	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/yoshiofthewire/kydns-server/internal/web"
 	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
@@ -108,9 +110,31 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Logger:      logger,
 	})
 
+	// One mux serves both transports: the API owns /api/v1/... and the web
+	// server owns everything else.
+	api := adminapi.NewAPI(reg, acl, cache)
+	mux := http.NewServeMux()
+	api.Routes(mux)
+
+	setupToken, err := ensureSetupToken(st, cfg.DataDir, logger)
+	if err != nil {
+		return err
+	}
+	web.New(web.Options{
+		Store: st, Registry: reg, API: api,
+		Sessions:       auth.NewSessions(time.Hour, 12*time.Hour),
+		Backoff:        auth.NewBackoff(),
+		ACL:            acl,
+		Cache:          cache,
+		AllowTailscale: cfg.DNS.AllowTailscale,
+		Upstreams:      cfg.DNS.Upstreams,
+		SetupToken:     setupToken,
+		Logger:         logger,
+	}).Routes(mux)
+
 	adminSrv := &http.Server{
 		Addr:              cfg.Admin.Listen,
-		Handler:           adminapi.NewAPI(reg, acl, cache).Handler(),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -181,11 +205,27 @@ func warnUnreachableViews(st *store.Store, cfg *config.Config, logger *slog.Logg
 	}
 }
 
-// randomHex is used for the bootstrap token in tests and future setup tokens.
-func randomHex(n int) (string, error) {
-	buf := make([]byte, n)
+// ensureSetupToken mints the one-time token that gates /setup, unless an admin
+// already exists. It is logged and written to the data dir, because the
+// operator needs it from a terminal before any UI is reachable.
+func ensureSetupToken(st *store.Store, dataDir string, logger *slog.Logger) (string, error) {
+	has, err := st.HasAdmin()
+	if err != nil {
+		return "", err
+	}
+	if has {
+		return "", nil // no admin creation possible, so no token needed
+	}
+	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(buf), nil
+	token := hex.EncodeToString(buf)
+	path := filepath.Join(dataDir, "setup-token")
+	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	logger.Info("no admin account yet: open the web UI and use this setup token",
+		"token", token, "path", path)
+	return token, nil
 }

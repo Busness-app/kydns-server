@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
@@ -26,13 +27,17 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
+	reg := registry.New(st, "home.arpa.", func() error { return nil })
+	acl := dnsserver.NewACL([]netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")})
+	cache := dnsserver.NewCache(100, 5, 3600, 300)
 	srv := New(Options{
 		Store:      st,
-		Registry:   registry.New(st, "home.arpa.", func() error { return nil }),
+		Registry:   reg,
+		API:        adminapi.NewAPI(reg, acl, cache),
 		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
 		Backoff:    auth.NewBackoff(),
-		ACL:        dnsserver.NewACL([]netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")}),
-		Cache:      dnsserver.NewCache(100, 5, 3600, 300),
+		ACL:        acl,
+		Cache:      cache,
 		Upstreams:  []string{"1.1.1.1:53"},
 		SetupToken: "setup-me",
 	})

@@ -1,0 +1,85 @@
+{{define "page"}}
+{{with .NewToken}}
+<div class="banner">
+  <strong>Copy this token now.</strong>
+  <p>It is shown once and cannot be recovered.</p>
+  <p><code>{{.}}</code></p>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Views</h3>
+  <table class="grid">
+    <tr><th>Name</th><th>Subnets</th><th>Used by</th><th></th></tr>
+    {{range .Views}}
+    <tr>
+      <td>{{.Name}}{{if .Unreachable}} <span class="badge warn">unreachable</span>{{end}}</td>
+      <td>{{.Subnets}}</td>
+      <td>{{.References}}</td>
+      <td>
+        <form method="post" action="/settings/views/delete">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+      <tr><td colspan="4" class="muted">No views. Every client gets the same answers.</td></tr>
+    {{end}}
+  </table>
+  {{range .Views}}{{if .Unreachable}}
+  <p class="error">The view {{.Name}} covers Tailscale addresses, but the query ACL
+     refuses that range, so those clients are rejected before the view is considered.
+     Set <code>allow_tailscale: true</code> in the config file and restart KyDNS.</p>
+  {{end}}{{end}}
+  <form class="stack" method="post" action="/settings/views/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="vname">Name</label>
+    <input id="vname" name="name" type="text" placeholder="tailnet">
+    <label for="vsubnets">Subnets (comma separated)</label>
+    <input id="vsubnets" name="subnets" type="text" placeholder="100.64.0.0/10">
+    <button type="submit">Add view</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>API tokens</h3>
+  <table class="grid">
+    <tr><th>Label</th><th>Created</th><th>Last used</th><th></th></tr>
+    {{range .Tokens}}
+    <tr>
+      <td>{{.Label}}</td><td>{{.CreatedAt}}</td>
+      <td>{{if .LastUsedAt}}{{.LastUsedAt}}{{else}}<span class="muted">never</span>{{end}}</td>
+      <td>
+        <form method="post" action="/settings/tokens/delete">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button class="danger" type="submit">Revoke</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+      <tr><td colspan="4" class="muted">No API tokens.</td></tr>
+    {{end}}
+  </table>
+  <form class="stack" method="post" action="/settings/tokens/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="tlabel">Label</label>
+    <input id="tlabel" name="label" type="text" placeholder="laptop">
+    <button type="submit">Create token</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Backup and maintenance</h3>
+  <p><a href="/settings/export?format=yaml">Download YAML export</a> &middot;
+     <a href="/settings/export?format=json">Download JSON export</a></p>
+  <p class="muted">Exports contain views, services, and records. They never
+     contain passwords or tokens.</p>
+  <form method="post" action="/settings/cache/flush">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button class="ghost" type="submit">Flush DNS cache</button>
+  </form>
+</div>
+{{end}}
