@@ -121,25 +121,31 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 					Address string `json:"address"`
 					View    string `json:"view"`
 				} `json:"addresses"`
+				ProxyAddress  string `json:"proxy_address"`
+				RouteViaProxy bool   `json:"route_via_proxy"`
 			} `json:"services"`
 		}
 		if err := c.Do("GET", "/api/v1/services", nil, &out); err != nil {
 			return fail(stderr, err)
 		}
 		for _, s := range out.Services {
+			suffix := ""
+			if s.RouteViaProxy {
+				suffix = " -> " + s.ProxyAddress
+			}
 			for _, a := range s.Addresses {
 				view := a.View
 				if view == "" {
 					// Blank reads as broken; "all views" reads as everywhere.
 					view = "all views"
 				}
-				fmt.Fprintf(stdout, "%-6d %-24s %-18s %s\n", s.ID, s.Name, a.Address, view)
+				fmt.Fprintf(stdout, "%-6d %-24s %-18s %s%s\n", s.ID, s.Name, a.Address, view, suffix)
 			}
 		}
 		return 0
 
 	case "add":
-		const addUsage = "usage: kydns service add <name> --address <ip> [--view v] [--alias a,b] [--check url]"
+		const addUsage = "usage: kydns service add <name> --address <ip> [--view v] [--alias a,b] [--check url] [--proxy ip] [--via-proxy]"
 		// The documented form puts the name before the flags, but flag.Parse
 		// stops at the first positional. Peel the name off first.
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
@@ -153,6 +159,8 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		view := fs.String("view", "", "view name; empty means all views")
 		alias := fs.String("alias", "", "comma-separated aliases")
 		check := fs.String("check", "", "health check URL")
+		proxy := fs.String("proxy", "", "send DNS for this service to this address instead")
+		viaProxy := fs.Bool("via-proxy", false, "answer with --proxy rather than the service's own address")
 		if err := fs.Parse(args[2:]); err != nil {
 			return 2
 		}
@@ -169,6 +177,12 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		}
 		if *alias != "" {
 			body["aliases"] = strings.Split(*alias, ",")
+		}
+		if *proxy != "" {
+			body["proxy_address"] = *proxy
+		}
+		if *viaProxy {
+			body["route_via_proxy"] = true
 		}
 		if err := c.Do("POST", "/api/v1/services", body, nil); err != nil {
 			return fail(stderr, err)

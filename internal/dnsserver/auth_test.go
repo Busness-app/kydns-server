@@ -28,7 +28,7 @@ func testSnap(t *testing.T) *zone.Snapshot {
 			{Name: "mail.home.arpa.", Type: "CNAME", Value: "kypost.home.arpa."},
 			{Name: "out.home.arpa.", Type: "CNAME", Value: "example.com."},
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

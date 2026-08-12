@@ -52,6 +52,8 @@ type serviceDTO struct {
 	Aliases       []string     `json:"aliases,omitempty" yaml:"aliases,omitempty"`
 	CheckURL      string       `json:"check_url,omitempty" yaml:"check_url,omitempty"`
 	CheckInsecure bool         `json:"check_insecure,omitempty" yaml:"check_insecure,omitempty"`
+	ProxyAddress  string       `json:"proxy_address,omitempty" yaml:"proxy_address,omitempty"`
+	RouteViaProxy bool         `json:"route_via_proxy,omitempty" yaml:"route_via_proxy,omitempty"`
 }
 
 type recordDTO struct {
@@ -181,7 +183,10 @@ func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 }
 
 func toServiceDTO(s store.Service) serviceDTO {
-	d := serviceDTO{ID: s.ID, Name: s.Name, Aliases: s.Aliases, CheckURL: s.CheckURL, CheckInsecure: s.CheckInsecure}
+	d := serviceDTO{
+		ID: s.ID, Name: s.Name, Aliases: s.Aliases, CheckURL: s.CheckURL, CheckInsecure: s.CheckInsecure,
+		ProxyAddress: s.ProxyAddress, RouteViaProxy: s.RouteViaProxy,
+	}
 	for _, a := range s.Addresses {
 		d.Addresses = append(d.Addresses, addressDTO{Address: a.Address, View: a.View})
 	}
@@ -189,7 +194,10 @@ func toServiceDTO(s store.Service) serviceDTO {
 }
 
 func fromServiceDTO(d serviceDTO) store.Service {
-	s := store.Service{ID: d.ID, Name: d.Name, Aliases: d.Aliases, CheckURL: d.CheckURL, CheckInsecure: d.CheckInsecure}
+	s := store.Service{
+		ID: d.ID, Name: d.Name, Aliases: d.Aliases, CheckURL: d.CheckURL, CheckInsecure: d.CheckInsecure,
+		ProxyAddress: d.ProxyAddress, RouteViaProxy: d.RouteViaProxy,
+	}
 	for _, a := range d.Addresses {
 		s.Addresses = append(s.Addresses, store.Address{Address: a.Address, View: a.View})
 	}
@@ -463,11 +471,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		for _, rec := range doc.Records {
 			recs = append(recs, store.Record{Name: rec.Name, Type: rec.Type, Value: rec.Value, View: rec.View})
 		}
-		if err := a.reg.Store().ReplaceAll(views, svcs, recs); err != nil {
-			writeRegistryErr(w, err)
-			return
-		}
-		if err := a.reg.Rebuild(); err != nil {
+		if err := a.reg.ReplaceAll(views, svcs, recs); err != nil {
 			writeRegistryErr(w, err)
 			return
 		}

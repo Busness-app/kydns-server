@@ -7,7 +7,7 @@
       {{range $i, $a := .Addresses}}
       <tr>
         <td>{{if eq $i 0}}{{$svc.Name}}{{end}}</td>
-        <td>{{$a.Address}}</td>
+        <td>{{$a.Address}}{{if and (eq $i 0) $svc.RouteViaProxy}} <span class="badge warn">&rarr; {{$svc.ProxyAddress}}</span>{{end}}</td>
         <td>{{if $a.Tagged}}<span class="badge accent">{{$a.View}}</span>
             {{else}}<span class="muted">{{$a.View}}</span>{{end}}</td>
         <td>{{if eq $i 0}}{{$svc.Aliases}}{{end}}</td>
@@ -46,6 +46,13 @@
     <input id="aliases" name="aliases" type="text" placeholder="webmail">
     <label for="check_url">Health check URL (optional)</label>
     <input id="check_url" name="check_url" type="text" placeholder="https://kypost.home.arpa/health">
+    <label for="proxy_address">Proxy address (optional)</label>
+    <input id="proxy_address" name="proxy_address" type="text" placeholder="192.168.1.20">
+    <label><input name="route_via_proxy" type="checkbox"> Send DNS to the proxy</label>
+    <p class="muted">Clients resolve to the proxy while the health check above
+       still targets the service itself. Check the service directly, not the
+       proxy — a proxy returning 502 for a dead backend still looks healthy.</p>
+    <label><input name="check_insecure" type="checkbox"> Accept a self-signed certificate on the check</label>
     <button type="submit">Add service</button>
   </form>
 </div>

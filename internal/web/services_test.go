@@ -161,3 +161,36 @@ func TestServiceFormListsViews(t *testing.T) {
 		t.Error("view dropdown does not offer the untagged option")
 	}
 }
+
+func TestServiceFormAcceptsProxyFields(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+
+	postForm(t, h, "/services/new", url.Values{
+		"name":            {"kypost"},
+		"address":         {"192.168.1.30"},
+		"proxy_address":   {"192.168.1.20"},
+		"route_via_proxy": {"on"},
+		"check_insecure":  {"on"},
+		"csrf_token":      {csrf},
+	}, c)
+
+	svcs, err := srv.o.Registry.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 {
+		t.Fatalf("services = %d, want 1", len(svcs))
+	}
+	if svcs[0].ProxyAddress != "192.168.1.20" || !svcs[0].RouteViaProxy {
+		t.Errorf("= %+v, want the proxy fields set", svcs[0])
+	}
+	if !svcs[0].CheckInsecure {
+		t.Error("check_insecure was not applied; it had no control before this change")
+	}
+
+	// The indirection has to be visible on the list, not buried in an edit.
+	body := page(t, h, "/services", c)
+	if !strings.Contains(body, "192.168.1.20") {
+		t.Error("services table does not show the proxy address on a routed row")
+	}
+}

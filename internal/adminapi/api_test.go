@@ -309,6 +309,93 @@ func TestExportImportRoundTripPreservesViews(t *testing.T) {
 	}
 }
 
+func TestServiceProxyFieldsRoundTripThroughTheAPI(t *testing.T) {
+	h, tok := newAPI(t)
+
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.30"}],
+		  "proxy_address":"192.168.1.20","route_via_proxy":true}`)
+
+	rec := do(t, h, "GET", "/api/v1/services", tok, "")
+	var got struct {
+		Services []struct {
+			Name          string `json:"name"`
+			ProxyAddress  string `json:"proxy_address"`
+			RouteViaProxy bool   `json:"route_via_proxy"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Services) != 1 {
+		t.Fatalf("services = %d, want 1", len(got.Services))
+	}
+	if got.Services[0].ProxyAddress != "192.168.1.20" || !got.Services[0].RouteViaProxy {
+		t.Errorf("= %+v, want the proxy fields", got.Services[0])
+	}
+
+	// Export must carry them, or a backup silently loses the routing.
+	rec = do(t, h, "GET", "/api/v1/export?format=yaml", tok, "")
+	for _, want := range []string{"proxy_address", "route_via_proxy"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("export does not contain %q", want)
+		}
+	}
+}
+
+// A replace-mode import must not bypass the same validation PutService
+// applies one at a time.
+// A rejected replace must leave pre-existing data alone, not wipe it and
+// half-restore. The store started empty would only catch the bad service
+// being written, not the registry being wiped out from under it.
+func TestImportReplaceRejectsRoutedServiceWithoutProxyAddress(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok, `{"name":"keeper","addresses":[{"address":"192.168.1.9"}]}`)
+
+	body := `{"views":[],"services":[{"name":"kypost","addresses":[{"address":"192.168.1.30"}],
+	  "route_via_proxy":true}],"records":[]}`
+	rec := do(t, h, "POST", "/api/v1/import?mode=replace", tok, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("import = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "proxy_address_required") {
+		t.Errorf("body = %s, want proxy_address_required", rec.Body)
+	}
+
+	got := do(t, h, "GET", "/api/v1/services", tok, "").Body.String()
+	if strings.Contains(got, "kypost") {
+		t.Errorf("rejected import still wrote the service: %s", got)
+	}
+	if !strings.Contains(got, "keeper") {
+		t.Errorf("rejected import wiped pre-existing data: %s", got)
+	}
+}
+
+// A validly routed service must still round-trip through replace.
+func TestImportReplaceAcceptsRoutedServiceWithProxyAddress(t *testing.T) {
+	h, tok := newAPI(t)
+	body := `{"views":[],"services":[{"name":"kypost","addresses":[{"address":"192.168.1.30"}],
+	  "proxy_address":"192.168.1.20","route_via_proxy":true}],"records":[]}`
+	if rec := do(t, h, "POST", "/api/v1/import?mode=replace", tok, body); rec.Code != http.StatusOK {
+		t.Fatalf("import = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec := do(t, h, "GET", "/api/v1/services", tok, "")
+	var got struct {
+		Services []struct {
+			Name          string `json:"name"`
+			ProxyAddress  string `json:"proxy_address"`
+			RouteViaProxy bool   `json:"route_via_proxy"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Services) != 1 || got.Services[0].ProxyAddress != "192.168.1.20" || !got.Services[0].RouteViaProxy {
+		t.Errorf("= %+v, want the routed service to survive replace", got.Services)
+	}
+}
+
 func TestTokensEndpointNeverReturnsPlaintext(t *testing.T) {
 	h, tok := newAPI(t)
 	rec := do(t, h, "POST", "/api/v1/tokens", tok, `{"label":"second"}`)

@@ -29,7 +29,9 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 
 ## What works today
 
-- First-class services, aliases, A, AAAA, CNAME, and derived reverse records.
+- First-class services, each with its own address records and aliases, plus
+  derived reverse records. Manual A, AAAA, and CNAME records for anything a
+  service doesn't cover.
 - A configurable private domain, `home.arpa` by default.
 - Per-subnet views: one name can answer differently on the LAN and over a VPN.
 - DHCP lease discovery from dnsmasq, with promote-to-service.
@@ -141,6 +143,50 @@ view that can never match, and the startup log warns.
 
 To give one name a LAN answer and a tailnet answer, add a view for
 `100.64.0.0/10` and give the service a second address tagged with it.
+
+### Putting a service behind a reverse proxy
+
+A service speaking plain HTTP behind a proxy that terminates TLS wants two
+different addresses: clients should reach the proxy, monitoring should reach
+the service.
+
+Register the service at its **real** address, set the proxy address, and tick
+"Send DNS to the proxy":
+
+```sh
+kydns service add kypost \
+  --address 192.168.1.30 \
+  --proxy 192.168.1.20 --via-proxy \
+  --check http://192.168.1.30:8080/health
+```
+
+`kypost.home.arpa` now answers `192.168.1.20`, and so does every alias. The
+reverse record for `192.168.1.30` still names `kypost.home.arpa`, so several
+services behind one proxy each keep a correct PTR.
+
+Point the health check at the service, not the proxy. A proxy returning 502 for
+a dead backend still answers a prober perfectly, so checking the proxy tells you
+only that the proxy is up.
+
+Routing is chosen when the service is created; neither the web UI nor the CLI
+can change it afterward — both only add services. To change it later, call
+`PATCH /api/v1/services/{id}` with the **complete** service object. That
+endpoint replaces the service rather than merging into it, so any field you
+leave out comes back cleared. A body of
+
+```json
+{"name": "grafana", "addresses": [{"address": "192.168.1.60"}]}
+```
+
+passes validation and returns 200, but silently drops `aliases`, `check_url`,
+`check_insecure`, `proxy_address`, and `route_via_proxy` — none of them were
+in the body. To edit safely, `GET /api/v1/services/{id}`, change the fields
+you want, and `PATCH` the whole object back.
+
+A service with both an IPv4 and an IPv6 address behind one proxy answers `A`
+only: `--proxy` takes one address, so the `AAAA` query gets `NODATA` instead of
+the service's own IPv6 address. Give the service just the address family the
+proxy needs, or leave routing off if both must keep resolving.
 
 ## Running it
 

@@ -1,7 +1,10 @@
 package zone
 
 import (
+	"bytes"
+	"log/slog"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -16,7 +19,7 @@ func build(t *testing.T, in Input) *Snapshot {
 			netip.MustParsePrefix("100.64.0.0/10"),
 		}
 	}
-	s, err := Build(in)
+	s, err := Build(in, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +170,7 @@ func TestCNAMEConflictRejected(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Build(Input{Zone: "home.arpa.", Views: tailnetView(), Records: records})
+			_, err := Build(Input{Zone: "home.arpa.", Views: tailnetView(), Records: records}, nil)
 			if err == nil {
 				t.Fatal("Build() error = nil, want a CNAME conflict")
 			}
@@ -248,5 +251,220 @@ func TestUnknownViewFallsBackToDefault(t *testing.T) {
 	got := values(s.Lookup("does-not-exist", "kypost.home.arpa."))
 	if len(got) != 1 || got[0] != "192.168.1.20" {
 		t.Errorf("= %v, want the default view's answer", got)
+	}
+}
+
+// The headline behaviour: clients are sent to the proxy, reverse lookups still
+// name the real host.
+func TestProxyRoutedServiceAnswersWithTheProxy(t *testing.T) {
+	snap := build(t, Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses:     []store.Address{{Address: "192.168.1.30"}},
+			Aliases:       []string{"webmail"},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+	})
+	idx := snap.Views[""]
+
+	for _, name := range []string{"kypost.home.arpa.", "webmail.home.arpa."} {
+		rrs := idx.Forward[name]
+		if len(rrs) != 1 || rrs[0].Value != "192.168.1.20" {
+			t.Errorf("%s = %v, want the proxy address", name, rrs)
+		}
+	}
+	if got := idx.Reverse["30.1.168.192.in-addr.arpa."]; got != "kypost.home.arpa." {
+		t.Errorf("reverse for the real address = %q, want kypost.home.arpa.", got)
+	}
+	if got := idx.Reverse["20.1.168.192.in-addr.arpa."]; got != "" {
+		t.Errorf("reverse for the proxy address = %q, want none", got)
+	}
+}
+
+func TestUnroutedServiceIgnoresTheProxyAddress(t *testing.T) {
+	snap := build(t, Input{
+		Zone: "home.arpa.",
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses:    []store.Address{{Address: "192.168.1.30"}},
+			ProxyAddress: "192.168.1.20", // stored, routing off
+		}},
+	})
+	rrs := snap.Views[""].Forward["kypost.home.arpa."]
+	if len(rrs) != 1 || rrs[0].Value != "192.168.1.30" {
+		t.Errorf("= %v, want the real address while routing is off", rrs)
+	}
+}
+
+// Routing decides what an answer says, never whether one exists.
+func TestProxyDoesNotCreateAServiceInAViewItIsAbsentFrom(t *testing.T) {
+	snap := build(t, Input{
+		Zone:  "home.arpa.",
+		Views: []store.View{{Name: "lan", Subnets: []string{"192.168.1.0/24"}}},
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses:     []store.Address{{Address: "100.64.0.5", View: "tailnet"}},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+	})
+	if rrs := snap.Views["lan"].Forward["kypost.home.arpa."]; len(rrs) != 0 {
+		t.Errorf("lan view = %v, want nothing: the service has no lan address", rrs)
+	}
+}
+
+// The property the feature exists for: a proxied service answers identically
+// in every view, while its reverse record still tracks the view-selected
+// real address (spec Part 5 bullet 4).
+func TestProxyAnswersIdenticallyAcrossViewsWithPerViewReverse(t *testing.T) {
+	s := build(t, Input{
+		Views: []store.View{
+			{Name: "lan", Subnets: []string{"192.168.1.0/24"}},
+			{Name: "vpn", Subnets: []string{"100.64.0.0/10"}},
+		},
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses: []store.Address{
+				{Address: "192.168.1.30", View: "lan"},
+				{Address: "100.101.102.103", View: "vpn"},
+			},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+	})
+
+	for _, view := range []string{"lan", "vpn"} {
+		got := values(s.Lookup(view, "kypost.home.arpa."))
+		if len(got) != 1 || got[0] != "192.168.1.20" {
+			t.Errorf("%s view forward = %v, want only the proxy address", view, got)
+		}
+	}
+	if got := s.LookupPTR("lan", "30.1.168.192.in-addr.arpa."); got != "kypost.home.arpa." {
+		t.Errorf("lan PTR = %q, want kypost.home.arpa.", got)
+	}
+	if got := s.LookupPTR("vpn", "103.102.101.100.in-addr.arpa."); got != "kypost.home.arpa." {
+		t.Errorf("vpn PTR = %q, want kypost.home.arpa.", got)
+	}
+	// Each view's reverse must know only its own real address, not the
+	// other view's.
+	if got := s.LookupPTR("lan", "103.102.101.100.in-addr.arpa."); got != "" {
+		t.Errorf("lan PTR for the vpn address = %q, want empty", got)
+	}
+	if got := s.LookupPTR("vpn", "30.1.168.192.in-addr.arpa."); got != "" {
+		t.Errorf("vpn PTR for the lan address = %q, want empty", got)
+	}
+}
+
+// The bug this fixes: two services on one address silently lose a reverse
+// record. Resolution stays last-writer-wins, but it must be visible.
+func TestSharedAddressLogsAReverseConflict(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Services: []store.Service{
+			{ID: 1, Name: "a", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+			{ID: 2, Name: "b", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+		},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"192.168.1.30", "a.home.arpa.", "b.home.arpa."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log %q does not mention %q", out, want)
+		}
+	}
+}
+
+// A lease and a service at the same address is one ordinary host, not a
+// conflict: the service is expected to overwrite the lease's PTR, and that
+// must stay silent.
+func TestLeaseAndServiceSharingAnAddressLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Leases:       []Lease{{Hostname: "other", Address: "192.168.1.30"}},
+		Services: []store.Service{
+			{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+		},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("log = %q, want nothing for a lease overwritten by its own service", out)
+	}
+}
+
+// A manual record at a routed service's name silently hands clients the
+// real address while the badge still claims the proxy; that must be logged.
+func TestManualRecordDisplacingRoutedServiceLogsAWarning(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone: "home.arpa.",
+		Services: []store.Service{{
+			ID: 1, Name: "grafana",
+			Addresses:     []store.Address{{Address: "192.168.1.30"}},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+		Records: []store.Record{{Name: "grafana.home.arpa.", Type: "A", Value: "192.168.1.60"}},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"grafana", "192.168.1.60", "192.168.1.20"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log %q does not mention %q", out, want)
+		}
+	}
+}
+
+// The same displacement against an unrouted service is ordinary
+// manual-beats-service precedence and must stay silent.
+func TestManualRecordDisplacingUnroutedServiceLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone: "home.arpa.",
+		Services: []store.Service{{
+			ID: 1, Name: "grafana",
+			Addresses: []store.Address{{Address: "192.168.1.30"}},
+		}},
+		Records: []store.Record{{Name: "grafana.home.arpa.", Type: "A", Value: "192.168.1.60"}},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("log = %q, want nothing for a displaced service with routing off", out)
+	}
+}
+
+// A multi-homed service (two addresses, one service) writes two distinct PTRs
+// and must never be mistaken for two services sharing one address.
+func TestMultiHomedServiceLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Services: []store.Service{
+			{ID: 1, Name: "nas", Addresses: []store.Address{
+				{Address: "192.168.1.30"},
+				{Address: "192.168.1.31"},
+			}},
+		},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("log = %q, want nothing for one service with two addresses", out)
 	}
 }

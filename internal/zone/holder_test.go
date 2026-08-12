@@ -19,7 +19,7 @@ func TestRebuildSwapsSnapshot(t *testing.T) {
 				ID: 1, Name: "kypost", Addresses: []store.Address{{Address: addr}},
 			}},
 		}, nil
-	})
+	}, nil)
 	if h.Current() != nil {
 		t.Fatal("Current() before first Rebuild should be nil")
 	}
@@ -39,7 +39,7 @@ func TestRebuildSwapsSnapshot(t *testing.T) {
 }
 
 func TestGenerationIncrementsPerRebuild(t *testing.T) {
-	h := NewHolder(func() (Input, error) { return Input{Zone: "home.arpa."}, nil })
+	h := NewHolder(func() (Input, error) { return Input{Zone: "home.arpa."}, nil }, nil)
 	for want := uint32(1); want <= 3; want++ {
 		if err := h.Rebuild(); err != nil {
 			t.Fatal(err)
@@ -61,7 +61,7 @@ func TestFailedRebuildKeepsPreviousSnapshot(t *testing.T) {
 			Zone:     "home.arpa.",
 			Services: []store.Service{{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}}},
 		}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestInvalidInputFailsBuild(t *testing.T) {
 				{Name: "mail.home.arpa.", Type: "CNAME", Value: "nas.home.arpa."},
 			},
 		}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err == nil {
 		t.Fatal("Rebuild() error = nil, want CNAME conflict")
 	}
@@ -107,7 +107,7 @@ func TestGenerationAdvancesAcrossFailure(t *testing.T) {
 			return Input{}, errors.New("nope")
 		}
 		return Input{Zone: "home.arpa."}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestConcurrentReadsDuringRebuild(t *testing.T) {
 			Zone:     "home.arpa.",
 			Services: []store.Service{{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}}},
 		}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

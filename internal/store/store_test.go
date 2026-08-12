@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -206,5 +207,169 @@ func TestDeleteServiceCascades(t *testing.T) {
 		Aliases:   []string{"webmail"},
 	}); err != nil {
 		t.Errorf("alias not released by cascade: %v", err)
+	}
+}
+
+// A database created before proxy routing existed must gain the new columns
+// on open, not fail. This is the first schema change since v1 shipped with
+// live data in it.
+func TestOpenMigratesAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// Build a v1-shaped services table by hand, with a row in it.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE services (
+		id             INTEGER PRIMARY KEY,
+		name           TEXT NOT NULL UNIQUE,
+		check_url      TEXT NOT NULL DEFAULT '',
+		check_insecure INTEGER NOT NULL DEFAULT 0,
+		created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO services(name) VALUES('legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on a pre-migration database: %v", err)
+	}
+
+	svcs, err := s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].Name != "legacy" {
+		t.Fatalf("Services() = %v, want the pre-existing row preserved", svcs)
+	}
+	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
+		t.Errorf("migrated row = %+v, want the new fields at their zero values", svcs[0])
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening an already-migrated database is the path a live deployment
+	// takes on every restart after the upgrade; it must not try to reapply
+	// the ALTERs or lose the row.
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen of a migrated database: %v", err)
+	}
+	defer s.Close()
+	svcs, err = s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].Name != "legacy" {
+		t.Fatalf("Services() after reopen = %v, want the row still there", svcs)
+	}
+	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
+		t.Errorf("reopened row = %+v, want the new fields at their zero values", svcs[0])
+	}
+}
+
+func TestServiceRoundTripsProxyFields(t *testing.T) {
+	s := open(t)
+	id, err := s.PutService(Service{
+		Name:          "kypost",
+		Addresses:     []Address{{Address: "192.168.1.30"}},
+		ProxyAddress:  "192.168.1.20",
+		RouteViaProxy: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Service(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyAddress != "192.168.1.20" || !got.RouteViaProxy {
+		t.Errorf("Service() = %+v, want the proxy fields preserved", got)
+	}
+
+	// Turning routing off keeps the address, which is the point of two fields.
+	got.RouteViaProxy = false
+	if _, err := s.PutService(got); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Service(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyAddress != "192.168.1.20" || got.RouteViaProxy {
+		t.Errorf("Service() = %+v, want the address kept and routing off", got)
+	}
+}
+
+// A crash partway through building a fresh database must not leave a
+// half-built schema behind: either every table lands and user_version is
+// set, or none of it does. Force a failure partway through the schema
+// batch by pre-claiming a name one of its later statements needs.
+func TestFreshDatabaseInitIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "torn.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE idx_view_subnets_cidr (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open() with a colliding name, want an error")
+	}
+
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('views','view_subnets')`).
+		Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("tables committed despite the later failure: %d, want 0 (atomic rollback)", n)
+	}
+}
+
+// ReplaceAll must be all-or-nothing: a document that fails partway through
+// must leave the prior registry untouched, not half-wiped.
+func TestReplaceAllRollsBackOnFailure(t *testing.T) {
+	s := open(t)
+	if _, err := s.PutService(Service{
+		Name:      "keeper",
+		Addresses: []Address{{Address: "192.168.1.9"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.ReplaceAll(nil, []Service{
+		{Name: "dup", Addresses: []Address{{Address: "192.168.1.10"}}},
+		{Name: "dup", Addresses: []Address{{Address: "192.168.1.11"}}},
+	}, nil)
+	if !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("ReplaceAll() error = %v, want ErrDuplicateName", err)
+	}
+
+	svcs, err := s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].Name != "keeper" {
+		t.Fatalf("Services() after a failed replace = %+v, want only keeper untouched", svcs)
 	}
 }

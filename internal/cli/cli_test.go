@@ -34,6 +34,46 @@ func TestServiceListRendersUntaggedAsAllViews(t *testing.T) {
 	}
 }
 
+// Routing changes what every client on the LAN resolves; the list must be
+// able to show it, not just the edit path.
+func TestServiceListShowsRouting(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"services": []map[string]any{{
+			"id": 1, "name": "grafana",
+			"addresses":       []map[string]string{{"address": "192.168.1.30", "view": ""}},
+			"proxy_address":   "192.168.1.20",
+			"route_via_proxy": true,
+		}, {
+			"id":        2,
+			"name":      "printer",
+			"addresses": []map[string]string{{"address": "192.168.1.50", "view": ""}},
+		}}})
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	if code := serviceCmd(c, []string{"list"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var routed, unrouted string
+	for _, l := range lines {
+		if strings.Contains(l, "grafana") {
+			routed = l
+		}
+		if strings.Contains(l, "printer") {
+			unrouted = l
+		}
+	}
+	if !strings.Contains(routed, "192.168.1.20") {
+		t.Errorf("routed row missing the proxy address:\n%s", routed)
+	}
+	if strings.Contains(unrouted, "->") {
+		t.Errorf("unrouted row shows a routing suffix:\n%s", unrouted)
+	}
+}
+
 // A structured API error must surface with its field name, not a bare status.
 func TestClientSurfacesFieldError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -87,6 +127,31 @@ func TestServiceAddPostsBody(t *testing.T) {
 	aliases, _ := got["aliases"].([]any)
 	if len(aliases) != 2 {
 		t.Errorf("aliases = %v", got["aliases"])
+	}
+}
+
+func TestServiceAddPostsProxyFields(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	code := serviceCmd(c, []string{
+		"add", "kypost", "--address", "192.168.1.30", "--proxy", "192.168.1.20", "--via-proxy",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got["proxy_address"] != "192.168.1.20" {
+		t.Errorf("proxy_address = %v", got["proxy_address"])
+	}
+	if got["route_via_proxy"] != true {
+		t.Errorf("route_via_proxy = %v", got["route_via_proxy"])
 	}
 }
 

@@ -27,14 +27,6 @@ func New(s *store.Store, zoneFQDN string, onChange func() error) *Registry {
 	return &Registry{s: s, zone: Normalize(zoneFQDN), onChange: onChange}
 }
 
-// Store exposes the underlying store for transactional import. Callers outside
-// registry must not issue SQL through it.
-func (r *Registry) Store() *store.Store { return r.s }
-
-// Rebuild exposes the change hook so import can batch many writes into one
-// snapshot rebuild.
-func (r *Registry) Rebuild() error { return r.onChange() }
-
 func (r *Registry) knownViews() (map[string]bool, error) {
 	views, err := r.s.Views()
 	if err != nil {
@@ -47,33 +39,54 @@ func (r *Registry) knownViews() (map[string]bool, error) {
 	return out, nil
 }
 
-// PutService validates, writes, then rebuilds. A failed validation never
-// reaches the store and never triggers a rebuild.
-func (r *Registry) PutService(svc store.Service) (int64, error) {
+// validateService normalizes and validates a service against a set of known
+// view names. It never touches the store, so import --replace can validate a
+// whole document before writing any of it.
+func (r *Registry) validateService(svc store.Service, known map[string]bool) (store.Service, error) {
 	svc.Name = strings.ToLower(strings.TrimSpace(svc.Name))
 	if err := ValidateName(svc.Name+"."+r.zone, r.zone); err != nil {
-		return 0, err
+		return svc, err
 	}
 	if len(svc.Addresses) == 0 {
-		return 0, invalid("addresses", "addresses_required", "a service needs at least one address")
-	}
-	known, err := r.knownViews()
-	if err != nil {
-		return 0, err
+		return svc, invalid("addresses", "addresses_required", "a service needs at least one address")
 	}
 	for i, a := range svc.Addresses {
 		if err := ValidateAddress(a.Address); err != nil {
-			return 0, err
+			return svc, err
 		}
 		if a.View != "" && !known[a.View] {
-			return 0, invalid(fmt.Sprintf("addresses[%d].view", i), "view_unknown", "view %q does not exist", a.View)
+			return svc, invalid(fmt.Sprintf("addresses[%d].view", i), "view_unknown", "view %q does not exist", a.View)
 		}
+	}
+	svc.ProxyAddress = strings.TrimSpace(svc.ProxyAddress)
+	if svc.ProxyAddress != "" {
+		if err := ValidateAddress(svc.ProxyAddress); err != nil {
+			return svc, invalid("proxy_address", "proxy_address_invalid", "%s", err)
+		}
+	}
+	if svc.RouteViaProxy && svc.ProxyAddress == "" {
+		return svc, invalid("proxy_address", "proxy_address_required",
+			"routing through a proxy needs a proxy address")
 	}
 	for i, al := range svc.Aliases {
 		svc.Aliases[i] = strings.ToLower(strings.TrimSpace(al))
 		if err := ValidateName(svc.Aliases[i]+"."+r.zone, r.zone); err != nil {
-			return 0, err
+			return svc, err
 		}
+	}
+	return svc, nil
+}
+
+// PutService validates, writes, then rebuilds. A failed validation never
+// reaches the store and never triggers a rebuild.
+func (r *Registry) PutService(svc store.Service) (int64, error) {
+	known, err := r.knownViews()
+	if err != nil {
+		return 0, err
+	}
+	svc, err = r.validateService(svc, known)
+	if err != nil {
+		return 0, err
 	}
 	id, err := r.s.PutService(svc)
 	if err != nil {
@@ -93,40 +106,50 @@ func (r *Registry) DeleteService(id int64) error {
 	return r.onChange()
 }
 
-func (r *Registry) PutRecord(rec store.Record) (int64, error) {
+// validateRecord normalizes and validates a record against a set of known
+// view names. It never touches the store; see validateService.
+func (r *Registry) validateRecord(rec store.Record, known map[string]bool) (store.Record, error) {
 	rec.Name = Normalize(rec.Name)
 	rec.Type = strings.ToUpper(strings.TrimSpace(rec.Type))
 	if err := ValidateRecordType(rec.Type); err != nil {
-		return 0, err
+		return rec, err
 	}
 	switch rec.Type {
 	case "A", "AAAA":
 		if err := ValidateName(rec.Name, r.zone); err != nil {
-			return 0, err
+			return rec, err
 		}
 		if err := ValidateAddress(rec.Value); err != nil {
-			return 0, err
+			return rec, err
 		}
 	case "CNAME":
 		if err := ValidateName(rec.Name, r.zone); err != nil {
-			return 0, err
+			return rec, err
 		}
 		rec.Value = Normalize(rec.Value)
 	case "PTR":
 		// Checking for ".arpa." alone would wrongly accept names in the
 		// default private domain, since home.arpa is itself under .arpa.
 		if !strings.HasSuffix(rec.Name, ".in-addr.arpa.") && !strings.HasSuffix(rec.Name, ".ip6.arpa.") {
-			return 0, invalid("name", "ptr_not_arpa",
+			return rec, invalid("name", "ptr_not_arpa",
 				"a PTR name must be under in-addr.arpa. or ip6.arpa.")
 		}
 		rec.Value = Normalize(rec.Value)
 	}
+	if rec.View != "" && !known[rec.View] {
+		return rec, invalid("view", "view_unknown", "view %q does not exist", rec.View)
+	}
+	return rec, nil
+}
+
+func (r *Registry) PutRecord(rec store.Record) (int64, error) {
 	known, err := r.knownViews()
 	if err != nil {
 		return 0, err
 	}
-	if rec.View != "" && !known[rec.View] {
-		return 0, invalid("view", "view_unknown", "view %q does not exist", rec.View)
+	rec, err = r.validateRecord(rec, known)
+	if err != nil {
+		return 0, err
 	}
 	id, err := r.s.PutRecord(rec)
 	if err != nil {
@@ -144,20 +167,30 @@ func (r *Registry) DeleteRecord(id int64) error {
 	return r.onChange()
 }
 
-func (r *Registry) PutView(v store.View) error {
+// validateView normalizes and validates a view. It never touches the store;
+// see validateService.
+func (r *Registry) validateView(v store.View) (store.View, error) {
 	v.Name = strings.ToLower(strings.TrimSpace(v.Name))
 	if err := ValidateLabel(v.Name); err != nil {
-		return invalid("name", "view_name_invalid", "view name %q must be a single DNS label", v.Name)
+		return v, invalid("name", "view_name_invalid", "view name %q must be a single DNS label", v.Name)
 	}
 	if len(v.Subnets) == 0 {
-		return invalid("subnets", "subnets_required", "a view needs at least one subnet")
+		return v, invalid("subnets", "subnets_required", "a view needs at least one subnet")
 	}
 	for i, c := range v.Subnets {
 		p, err := netip.ParsePrefix(c)
 		if err != nil {
-			return invalid(fmt.Sprintf("subnets[%d]", i), "cidr_invalid", "%q is not a CIDR", c)
+			return v, invalid(fmt.Sprintf("subnets[%d]", i), "cidr_invalid", "%q is not a CIDR", c)
 		}
 		v.Subnets[i] = p.Masked().String()
+	}
+	return v, nil
+}
+
+func (r *Registry) PutView(v store.View) error {
+	v, err := r.validateView(v)
+	if err != nil {
+		return err
 	}
 	if err := r.s.PutView(v); err != nil {
 		return err
@@ -169,6 +202,44 @@ func (r *Registry) Views() ([]store.View, error) { return r.s.Views() }
 
 func (r *Registry) DeleteView(name string) error {
 	if err := r.s.DeleteView(name); err != nil {
+		return err
+	}
+	return r.onChange()
+}
+
+// ReplaceAll validates every view, service, and record before writing any of
+// them, then writes them all in the one transaction store.ReplaceAll opens
+// and rebuilds once. Import --replace goes through here so a bad document
+// can neither bypass the rules PutService enforces one at a time, nor leave
+// the registry half-wiped if a store-level constraint still rejects it.
+func (r *Registry) ReplaceAll(views []store.View, services []store.Service, records []store.Record) error {
+	vs := make([]store.View, 0, len(views))
+	known := map[string]bool{}
+	for _, v := range views {
+		v, err := r.validateView(v)
+		if err != nil {
+			return err
+		}
+		vs = append(vs, v)
+		known[v.Name] = true
+	}
+	ss := make([]store.Service, 0, len(services))
+	for _, svc := range services {
+		svc, err := r.validateService(svc, known)
+		if err != nil {
+			return err
+		}
+		ss = append(ss, svc)
+	}
+	rs := make([]store.Record, 0, len(records))
+	for _, rec := range records {
+		rec, err := r.validateRecord(rec, known)
+		if err != nil {
+			return err
+		}
+		rs = append(rs, rec)
+	}
+	if err := r.s.ReplaceAll(vs, ss, rs); err != nil {
 		return err
 	}
 	return r.onChange()

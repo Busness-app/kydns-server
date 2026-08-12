@@ -2,6 +2,7 @@ package zone
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
 
@@ -47,7 +48,10 @@ type Snapshot struct {
 
 // Build resolves every view's effective set. It is all-or-nothing: an error
 // means the caller keeps serving the previous snapshot.
-func Build(in Input) (*Snapshot, error) {
+func Build(in Input, logger *slog.Logger) (*Snapshot, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	m, err := NewMatcher(in.Views)
 	if err != nil {
 		return nil, err
@@ -61,7 +65,7 @@ func Build(in Input) (*Snapshot, error) {
 	}
 	// "" is the default view, always present.
 	for _, view := range append([]string{""}, m.Names()...) {
-		idx, err := buildIndex(in, view, snap.Zone)
+		idx, err := buildIndex(in, view, snap.Zone, logger)
 		if err != nil {
 			return nil, fmt.Errorf("view %q: %w", view, err)
 		}
@@ -88,7 +92,7 @@ func pick[T any](view string, tagOf func(T) string, all []T) []T {
 	return untagged
 }
 
-func buildIndex(in Input, view, zone string) (*Index, error) {
+func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error) {
 	idx := &Index{Forward: map[string][]RR{}, Reverse: map[string]string{}}
 
 	// Precedence is applied by writing in ascending priority and letting later
@@ -103,30 +107,59 @@ func buildIndex(in Input, view, zone string) (*Index, error) {
 		}
 	}
 
+	// Tracks which reverse keys this loop itself has written, so the
+	// collision warning fires only for two services sharing an address, not
+	// for a service overwriting a lease's PTR (that overwrite is precedence
+	// working, per the comment above).
+	written := map[string]bool{}
+	// Tracks which forward names belong to a routed service, so a manual
+	// record displacing one can be flagged: the service badge still claims
+	// the proxy, but the manual record is what a client actually gets.
+	routed := map[string]struct{ service, proxy string }{}
 	for _, svc := range in.Services {
 		addrs := pick(view, func(a store.Address) string { return a.View }, svc.Addresses)
 		if len(addrs) == 0 {
 			continue
 		}
 		primary := qualify(svc.Name, zone)
-		rrs := make([]RR, 0, len(addrs))
-		for _, a := range addrs {
-			rrs = append(rrs, RR{Name: primary, Type: addrType(a.Address), Value: a.Address})
+
+		// Forward records answer with the proxy when routed; reverse records
+		// always name the real host, so several services behind one proxy
+		// keep their own PTRs.
+		answer := addrs
+		if svc.RouteViaProxy && svc.ProxyAddress != "" {
+			answer = []store.Address{{Address: svc.ProxyAddress}}
 		}
-		idx.Forward[primary] = rrs
+
+		names := []string{primary}
 		for _, alias := range svc.Aliases {
-			an := qualify(alias, zone)
-			ar := make([]RR, 0, len(addrs))
-			for _, a := range addrs {
-				ar = append(ar, RR{Name: an, Type: addrType(a.Address), Value: a.Address})
-			}
-			idx.Forward[an] = ar
+			names = append(names, qualify(alias, zone))
 		}
+		for _, n := range names {
+			rrs := make([]RR, 0, len(answer))
+			for _, a := range answer {
+				rrs = append(rrs, RR{Name: n, Type: addrType(a.Address), Value: a.Address})
+			}
+			idx.Forward[n] = rrs
+			if svc.RouteViaProxy && svc.ProxyAddress != "" {
+				routed[n] = struct{ service, proxy string }{svc.Name, svc.ProxyAddress}
+			}
+		}
+
 		// Only the primary name gets a PTR; aliases do not.
 		for _, a := range addrs {
-			if addr, err := netip.ParseAddr(a.Address); err == nil && inZones(addr, in.ReverseZones) {
-				idx.Reverse[arpaName(addr)] = primary
+			addr, err := netip.ParseAddr(a.Address)
+			if err != nil || !inZones(addr, in.ReverseZones) {
+				continue
 			}
+			key := arpaName(addr)
+			if prior, ok := idx.Reverse[key]; written[key] && ok && prior != primary {
+				logger.Warn("two services share an address, so its reverse record is ambiguous",
+					"address", a.Address, "previous", prior, "now", primary, "view", view,
+					"fix", "give them different addresses, or set a proxy address on one")
+			}
+			idx.Reverse[key] = primary
+			written[key] = true
 		}
 	}
 
@@ -143,6 +176,11 @@ func buildIndex(in Input, view, zone string) (*Index, error) {
 		rr := RR{Name: name, Type: r.Type, Value: strings.ToLower(r.Value)}
 		if !claimed[name] {
 			claimed[name] = true
+			if svc, ok := routed[name]; ok {
+				logger.Warn("a manual record displaces a routed service's forward answer",
+					"service", svc.service, "name", name, "manual_value", rr.Value, "proxy_address", svc.proxy,
+					"fix", "remove the manual record, or it will keep answering with the real address")
+			}
 			idx.Forward[name] = []RR{rr}
 			continue
 		}

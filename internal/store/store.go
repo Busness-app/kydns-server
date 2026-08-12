@@ -34,11 +34,13 @@ CREATE TABLE IF NOT EXISTS view_subnets (
 -- are the same network, so uniqueness is the whole ambiguity check.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_view_subnets_cidr ON view_subnets(cidr);
 CREATE TABLE IF NOT EXISTS services (
-  id             INTEGER PRIMARY KEY,
-  name           TEXT NOT NULL UNIQUE,
-  check_url      TEXT NOT NULL DEFAULT '',
-  check_insecure INTEGER NOT NULL DEFAULT 0,
-  created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  check_url       TEXT NOT NULL DEFAULT '',
+  check_insecure  INTEGER NOT NULL DEFAULT 0,
+  proxy_address   TEXT NOT NULL DEFAULT '',
+  route_via_proxy INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE TABLE IF NOT EXISTS service_addresses (
   id         INTEGER PRIMARY KEY,
@@ -73,6 +75,44 @@ CREATE TABLE IF NOT EXISTS admin (
 );
 `
 
+// migrations run in order on a database whose user_version is below their
+// index+1. A fresh database gets everything from schema above and then skips
+// straight to the end, because applying an ALTER to a column that is already
+// there would fail.
+var migrations = []string{
+	`ALTER TABLE services ADD COLUMN proxy_address TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE services ADD COLUMN route_via_proxy INTEGER NOT NULL DEFAULT 0;`,
+}
+
+// migrate runs against a transaction Open already holds, so a crash
+// partway through - whether mid-ALTER or mid-schema-creation - rolls back
+// cleanly instead of leaving a database that wedges every future Open.
+func migrate(tx *sql.Tx, freshDB bool) error {
+	var version int
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if freshDB {
+		version = len(migrations)
+	}
+	if version >= len(migrations) {
+		if !freshDB {
+			return nil
+		}
+		// A fresh database already has the columns from schema, but still
+		// needs user_version set so a later Open doesn't try to ALTER them in.
+		_, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
+		return err
+	}
+	for i := version; i < len(migrations); i++ {
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+	}
+	_, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
+	return err
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -88,9 +128,37 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 	}
-	if _, err := db.Exec(schema); err != nil {
+
+	// A database with no services table has never been written by KyDNS, so
+	// the schema below creates everything and no migration should run.
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='services'`).Scan(&n); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, err
+	}
+	fresh := n == 0
+
+	// Schema creation and the migration bookkeeping run in one transaction,
+	// so a crash partway through leaves nothing behind instead of a
+	// half-built database that wedges every future Open.
+	tx, err := db.Begin()
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("schema: %w", err)
+	}
+	if err := migrate(tx, fresh); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &Store{db: db}, nil
 }
@@ -108,6 +176,15 @@ func (s *Store) PutView(v View) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := putView(tx, v); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// putView does the work of PutView against an already-open transaction, so
+// ReplaceAll can write many views as part of one larger transaction.
+func putView(tx *sql.Tx, v View) error {
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO views(name) VALUES(?)`, v.Name); err != nil {
 		return err
 	}
@@ -122,7 +199,7 @@ func (s *Store) PutView(v View) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) Views() ([]View, error) {
@@ -182,9 +259,21 @@ func (s *Store) PutService(svc Service) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	id, err := putService(tx, svc)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// putService does the work of PutService against an already-open
+// transaction, so ReplaceAll can write many services as part of one larger
+// transaction.
+func putService(tx *sql.Tx, svc Service) (int64, error) {
 	if svc.ID == 0 {
-		res, err := tx.Exec(`INSERT INTO services(name, check_url, check_insecure) VALUES(?, ?, ?)`,
-			svc.Name, svc.CheckURL, svc.CheckInsecure)
+		res, err := tx.Exec(
+			`INSERT INTO services(name, check_url, check_insecure, proxy_address, route_via_proxy) VALUES(?, ?, ?, ?, ?)`,
+			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy)
 		if err != nil {
 			if isUnique(err, "services.name") {
 				return 0, fmt.Errorf("%w: service %s", ErrDuplicateName, svc.Name)
@@ -195,8 +284,9 @@ func (s *Store) PutService(svc Service) (int64, error) {
 			return 0, err
 		}
 	} else {
-		if _, err := tx.Exec(`UPDATE services SET name=?, check_url=?, check_insecure=? WHERE id=?`,
-			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ID); err != nil {
+		if _, err := tx.Exec(
+			`UPDATE services SET name=?, check_url=?, check_insecure=?, proxy_address=?, route_via_proxy=? WHERE id=?`,
+			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy, svc.ID); err != nil {
 			return 0, err
 		}
 		for _, q := range []string{
@@ -222,7 +312,7 @@ func (s *Store) PutService(svc Service) (int64, error) {
 			return 0, err
 		}
 	}
-	return svc.ID, tx.Commit()
+	return svc.ID, nil
 }
 
 func nullable(s string) any {
@@ -234,8 +324,9 @@ func nullable(s string) any {
 
 func (s *Store) Service(id int64) (Service, error) {
 	var svc Service
-	err := s.db.QueryRow(`SELECT id, name, check_url, check_insecure FROM services WHERE id = ?`, id).
-		Scan(&svc.ID, &svc.Name, &svc.CheckURL, &svc.CheckInsecure)
+	err := s.db.QueryRow(
+		`SELECT id, name, check_url, check_insecure, proxy_address, route_via_proxy FROM services WHERE id = ?`, id).
+		Scan(&svc.ID, &svc.Name, &svc.CheckURL, &svc.CheckInsecure, &svc.ProxyAddress, &svc.RouteViaProxy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Service{}, fmt.Errorf("%w: service %d", ErrNotFound, id)
 	}
@@ -329,7 +420,22 @@ func (s *Store) DeleteService(id int64) error {
 }
 
 func (s *Store) PutRecord(r Record) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO records(name, type, value, view_name) VALUES(?, ?, ?, ?)`,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	id, err := putRecord(tx, r)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// putRecord does the work of PutRecord against an already-open transaction,
+// so ReplaceAll can write many records as part of one larger transaction.
+func putRecord(tx *sql.Tx, r Record) (int64, error) {
+	res, err := tx.Exec(`INSERT INTO records(name, type, value, view_name) VALUES(?, ?, ?, ?)`,
 		r.Name, r.Type, r.Value, nullable(r.View))
 	if err != nil {
 		return 0, err
@@ -433,43 +539,42 @@ func (s *Store) DeleteToken(id int64) error {
 	return nil
 }
 
-// ReplaceAll wipes registry data and writes the given contents, for
-// import --replace. Tokens and the admin account survive: an import must never
-// lock the operator out.
+// ReplaceAll wipes registry data and writes the given contents in one
+// transaction, for import --replace. A failure partway through — a duplicate
+// name, a claimed CIDR — rolls back the wipe too, so a bad document leaves
+// the prior registry untouched rather than half-restored. Tokens and the
+// admin account survive: an import must never lock the operator out.
 func (s *Store) ReplaceAll(views []View, services []Service, records []Record) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 	for _, q := range []string{
 		`DELETE FROM records`, `DELETE FROM aliases`,
 		`DELETE FROM service_addresses`, `DELETE FROM services`,
 		`DELETE FROM view_subnets`, `DELETE FROM views`,
 	} {
 		if _, err := tx.Exec(q); err != nil {
-			tx.Rollback()
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
 	for _, v := range views {
-		if err := s.PutView(v); err != nil {
+		if err := putView(tx, v); err != nil {
 			return err
 		}
 	}
 	for _, svc := range services {
 		svc.ID = 0
-		if _, err := s.PutService(svc); err != nil {
+		if _, err := putService(tx, svc); err != nil {
 			return err
 		}
 	}
 	for _, r := range records {
 		r.ID = 0
-		if _, err := s.PutRecord(r); err != nil {
+		if _, err := putRecord(tx, r); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
