@@ -93,6 +93,7 @@ func TestParseRejectsCredentials(t *testing.T) {
 		"https://user:hunter2@1.1.1.1/dns-query",
 		"tls://user:hunter2@1.1.1.1:853",
 		"udp://user@192.168.1.1:53",
+		"user:hunter2@1.1.1.1:53",
 	} {
 		_, err := Parse(raw)
 		if err == nil {

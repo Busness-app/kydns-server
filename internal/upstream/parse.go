@@ -63,6 +63,9 @@ func Parse(raw string) (Spec, error) {
 		return Spec{}, errors.New("upstream is empty")
 	}
 	if !strings.Contains(s, "://") {
+		if i := strings.LastIndex(s, "@"); i != -1 {
+			return Spec{}, rejectCredentials(s[i+1:])
+		}
 		addr, err := hostPort(s, "53")
 		if err != nil {
 			return Spec{}, fmt.Errorf("upstream %q: %w", raw, err)
@@ -75,11 +78,7 @@ func Parse(raw string) (Spec, error) {
 		return Spec{}, fmt.Errorf("upstream %q: %w", raw, err)
 	}
 	if u.User != nil {
-		// The error omits raw on purpose: raw is the thing holding the
-		// credentials, and this error reaches the log.
-		return Spec{}, fmt.Errorf(
-			"upstream %s://%s: credentials are not supported, remove the user:password@ prefix",
-			u.Scheme, u.Host)
+		return Spec{}, rejectCredentials(u.Scheme + "://" + u.Host)
 	}
 	spec := Spec{Raw: raw, ServerName: u.Fragment}
 	var defPort string
@@ -119,6 +118,12 @@ func ParseAll(raws []string) ([]Spec, error) {
 		specs = append(specs, s)
 	}
 	return specs, nil
+}
+
+// rejectCredentials rejects userinfo before it reaches Spec.Raw, where it
+// would end up in logs and the web UI. display omits the credential.
+func rejectCredentials(display string) error {
+	return fmt.Errorf("upstream %s: credentials are not supported, remove the user:password@ prefix", display)
 }
 
 // hostPort requires an IP address and returns it as "ip:port" with defPort
