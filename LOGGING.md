@@ -24,10 +24,11 @@ matched, or `forwarded` (no policy match).
 
 Never log upstream credentials, private keys, full DNS answers when they reveal
 sensitive private services, or raw request bodies. Do not send query history to
-KySecurity services by default. Downloaded list content, list URLs (which may
-carry credentials), client IPs, and query names are never logged by default.
-Blacklist counters (blocked-query totals and per-list match counts) never
-carry client identity.
+KySecurity services by default. A blacklist list URL may never embed
+credentials; the field is rejected outright rather than accepted and redacted
+later. Downloaded list content, list URLs, client IPs, and query names are
+never logged by default. Blacklist counters (blocked-query totals and
+per-list match counts) never carry client identity.
 
 Do not add an embedded log database or product-specific log viewer. Operators
 should use their existing logging platform for search, alerting, retention, and

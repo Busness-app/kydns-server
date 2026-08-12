@@ -64,9 +64,9 @@ after a restart, and kept out of backups. A discovered lease is persisted only
 when an operator promotes it to a service.
 
 Exports use YAML or JSON. Exports must omit upstream credentials, private keys,
-and other secrets, including any credentials embedded in a blacklist URL. A
-blacklist export carries list definitions and rules, not the downloaded list
-bodies.
+and other secrets. A blacklist list URL may never embed credentials, so a
+blacklist export, which carries list definitions and rules verbatim but never
+the downloaded list bodies, cannot leak any either.
 
 ## Linked-server replication
 
