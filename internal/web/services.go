@@ -130,6 +130,30 @@ func (s *Server) postServiceAddress(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/services", http.StatusSeeOther)
 }
 
+// postServiceRouting sets a service's proxy address and routing flag,
+// leaving everything else alone. This is how routing gets turned off without
+// discarding the proxy address, to tell whether a problem is the
+// application or the proxy.
+func (s *Server) postServiceRouting(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PostFormValue("id"), 10, 64)
+	if err != nil {
+		s.renderServicesError(w, r, "invalid service id")
+		return
+	}
+	svc, err := s.o.Registry.Service(id)
+	if err != nil {
+		s.renderServicesError(w, r, err.Error())
+		return
+	}
+	svc.ProxyAddress = strings.TrimSpace(r.PostFormValue("proxy_address"))
+	svc.RouteViaProxy = r.PostFormValue("route_via_proxy") != ""
+	if _, err := s.o.Registry.PutService(svc); err != nil {
+		s.renderServicesError(w, r, err.Error())
+		return
+	}
+	http.Redirect(w, r, "/services", http.StatusSeeOther)
+}
+
 func (s *Server) postServiceDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PostFormValue("id"), 10, 64)
 	if err != nil {

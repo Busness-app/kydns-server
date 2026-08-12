@@ -168,20 +168,26 @@ Point the health check at the service, not the proxy. A proxy returning 502 for
 a dead backend still answers a prober perfectly, so checking the proxy tells you
 only that the proxy is up.
 
-Routing is chosen when the service is created; neither the web UI nor the CLI
-can change it afterward — both only add services. To change it later, call
-`PATCH /api/v1/services/{id}` with the **complete** service object. That
-endpoint replaces the service rather than merging into it, so any field you
-leave out comes back cleared. A body of
+Routing can be turned on or off after the service is created, which is how you
+tell whether a problem is the application or the proxy: leave the address in
+place and just flip the switch. The Services screen has a routing form on
+each row — a proxy address field, a checkbox, and a Save button — that changes
+only those two fields.
+
+The same is true over the API: `PATCH /api/v1/services/{id}` merges the body
+onto the existing service, so any field you leave out keeps its value. A body
+of
 
 ```json
 {"name": "grafana", "addresses": [{"address": "192.168.1.60"}]}
 ```
 
-passes validation and returns 200, but silently drops `aliases`, `check_url`,
-`check_insecure`, `proxy_address`, and `route_via_proxy` — none of them were
-in the body. To edit safely, `GET /api/v1/services/{id}`, change the fields
-you want, and `PATCH` the whole object back.
+changes the name and address and leaves `aliases`, `check_url`,
+`check_insecure`, `proxy_address`, and `route_via_proxy` untouched. To clear a
+field explicitly, include it with an empty value (`"aliases": []`,
+`"check_url": ""`); an `addresses` or `aliases` array you do provide replaces
+the whole list rather than merging into it, so a routed address never
+inherits a view tag from the one it replaced.
 
 A service with both an IPv4 and an IPv6 address behind one proxy answers `A`
 only: `--proxy` takes one address, so the `AAAA` query gets `NODATA` instead of

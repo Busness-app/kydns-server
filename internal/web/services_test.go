@@ -162,6 +162,155 @@ func TestServiceFormListsViews(t *testing.T) {
 	}
 }
 
+// The routing form is how an operator turns routing off without losing the
+// proxy address, to tell whether a problem is the app or the proxy.
+func TestServiceRoutingToggleOffKeepsProxyAddress(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	postForm(t, h, "/services/new", url.Values{
+		"name": {"kypost"}, "address": {"192.168.1.30"},
+		"proxy_address": {"192.168.1.20"}, "route_via_proxy": {"on"},
+		"csrf_token": {csrf},
+	}, c)
+	svcs, _ := srv.o.Registry.Services()
+	if len(svcs) != 1 {
+		t.Fatalf("Services() = %+v", svcs)
+	}
+
+	rec := postForm(t, h, "/services/routing", url.Values{
+		"id": {itoa(svcs[0].ID)}, "proxy_address": {"192.168.1.20"},
+		"csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("routing toggle off = %d: %s", rec.Code, rec.Body)
+	}
+
+	svcs, _ = srv.o.Registry.Services()
+	if svcs[0].RouteViaProxy {
+		t.Error("route_via_proxy still on after toggling off")
+	}
+	if svcs[0].ProxyAddress != "192.168.1.20" {
+		t.Errorf("proxy_address = %q, want it kept", svcs[0].ProxyAddress)
+	}
+}
+
+func TestServiceRoutingToggleOnWithAddress(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	postForm(t, h, "/services/new", url.Values{
+		"name": {"kypost"}, "address": {"192.168.1.30"},
+		"proxy_address": {"192.168.1.20"}, "csrf_token": {csrf},
+	}, c)
+	svcs, _ := srv.o.Registry.Services()
+
+	rec := postForm(t, h, "/services/routing", url.Values{
+		"id": {itoa(svcs[0].ID)}, "proxy_address": {"192.168.1.20"},
+		"route_via_proxy": {"on"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("routing toggle on = %d: %s", rec.Code, rec.Body)
+	}
+
+	svcs, _ = srv.o.Registry.Services()
+	if !svcs[0].RouteViaProxy {
+		t.Error("route_via_proxy still off after toggling on")
+	}
+}
+
+func TestServiceRoutingChangesAddress(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	postForm(t, h, "/services/new", url.Values{
+		"name": {"kypost"}, "address": {"192.168.1.30"},
+		"proxy_address": {"192.168.1.20"}, "route_via_proxy": {"on"},
+		"csrf_token": {csrf},
+	}, c)
+	svcs, _ := srv.o.Registry.Services()
+
+	rec := postForm(t, h, "/services/routing", url.Values{
+		"id": {itoa(svcs[0].ID)}, "proxy_address": {"192.168.1.99"},
+		"route_via_proxy": {"on"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("routing change = %d: %s", rec.Code, rec.Body)
+	}
+
+	svcs, _ = srv.o.Registry.Services()
+	if svcs[0].ProxyAddress != "192.168.1.99" {
+		t.Errorf("proxy_address = %q, want 192.168.1.99", svcs[0].ProxyAddress)
+	}
+}
+
+// The property the routing form depends on: posting it must not disturb
+// anything routing does not own.
+func TestServiceRoutingPreservesUnrelatedFields(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	addView(t, srv, "tailnet", "100.64.0.0/10")
+	postForm(t, h, "/services/new", url.Values{
+		"name":           {"kypost"},
+		"address":        {"192.168.1.30"},
+		"aliases":        {"webmail"},
+		"check_url":      {"https://kypost.home.arpa/health"},
+		"check_insecure": {"on"},
+		"proxy_address":  {"192.168.1.20"},
+		"csrf_token":     {csrf},
+	}, c)
+	svcs, _ := srv.o.Registry.Services()
+	if len(svcs) != 1 {
+		t.Fatalf("Services() = %+v", svcs)
+	}
+	postForm(t, h, "/services/address", url.Values{
+		"id": {itoa(svcs[0].ID)}, "address": {"100.101.102.103"}, "view": {"tailnet"},
+		"csrf_token": {csrf},
+	}, c)
+
+	rec := postForm(t, h, "/services/routing", url.Values{
+		"id": {itoa(svcs[0].ID)}, "proxy_address": {"192.168.1.20"},
+		"route_via_proxy": {"on"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("routing toggle = %d: %s", rec.Code, rec.Body)
+	}
+
+	svcs, _ = srv.o.Registry.Services()
+	if len(svcs) != 1 {
+		t.Fatalf("Services() = %+v", svcs)
+	}
+	svc := svcs[0]
+	if len(svc.Aliases) != 1 || svc.Aliases[0] != "webmail" {
+		t.Errorf("aliases = %v, want [webmail] preserved", svc.Aliases)
+	}
+	if svc.CheckURL != "https://kypost.home.arpa/health" {
+		t.Errorf("check_url = %q, want preserved", svc.CheckURL)
+	}
+	if !svc.CheckInsecure {
+		t.Error("check_insecure was cleared")
+	}
+	if len(svc.Addresses) != 2 {
+		t.Errorf("addresses = %+v, want both addresses preserved", svc.Addresses)
+	}
+}
+
+// Validation lives in the registry; the form must surface it, not bypass it.
+func TestServiceRoutingRejectsEmptyProxyAddress(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	postForm(t, h, "/services/new", url.Values{
+		"name": {"kypost"}, "address": {"192.168.1.30"},
+		"proxy_address": {"192.168.1.20"}, "route_via_proxy": {"on"}, "csrf_token": {csrf},
+	}, c)
+	svcs, _ := srv.o.Registry.Services()
+
+	rec := postForm(t, h, "/services/routing", url.Values{
+		"id": {itoa(svcs[0].ID)}, "proxy_address": {""},
+		"route_via_proxy": {"on"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("routing on with an empty proxy address = %d, want 400", rec.Code)
+	}
+
+	svcs, _ = srv.o.Registry.Services()
+	if !svcs[0].RouteViaProxy || svcs[0].ProxyAddress != "192.168.1.20" {
+		t.Errorf("= %+v, want the rejected change left alone", svcs[0])
+	}
+}
+
 func TestServiceFormAcceptsProxyFields(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
 

@@ -19,6 +19,7 @@ func (s *Server) pageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /services", s.requireSession(s.getServices))
 	mux.HandleFunc("POST /services/new", s.requireCSRF(s.postServiceNew))
 	mux.HandleFunc("POST /services/address", s.requireCSRF(s.postServiceAddress))
+	mux.HandleFunc("POST /services/routing", s.requireCSRF(s.postServiceRouting))
 	mux.HandleFunc("POST /services/delete", s.requireCSRF(s.postServiceDelete))
 
 	mux.HandleFunc("GET /records", s.requireSession(s.getRecords))
