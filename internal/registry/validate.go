@@ -22,6 +22,12 @@ func invalid(field, code, format string, args ...any) error {
 	return &ValidationError{Field: field, Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
+// Invalid builds a ValidationError. Exported so sibling services report field
+// failures in the form both transports already render.
+func Invalid(field, code, format string, args ...any) error {
+	return invalid(field, code, format, args...)
+}
+
 // Normalize lowercases a name and gives it a trailing dot.
 func Normalize(name string) string {
 	n := strings.ToLower(strings.TrimSpace(name))

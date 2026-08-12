@@ -87,6 +87,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return serviceCmd(c, args[1:], stdout, stderr)
 	case "record":
 		return recordCmd(c, args[1:], stdout, stderr)
+	case "blacklist":
+		return blacklistCmd(c, args[1:], stdout, stderr)
 	case "view":
 		return viewCmd(c, args[1:], stdout, stderr)
 	case "token":

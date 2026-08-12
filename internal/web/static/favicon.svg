@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="KyDNS">
+  <rect width="32" height="32" rx="7" fill="#0d0f14"/>
+  <!-- The DNS delegation tree: one root name, two children. Three dots and
+       four strokes is all that survives at 16px. -->
+  <path d="M16 11.5V16M8 16h16M8 16v3.5M24 16v3.5" fill="none" stroke="#4deeea"
+        stroke-width="2" stroke-linecap="round"/>
+  <circle cx="16" cy="8" r="3.2" fill="#4deeea"/>
+  <circle cx="8" cy="23" r="3.2" fill="#4deeea"/>
+  <circle cx="24" cy="23" r="3.2" fill="#4deeea"/>
+</svg>

@@ -17,6 +17,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -27,6 +28,7 @@ type API struct {
 	cache  *dnsserver.Cache
 	leases func() []dhcp.Lease
 	health func() []health.Status
+	policy *policy.Service
 }
 
 func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) *API {
@@ -37,6 +39,13 @@ func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) 
 // API still constructs where neither subsystem is running.
 func (a *API) WithProviders(leases func() []dhcp.Lease, statuses func() []health.Status) *API {
 	a.leases, a.health = leases, statuses
+	return a
+}
+
+// WithPolicy attaches the blacklist service. It is optional, so the API still
+// constructs where filtering is not running.
+func (a *API) WithPolicy(p *policy.Service) *API {
+	a.policy = p
 	return a
 }
 
@@ -69,12 +78,23 @@ type viewDTO struct {
 	Subnets []string `json:"subnets" yaml:"subnets"`
 }
 
+// blacklistDoc is the exportable slice of filtering policy: settings, list
+// definitions and one-off rules. Downloaded bodies and cache validators are
+// runtime state and have no field here to live in.
+type blacklistDoc struct {
+	Enabled  bool               `json:"enabled" yaml:"enabled"`
+	BlockTTL int                `json:"block_ttl" yaml:"block_ttl"`
+	Lists    []blacklistListDTO `json:"lists" yaml:"lists"`
+	Rules    []blacklistRuleDTO `json:"rules" yaml:"rules"`
+}
+
 // transfer is the export/import document. It carries no secrets by
 // construction: there is nowhere in this struct to put one.
 type transfer struct {
-	Views    []viewDTO    `json:"views" yaml:"views"`
-	Services []serviceDTO `json:"services" yaml:"services"`
-	Records  []recordDTO  `json:"records" yaml:"records"`
+	Views     []viewDTO     `json:"views" yaml:"views"`
+	Services  []serviceDTO  `json:"services" yaml:"services"`
+	Records   []recordDTO   `json:"records" yaml:"records"`
+	Blacklist *blacklistDoc `json:"blacklist,omitempty" yaml:"blacklist,omitempty"`
 }
 
 func (a *API) Handler() http.Handler {
@@ -123,6 +143,18 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/health", auth(a.listHealth))
 	mux.HandleFunc("GET /api/v1/stats", auth(a.stats))
 	mux.HandleFunc("POST /api/v1/cache/flush", auth(a.flushCache))
+
+	mux.HandleFunc("GET /api/v1/blacklists/settings", auth(a.getBlacklistSettings))
+	mux.HandleFunc("PATCH /api/v1/blacklists/settings", auth(a.patchBlacklistSettings))
+	mux.HandleFunc("GET /api/v1/blacklists/lists", auth(a.listBlacklistLists))
+	mux.HandleFunc("POST /api/v1/blacklists/lists", auth(a.createBlacklistList))
+	mux.HandleFunc("PATCH /api/v1/blacklists/lists/{id}", auth(a.updateBlacklistList))
+	mux.HandleFunc("DELETE /api/v1/blacklists/lists/{id}", auth(a.deleteBlacklistList))
+	mux.HandleFunc("POST /api/v1/blacklists/lists/{id}/refresh", auth(a.refreshBlacklistList))
+	mux.HandleFunc("GET /api/v1/blacklists/rules/{kind}", auth(a.listBlacklistRules))
+	mux.HandleFunc("POST /api/v1/blacklists/rules/{kind}", auth(a.createBlacklistRule))
+	mux.HandleFunc("DELETE /api/v1/blacklists/rules/{kind}/{id}", auth(a.deleteBlacklistRule))
+	mux.HandleFunc("GET /api/v1/blacklists/test", auth(a.testBlacklist))
 }
 
 type errBody struct {
@@ -462,6 +494,36 @@ func (a *API) snapshotDoc() (transfer, error) {
 	for _, r := range recs {
 		doc.Records = append(doc.Records, recordDTO{Name: r.Name, Type: r.Type, Value: r.Value, View: r.View})
 	}
+	if a.policy != nil {
+		set, err := a.policy.Settings()
+		if err != nil {
+			return doc, err
+		}
+		bl := &blacklistDoc{
+			Enabled: set.Enabled, BlockTTL: set.BlockTTL,
+			Lists: []blacklistListDTO{}, Rules: []blacklistRuleDTO{},
+		}
+		lists, err := a.policy.Lists()
+		if err != nil {
+			return doc, err
+		}
+		for _, l := range lists {
+			// Definition only: the yaml tags drop every runtime field, and the
+			// zero values keep them out of the JSON form too.
+			bl.Lists = append(bl.Lists, blacklistListDTO{
+				Name: l.Name, URL: l.URL, Format: l.Format, Description: l.Description,
+				Enabled: l.Enabled, Builtin: l.Builtin, IntervalSeconds: l.IntervalSeconds,
+			})
+		}
+		rules, err := a.policy.Rules()
+		if err != nil {
+			return doc, err
+		}
+		for _, r := range rules {
+			bl.Rules = append(bl.Rules, blacklistRuleDTO{Kind: r.Kind, Domain: r.Domain})
+		}
+		doc.Blacklist = bl
+	}
 	return doc, nil
 }
 
@@ -516,6 +578,10 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 			writeRegistryErr(w, err)
 			return
 		}
+		if err := a.applyBlacklistDoc(doc.Blacklist, true); err != nil {
+			writeRegistryErr(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "replace"})
 		return
 	}
@@ -537,6 +603,10 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 			writeRegistryErr(w, err)
 			return
 		}
+	}
+	if err := a.applyBlacklistDoc(doc.Blacklist, false); err != nil {
+		writeRegistryErr(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mode": "merge"})
 }
@@ -602,6 +672,10 @@ func (a *API) stats(w http.ResponseWriter, _ *http.Request) {
 	}
 	if a.cache != nil {
 		out["cache"] = map[string]any{"entries": a.cache.Len()}
+	}
+	if a.policy != nil {
+		total, byList := a.policy.Counters()
+		out["blocked"] = map[string]any{"total": total, "by_list": byList}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

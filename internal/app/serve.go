@@ -22,6 +22,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"github.com/yoshiofthewire/kydns-server/internal/upstream"
@@ -97,6 +98,29 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return nil
 	})
 
+	// Filtering is on by default. Built-ins seed once; an operator's later
+	// edits to them survive every upgrade.
+	if err := policy.SeedBuiltins(st); err != nil {
+		return err
+	}
+	policyHolder := policy.NewHolder(func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
+		set, err := st.BlacklistSettings()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		lists, err := st.BlacklistLists()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		rules, err := st.BlacklistRules()
+		return set, lists, rules, err
+	})
+	if err := policyHolder.Rebuild(); err != nil {
+		return fmt.Errorf("initial blacklist policy: %w", err)
+	}
+	refresher := policy.NewRefresher(st, policy.NewFetcher(30*time.Second), policyHolder, logger)
+	policySvc := policy.NewService(st, policyHolder, refresher, logger)
+
 	if cfg.Discovery.DHCPLeaseFile != "" {
 		poller = discovery.NewPoller(
 			&dhcp.DnsmasqSource{Path: cfg.Discovery.DHCPLeaseFile},
@@ -140,6 +164,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			Zone: cfg.PrivateFQDN(), TTL: uint32(cfg.DNS.TTL), ReverseZones: reverse,
 		},
 		Forwarder:   fwd,
+		Policy:      policyHolder,
 		LogQueries:  cfg.DNS.LogQueries,
 		LogClientIP: cfg.DNS.LogClientIP,
 		Logger:      logger,
@@ -159,7 +184,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses)
+	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc)
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
@@ -173,6 +198,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Backoff:        auth.NewBackoff(),
 		ACL:            acl,
 		Cache:          cache,
+		Policy:         policySvc,
 		AllowTailscale: cfg.DNS.AllowTailscale,
 		Upstreams:      fwd.Status,
 		SetupToken:     setupToken,
@@ -203,8 +229,14 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		go poller.Run(ctx)
 	}
 	go checker.Run(ctx)
+	go refresher.Run(ctx)
+	set, err := policySvc.Settings()
+	if err != nil {
+		return err
+	}
 	logger.Info("kydns started",
-		"dns", cfg.DNS.Listen, "admin", cfg.Admin.Listen, "zone", cfg.PrivateFQDN())
+		"dns", cfg.DNS.Listen, "admin", cfg.Admin.Listen, "zone", cfg.PrivateFQDN(),
+		"filtering", onOffLabel(set.Enabled))
 
 	select {
 	case err := <-errs:
@@ -214,6 +246,13 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return errors.Join(dnsSrv.Shutdown(shutdown), adminSrv.Shutdown(shutdown))
+}
+
+func onOffLabel(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 // bootstrapToken mints a first API token when none exist and writes it to the

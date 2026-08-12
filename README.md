@@ -44,6 +44,26 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
   records.
 - YAML and JSON import/export for backup and Git-based configuration.
 
+### Blacklist filtering
+
+The web UI's Blacklists tab has a global on/off toggle, the built-in list
+(StevenBlack's unified hosts file, MIT licensed), any custom lists an
+operator adds by URL, and one-off allow/deny rules. Lists come in three
+formats: plain domains, hosts-file syntax, and Adblock Plus-style rules.
+
+Precedence is deny beats allow beats lists: a deny rule always blocks, an
+allow rule always overrides a list, and lists only apply where no rule says
+otherwise. Matching is on label boundaries, so a rule or list entry for
+`ads.example` also blocks `sub.ads.example` but never `badads.example`.
+
+A blocked name gets a local NXDOMAIN with the authoritative (AA) bit clear
+and never reaches an upstream resolver. A KyDNS service or manual record can
+never be blocked: the policy is only consulted after the authoritative
+lookup declines to answer.
+
+This is domain filtering, not traffic inspection, parental control, or a
+malware guarantee.
+
 ## Not yet
 
 - Linked-server replication between KyDNS peers. The store keeps a single write

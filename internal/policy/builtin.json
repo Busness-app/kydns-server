@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "lists": [
+    {
+      "name": "steven-black",
+      "description": "Unified hosts file: adware and malware domains, consolidated from several maintained sources.",
+      "url": "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
+      "format": "hosts",
+      "license": "MIT",
+      "attribution": "StevenBlack/hosts contributors",
+      "interval_seconds": 86400
+    }
+  ]
+}

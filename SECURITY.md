@@ -16,8 +16,12 @@ impact, reproduction steps, and any suggested mitigation.
 - A replication peer is trusted only after explicit operator enrollment.
 - Discovery sources such as DHCP and Docker are configuration inputs and must
   be validated before their data is published.
-- Remote blacklist sources are untrusted input and must be bounded, parsed, and
-  atomically applied; they must never override authoritative local records.
+- Remote blacklist sources are untrusted input: fetched only over HTTPS with
+  certificate verification, redirects followed only while they stay HTTPS, a
+  32 MB response body ceiling, a ceiling on parsed entries per list, no code
+  execution of list contents, and applied atomically; they must never
+  override authoritative local records. Only an authenticated administrator
+  can change blacklist policy (lists, rules, and the filtering toggle).
 - The local registry contains private service names and addresses.
 - Query history is sensitive operational data and is not replicated by default.
 
@@ -33,7 +37,8 @@ impact, reproduction steps, and any suggested mitigation.
 - Bind administrative services only to intended interfaces and protect them
   with the operator's network controls or a trusted TLS-terminating proxy.
 - Fetch blacklist sources only over verified HTTPS, without sending query or
-  client identity data to list providers.
+  client identity data to list providers. Send a fixed `User-Agent: kydns`
+  header and no other identifying headers.
 
 ## Known limitations
 

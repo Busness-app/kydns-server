@@ -1,0 +1,161 @@
+{{define "page"}}
+{{if .Unavailable}}
+<div class="card">
+  <p class="muted">Blacklist filtering is not enabled on this server.</p>
+</div>
+{{else}}
+
+<div class="card">
+  <h3>Filtering</h3>
+  {{if .Enabled}}
+    <p>Filtering is <span class="badge accent">on</span>. Blocked names are
+       answered locally with NXDOMAIN and never sent to an upstream. Blocks are
+       cached by clients for {{.BlockTTL}} seconds.</p>
+  {{else}}
+    <p class="error">Filtering is off. Nothing is being blocked. Your lists and
+       rules are still here — turning filtering back on restores them at once.</p>
+  {{end}}
+  <p class="muted">This is domain filtering. KyDNS does not inspect URLs, TLS,
+     page content, or client traffic, and it is not a malware guarantee.</p>
+  <div class="address-row">
+    <form method="post" action="/blacklists/toggle">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button type="submit">{{if .Enabled}}Turn filtering off{{else}}Turn filtering on{{end}}</button>
+    </form>
+    <form method="post" action="/blacklists/refresh">
+      <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+      <button class="ghost" type="submit">Refresh all lists</button>
+    </form>
+  </div>
+  <p class="muted">{{.BlockedTotal}} queries blocked since KyDNS started.</p>
+</div>
+
+{{if .StaleAny}}
+<div class="card">
+  <p class="error">A list below has never loaded or failed its last refresh.
+     Its last known-good copy is still in force; nothing has stopped working.</p>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Lists</h3>
+  <table class="grid">
+    <tr><th>Name</th><th>Source</th><th>Format</th><th>Entries</th><th>Last update</th><th>State</th><th></th></tr>
+    {{range .Lists}}
+    <tr>
+      <td>{{.Name}}{{if .Builtin}} <span class="badge accent">built-in</span>{{end}}
+          {{if .Description}}<br><span class="muted">{{.Description}}</span>{{end}}</td>
+      <td><span class="muted">{{.URL}}</span></td>
+      <td>{{.Format}}</td>
+      <td>{{.Entries}}{{if .Skipped}} <span class="muted">({{.Skipped}} skipped)</span>{{end}}</td>
+      <td>{{.LastOK}}<br><span class="muted">every {{.Interval}}</span></td>
+      <td>
+        {{if .Enabled}}<span class="badge accent">on</span>{{else}}<span class="badge">off</span>{{end}}
+        {{if .NeverLoaded}}<br><span class="badge warn">never loaded</span>{{end}}
+        {{if .Stale}}<br><span class="badge warn">stale</span><br><span class="muted">{{.LastError}}</span>{{end}}
+      </td>
+      <td>
+        <form class="address-row" method="post" action="/blacklists/lists/toggle">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+        </form>
+        <form class="address-row" method="post" action="/blacklists/refresh">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button class="ghost" type="submit">Refresh</button>
+        </form>
+        {{if not .Builtin}}
+        <form class="address-row" method="post" action="/blacklists/lists/delete">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="7" class="muted">No lists yet.</td></tr>
+    {{end}}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add a list</h3>
+  <p class="muted">A list URL is a trust decision: KyDNS downloads and applies
+     whatever it says. Only https sources are accepted, and no query names,
+     client addresses, or identifying headers are ever sent to the host.</p>
+  <form class="stack" method="post" action="/blacklists/lists/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="bl-name">Name</label>
+    <input id="bl-name" name="name" type="text" placeholder="my-list">
+    <label for="bl-url">Source URL</label>
+    <input id="bl-url" name="url" type="text" placeholder="https://lists.example/hosts">
+    <label for="bl-format">Format</label>
+    <select id="bl-format" name="format">
+      <option value="domains">domains — one name per line</option>
+      <option value="hosts">hosts — 0.0.0.0 name</option>
+      <option value="adblock">adblock — ||name^</option>
+    </select>
+    <label for="bl-interval">Refresh every (seconds)</label>
+    <input id="bl-interval" name="interval" type="text" value="86400">
+    <button type="submit">Add list</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>One-off rules</h3>
+  <p class="muted">A deny rule always wins over an allow rule. Both cover the
+     name and its subdomains. Neither can affect a name KyDNS answers for
+     itself — local services and records are decided before any of this.</p>
+  <table class="grid">
+    <tr><th>Kind</th><th>Domain</th><th></th></tr>
+    {{range .Deny}}
+    <tr><td><span class="badge down">deny</span></td><td>{{.Domain}}</td>
+      <td><form method="post" action="/blacklists/rules/delete">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="id" value="{{.ID}}">
+        <button class="danger" type="submit">Remove</button>
+      </form></td></tr>
+    {{end}}
+    {{range .Allow}}
+    <tr><td><span class="badge accent">allow</span></td><td>{{.Domain}}</td>
+      <td><form method="post" action="/blacklists/rules/delete">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <input type="hidden" name="id" value="{{.ID}}">
+        <button class="danger" type="submit">Remove</button>
+      </form></td></tr>
+    {{end}}
+  </table>
+  <form class="stack" method="post" action="/blacklists/rules/new">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="rule-domain">Domain</label>
+    <input id="rule-domain" name="domain" type="text" placeholder="ads.example">
+    <label for="rule-kind">Rule</label>
+    <select id="rule-kind" name="kind">
+      <option value="deny">Deny — always block</option>
+      <option value="allow">Allow — never block</option>
+    </select>
+    <button type="submit">Add rule</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Test a name</h3>
+  {{with .Result}}
+    {{if .Blocked}}
+      <p class="error">{{.Name}} is blocked by <strong>{{.Policy}}</strong>.</p>
+    {{else}}
+      <p>{{.Name}} is allowed ({{.Policy}}).</p>
+    {{end}}
+  {{end}}
+  <form class="stack" method="post" action="/blacklists/test">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <label for="test-name">Domain</label>
+    <input id="test-name" name="name" type="text" placeholder="ads.example">
+    <button type="submit">Test</button>
+  </form>
+</div>
+
+{{end}}
+{{end}}

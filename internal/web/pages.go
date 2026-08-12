@@ -8,6 +8,7 @@ func init() {
 	registerPage("records.html")
 	registerPage("settings.html")
 	registerPage("discovered.html")
+	registerPage("blacklists.html")
 }
 
 // pageRoutes registers the application screens.
@@ -28,6 +29,16 @@ func (s *Server) pageRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /discovered", s.requireSession(s.getDiscovered))
 	mux.HandleFunc("POST /discovered/promote", s.requireCSRF(s.postPromote))
+
+	mux.HandleFunc("GET /blacklists", s.requireSession(s.getBlacklists))
+	mux.HandleFunc("POST /blacklists/toggle", s.requireCSRF(s.postBlacklistToggle))
+	mux.HandleFunc("POST /blacklists/lists/new", s.requireCSRF(s.postBlacklistListNew))
+	mux.HandleFunc("POST /blacklists/lists/toggle", s.requireCSRF(s.postBlacklistListToggle))
+	mux.HandleFunc("POST /blacklists/lists/delete", s.requireCSRF(s.postBlacklistListDelete))
+	mux.HandleFunc("POST /blacklists/refresh", s.requireCSRF(s.postBlacklistRefresh))
+	mux.HandleFunc("POST /blacklists/rules/new", s.requireCSRF(s.postBlacklistRuleNew))
+	mux.HandleFunc("POST /blacklists/rules/delete", s.requireCSRF(s.postBlacklistRuleDelete))
+	mux.HandleFunc("POST /blacklists/test", s.requireCSRF(s.postBlacklistTest))
 
 	mux.HandleFunc("GET /settings", s.requireSession(s.getSettings))
 	mux.HandleFunc("GET /settings/export", s.requireSession(s.getExport))
