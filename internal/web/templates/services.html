@@ -49,7 +49,7 @@
     <label for="proxy_address">Proxy address (optional)</label>
     <input id="proxy_address" name="proxy_address" type="text" placeholder="192.168.1.20">
     <label><input name="route_via_proxy" type="checkbox"> Send DNS to the proxy</label>
-    <p class="muted">Clients resolve to the proxy while the health check below
+    <p class="muted">Clients resolve to the proxy while the health check above
        still targets the service itself. Check the service directly, not the
        proxy — a proxy returning 502 for a dead backend still looks healthy.</p>
     <label><input name="check_insecure" type="checkbox"> Accept a self-signed certificate on the check</label>
