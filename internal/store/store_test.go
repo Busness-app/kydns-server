@@ -308,3 +308,31 @@ func TestServiceRoundTripsProxyFields(t *testing.T) {
 		t.Errorf("Service() = %+v, want the address kept and routing off", got)
 	}
 }
+
+// ReplaceAll must be all-or-nothing: a document that fails partway through
+// must leave the prior registry untouched, not half-wiped.
+func TestReplaceAllRollsBackOnFailure(t *testing.T) {
+	s := open(t)
+	if _, err := s.PutService(Service{
+		Name:      "keeper",
+		Addresses: []Address{{Address: "192.168.1.9"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.ReplaceAll(nil, []Service{
+		{Name: "dup", Addresses: []Address{{Address: "192.168.1.10"}}},
+		{Name: "dup", Addresses: []Address{{Address: "192.168.1.11"}}},
+	}, nil)
+	if !errors.Is(err, ErrDuplicateName) {
+		t.Fatalf("ReplaceAll() error = %v, want ErrDuplicateName", err)
+	}
+
+	svcs, err := s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].Name != "keeper" {
+		t.Fatalf("Services() after a failed replace = %+v, want only keeper untouched", svcs)
+	}
+}

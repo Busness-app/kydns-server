@@ -107,8 +107,7 @@ func (r *Registry) DeleteService(id int64) error {
 }
 
 // validateRecord normalizes and validates a record against a set of known
-// view names. It never touches the store, so import --replace can validate a
-// whole document before writing any of it.
+// view names. It never touches the store; see validateService.
 func (r *Registry) validateRecord(rec store.Record, known map[string]bool) (store.Record, error) {
 	rec.Name = Normalize(rec.Name)
 	rec.Type = strings.ToUpper(strings.TrimSpace(rec.Type))
@@ -168,8 +167,8 @@ func (r *Registry) DeleteRecord(id int64) error {
 	return r.onChange()
 }
 
-// validateView normalizes and validates a view. It never touches the store,
-// so import --replace can validate a whole document before writing any of it.
+// validateView normalizes and validates a view. It never touches the store;
+// see validateService.
 func (r *Registry) validateView(v store.View) (store.View, error) {
 	v.Name = strings.ToLower(strings.TrimSpace(v.Name))
 	if err := ValidateLabel(v.Name); err != nil {
@@ -209,8 +208,10 @@ func (r *Registry) DeleteView(name string) error {
 }
 
 // ReplaceAll validates every view, service, and record before writing any of
-// them, then rebuilds once. Import --replace goes through here so a bad
-// document can never bypass the same rules PutService enforces one at a time.
+// them, then writes them all in the one transaction store.ReplaceAll opens
+// and rebuilds once. Import --replace goes through here so a bad document
+// can neither bypass the rules PutService enforces one at a time, nor leave
+// the registry half-wiped if a store-level constraint still rejects it.
 func (r *Registry) ReplaceAll(views []store.View, services []store.Service, records []store.Record) error {
 	vs := make([]store.View, 0, len(views))
 	known := map[string]bool{}

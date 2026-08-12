@@ -345,8 +345,13 @@ func TestServiceProxyFieldsRoundTripThroughTheAPI(t *testing.T) {
 
 // A replace-mode import must not bypass the same validation PutService
 // applies one at a time.
+// A rejected replace must leave pre-existing data alone, not wipe it and
+// half-restore. The store started empty would only catch the bad service
+// being written, not the registry being wiped out from under it.
 func TestImportReplaceRejectsRoutedServiceWithoutProxyAddress(t *testing.T) {
 	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok, `{"name":"keeper","addresses":[{"address":"192.168.1.9"}]}`)
+
 	body := `{"views":[],"services":[{"name":"kypost","addresses":[{"address":"192.168.1.30"}],
 	  "route_via_proxy":true}],"records":[]}`
 	rec := do(t, h, "POST", "/api/v1/import?mode=replace", tok, body)
@@ -360,6 +365,9 @@ func TestImportReplaceRejectsRoutedServiceWithoutProxyAddress(t *testing.T) {
 	got := do(t, h, "GET", "/api/v1/services", tok, "").Body.String()
 	if strings.Contains(got, "kypost") {
 		t.Errorf("rejected import still wrote the service: %s", got)
+	}
+	if !strings.Contains(got, "keeper") {
+		t.Errorf("rejected import wiped pre-existing data: %s", got)
 	}
 }
 

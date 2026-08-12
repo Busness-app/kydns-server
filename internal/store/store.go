@@ -170,6 +170,15 @@ func (s *Store) PutView(v View) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := putView(tx, v); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// putView does the work of PutView against an already-open transaction, so
+// ReplaceAll can write many views as part of one larger transaction.
+func putView(tx *sql.Tx, v View) error {
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO views(name) VALUES(?)`, v.Name); err != nil {
 		return err
 	}
@@ -184,7 +193,7 @@ func (s *Store) PutView(v View) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) Views() ([]View, error) {
@@ -244,6 +253,17 @@ func (s *Store) PutService(svc Service) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback()
+	id, err := putService(tx, svc)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// putService does the work of PutService against an already-open
+// transaction, so ReplaceAll can write many services as part of one larger
+// transaction.
+func putService(tx *sql.Tx, svc Service) (int64, error) {
 	if svc.ID == 0 {
 		res, err := tx.Exec(
 			`INSERT INTO services(name, check_url, check_insecure, proxy_address, route_via_proxy) VALUES(?, ?, ?, ?, ?)`,
@@ -286,7 +306,7 @@ func (s *Store) PutService(svc Service) (int64, error) {
 			return 0, err
 		}
 	}
-	return svc.ID, tx.Commit()
+	return svc.ID, nil
 }
 
 func nullable(s string) any {
@@ -394,7 +414,22 @@ func (s *Store) DeleteService(id int64) error {
 }
 
 func (s *Store) PutRecord(r Record) (int64, error) {
-	res, err := s.db.Exec(`INSERT INTO records(name, type, value, view_name) VALUES(?, ?, ?, ?)`,
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	id, err := putRecord(tx, r)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// putRecord does the work of PutRecord against an already-open transaction,
+// so ReplaceAll can write many records as part of one larger transaction.
+func putRecord(tx *sql.Tx, r Record) (int64, error) {
+	res, err := tx.Exec(`INSERT INTO records(name, type, value, view_name) VALUES(?, ?, ?, ?)`,
 		r.Name, r.Type, r.Value, nullable(r.View))
 	if err != nil {
 		return 0, err
@@ -498,43 +533,42 @@ func (s *Store) DeleteToken(id int64) error {
 	return nil
 }
 
-// ReplaceAll wipes registry data and writes the given contents, for
-// import --replace. Tokens and the admin account survive: an import must never
-// lock the operator out.
+// ReplaceAll wipes registry data and writes the given contents in one
+// transaction, for import --replace. A failure partway through — a duplicate
+// name, a claimed CIDR — rolls back the wipe too, so a bad document leaves
+// the prior registry untouched rather than half-restored. Tokens and the
+// admin account survive: an import must never lock the operator out.
 func (s *Store) ReplaceAll(views []View, services []Service, records []Record) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
 	for _, q := range []string{
 		`DELETE FROM records`, `DELETE FROM aliases`,
 		`DELETE FROM service_addresses`, `DELETE FROM services`,
 		`DELETE FROM view_subnets`, `DELETE FROM views`,
 	} {
 		if _, err := tx.Exec(q); err != nil {
-			tx.Rollback()
 			return err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
 	for _, v := range views {
-		if err := s.PutView(v); err != nil {
+		if err := putView(tx, v); err != nil {
 			return err
 		}
 	}
 	for _, svc := range services {
 		svc.ID = 0
-		if _, err := s.PutService(svc); err != nil {
+		if _, err := putService(tx, svc); err != nil {
 			return err
 		}
 	}
 	for _, r := range records {
 		r.ID = 0
-		if _, err := s.PutRecord(r); err != nil {
+		if _, err := putRecord(tx, r); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }

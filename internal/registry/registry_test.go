@@ -240,3 +240,81 @@ func TestPutServiceValidatesProxy(t *testing.T) {
 		t.Errorf("PutService() with routing off rejected: %v", err)
 	}
 }
+
+// The rebuild after a replace is what stops DNS serving stale data; a
+// successful import must trigger it exactly once.
+func TestReplaceAllRebuildsOnce(t *testing.T) {
+	r, rebuilds := newRegistry(t)
+	if _, err := r.PutService(store.Service{
+		Name: "keeper", Addresses: []store.Address{{Address: "192.168.1.9"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	*rebuilds = 0
+
+	if err := r.ReplaceAll(nil, []store.Service{
+		{Name: "fresh", Addresses: []store.Address{{Address: "192.168.1.10"}}},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if *rebuilds != 1 {
+		t.Errorf("rebuilds = %d, want 1", *rebuilds)
+	}
+}
+
+// A rejected replace must not rebuild, or a bad import would still flip DNS
+// over to a half-applied snapshot.
+func TestReplaceAllValidationFailureDoesNotRebuild(t *testing.T) {
+	r, rebuilds := newRegistry(t)
+	err := r.ReplaceAll(nil, []store.Service{
+		{Name: "bad_name", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+	}, nil)
+	if err == nil {
+		t.Fatal("ReplaceAll() error = nil, want validation error")
+	}
+	if *rebuilds != 0 {
+		t.Errorf("rebuilds = %d after a rejected replace, want 0", *rebuilds)
+	}
+}
+
+// ReplaceAll must normalize the same way PutService/PutRecord/PutView do, or
+// a hand-edited YAML with mixed case or stray whitespace would store names
+// that don't match how DNS queries and the zone build normalize theirs.
+func TestReplaceAllNormalizes(t *testing.T) {
+	r, _ := newRegistry(t)
+	if err := r.ReplaceAll(
+		[]store.View{{Name: "Tailnet", Subnets: []string{"100.64.0.0/10"}}},
+		[]store.Service{{
+			Name:         "KyPost",
+			Addresses:    []store.Address{{Address: "192.168.1.30"}},
+			ProxyAddress: " 192.168.1.20 ",
+		}},
+		[]store.Record{{Name: "Printer.Home.Arpa.", Type: "a", Value: "192.168.1.50"}},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	views, err := r.Views()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if views[0].Name != "tailnet" {
+		t.Errorf("view name = %q, want lowercased tailnet", views[0].Name)
+	}
+
+	svcs, err := r.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svcs[0].Name != "kypost" || svcs[0].ProxyAddress != "192.168.1.20" {
+		t.Errorf("service = %+v, want the lowercased name and trimmed proxy address", svcs[0])
+	}
+
+	recs, err := r.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recs[0].Name != "printer.home.arpa." || recs[0].Type != "A" {
+		t.Errorf("record = %+v, want the normalized name and uppercased type", recs[0])
+	}
+}
