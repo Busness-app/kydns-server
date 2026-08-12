@@ -277,6 +277,33 @@ func TestPatchAddressesReplaceNotMerge(t *testing.T) {
 	}
 }
 
+// encoding/json matches struct fields case-insensitively, so presence
+// detection for "addresses" must not use an exact map lookup or a
+// differently-cased key sails past the reset and merges into the old slice.
+func TestPatchAddressesReplaceNotMergeCaseInsensitiveKey(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/views", tok, `{"name":"vpn","subnets":["100.64.0.0/10"]}`)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"10.0.0.5","view":"vpn"}]}`)
+
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"Addresses":[{"address":"192.168.1.60"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, "GET", "/api/v1/services/1", tok, "")
+	var got serviceDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Addresses) != 1 {
+		t.Fatalf("addresses = %+v, want exactly one", got.Addresses)
+	}
+	if got.Addresses[0].View != "" {
+		t.Errorf("view = %q, a differently-cased key let the old view leak onto the new address", got.Addresses[0].View)
+	}
+}
+
 // "aliases": [] must explicitly clear the aliases, not be treated as absent.
 func TestPatchEmptyAliasesClears(t *testing.T) {
 	h, tok := newAPI(t)

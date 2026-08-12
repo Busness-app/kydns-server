@@ -238,6 +238,56 @@ func TestServiceRoutingChangesAddress(t *testing.T) {
 	}
 }
 
+// The property the routing form depends on: posting it must not disturb
+// anything routing does not own.
+func TestServiceRoutingPreservesUnrelatedFields(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	addView(t, srv, "tailnet", "100.64.0.0/10")
+	postForm(t, h, "/services/new", url.Values{
+		"name":           {"kypost"},
+		"address":        {"192.168.1.30"},
+		"aliases":        {"webmail"},
+		"check_url":      {"https://kypost.home.arpa/health"},
+		"check_insecure": {"on"},
+		"proxy_address":  {"192.168.1.20"},
+		"csrf_token":     {csrf},
+	}, c)
+	svcs, _ := srv.o.Registry.Services()
+	if len(svcs) != 1 {
+		t.Fatalf("Services() = %+v", svcs)
+	}
+	postForm(t, h, "/services/address", url.Values{
+		"id": {itoa(svcs[0].ID)}, "address": {"100.101.102.103"}, "view": {"tailnet"},
+		"csrf_token": {csrf},
+	}, c)
+
+	rec := postForm(t, h, "/services/routing", url.Values{
+		"id": {itoa(svcs[0].ID)}, "proxy_address": {"192.168.1.20"},
+		"route_via_proxy": {"on"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("routing toggle = %d: %s", rec.Code, rec.Body)
+	}
+
+	svcs, _ = srv.o.Registry.Services()
+	if len(svcs) != 1 {
+		t.Fatalf("Services() = %+v", svcs)
+	}
+	svc := svcs[0]
+	if len(svc.Aliases) != 1 || svc.Aliases[0] != "webmail" {
+		t.Errorf("aliases = %v, want [webmail] preserved", svc.Aliases)
+	}
+	if svc.CheckURL != "https://kypost.home.arpa/health" {
+		t.Errorf("check_url = %q, want preserved", svc.CheckURL)
+	}
+	if !svc.CheckInsecure {
+		t.Error("check_insecure was cleared")
+	}
+	if len(svc.Addresses) != 2 {
+		t.Errorf("addresses = %+v, want both addresses preserved", svc.Addresses)
+	}
+}
+
 // Validation lives in the registry; the form must surface it, not bypass it.
 func TestServiceRoutingRejectsEmptyProxyAddress(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
@@ -251,11 +301,8 @@ func TestServiceRoutingRejectsEmptyProxyAddress(t *testing.T) {
 		"id": {itoa(svcs[0].ID)}, "proxy_address": {""},
 		"route_via_proxy": {"on"}, "csrf_token": {csrf},
 	}, c)
-	if rec.Code == http.StatusSeeOther {
-		t.Fatal("routing on with an empty proxy address was accepted")
-	}
-	if rec.Code >= 500 {
-		t.Fatalf("validation failure returned %d, want a re-rendered form", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("routing on with an empty proxy address = %d, want 400", rec.Code)
 	}
 
 	svcs, _ = srv.o.Registry.Services()

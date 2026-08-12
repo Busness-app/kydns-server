@@ -177,10 +177,14 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
+// maxBody bounds request bodies read in full, so an authenticated client
+// can't hold a handler open by trickling bytes forever.
+const maxBody = 16 << 20
+
 // bodyBytes reads the whole request body up front so a handler can inspect it
 // (e.g. which keys are present) before unmarshalling it.
 func bodyBytes(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
 		return nil, false
@@ -281,12 +285,16 @@ func (a *API) updateService(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
 		return
 	}
-	d := toServiceDTO(cur)
-	if _, present := raw["addresses"]; present {
-		d.Addresses = nil
+	// encoding/json matches struct fields case-insensitively, so presence
+	// must be checked the same way or a body like {"Addresses":...} would
+	// skip the reset below and merge into the old slice element-by-element.
+	present := make(map[string]bool, len(raw))
+	for k := range raw {
+		present[strings.ToLower(k)] = true
 	}
-	if _, present := raw["aliases"]; present {
-		d.Aliases = nil
+	d := toServiceDTO(cur)
+	if present["addresses"] {
+		d.Addresses = nil
 	}
 	if err := json.Unmarshal(body, &d); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
@@ -479,7 +487,7 @@ func (a *API) export(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "read_failed", "", err.Error())
 		return
