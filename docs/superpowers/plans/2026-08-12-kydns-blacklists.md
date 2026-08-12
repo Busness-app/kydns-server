@@ -2689,6 +2689,19 @@ func TestNotModifiedKeepsTheSnapshotAndClearsTheError(t *testing.T) {
 
 - [ ] **Step 6: Write `internal/policy/refresher.go`**
 
+> **Correction applied during implementation (commit 224048e).** The `refresh`
+> helper below returns a single `bool` documented as "the snapshot changed",
+> but all three callers treat `false` as "failed". On an HTTP 304 — a success —
+> it returns false, so `RefreshList` returns a bogus error and `RefreshAll`
+> records a bogus failure. `TestNotModifiedKeepsTheSnapshotAndClearsTheError`
+> catches this. The shipped code splits the return into `(ok, changed bool)`:
+> download/parse/zero-domain/store errors return `(false, false)`, a 304 returns
+> `(true, false)`, and a successful install returns `(true, true)`. `RefreshDue`
+> gates its rebuild on `changed`; `RefreshAll` and `RefreshList` gate their error
+> on `ok`. The public signatures of `RefreshDue`, `RefreshAll` and `RefreshList`
+> are unchanged, so nothing in Tasks 8-13 is affected. Read
+> `internal/policy/refresher.go` for the authoritative version.
+
 ```go
 package policy
 
