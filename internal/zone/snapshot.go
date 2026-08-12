@@ -112,6 +112,10 @@ func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error
 	// for a service overwriting a lease's PTR (that overwrite is precedence
 	// working, per the comment above).
 	written := map[string]bool{}
+	// Tracks which forward names belong to a routed service, so a manual
+	// record displacing one can be flagged: the service badge still claims
+	// the proxy, but the manual record is what a client actually gets.
+	routed := map[string]struct{ service, proxy string }{}
 	for _, svc := range in.Services {
 		addrs := pick(view, func(a store.Address) string { return a.View }, svc.Addresses)
 		if len(addrs) == 0 {
@@ -137,6 +141,9 @@ func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error
 				rrs = append(rrs, RR{Name: n, Type: addrType(a.Address), Value: a.Address})
 			}
 			idx.Forward[n] = rrs
+			if svc.RouteViaProxy && svc.ProxyAddress != "" {
+				routed[n] = struct{ service, proxy string }{svc.Name, svc.ProxyAddress}
+			}
 		}
 
 		// Only the primary name gets a PTR; aliases do not.
@@ -169,6 +176,11 @@ func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error
 		rr := RR{Name: name, Type: r.Type, Value: strings.ToLower(r.Value)}
 		if !claimed[name] {
 			claimed[name] = true
+			if svc, ok := routed[name]; ok {
+				logger.Warn("a manual record displaces a routed service's forward answer",
+					"service", svc.service, "name", name, "manual_value", rr.Value, "proxy_address", svc.proxy,
+					"fix", "remove the manual record, or it will keep answering with the real address")
+			}
 			idx.Forward[name] = []RR{rr}
 			continue
 		}

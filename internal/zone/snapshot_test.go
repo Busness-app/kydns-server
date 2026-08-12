@@ -360,6 +360,51 @@ func TestLeaseAndServiceSharingAnAddressLogsNothing(t *testing.T) {
 	}
 }
 
+// A manual record at a routed service's name silently hands clients the
+// real address while the badge still claims the proxy; that must be logged.
+func TestManualRecordDisplacingRoutedServiceLogsAWarning(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone: "home.arpa.",
+		Services: []store.Service{{
+			ID: 1, Name: "grafana",
+			Addresses:     []store.Address{{Address: "192.168.1.30"}},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+		Records: []store.Record{{Name: "grafana.home.arpa.", Type: "A", Value: "192.168.1.60"}},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"grafana", "192.168.1.60", "192.168.1.20"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log %q does not mention %q", out, want)
+		}
+	}
+}
+
+// The same displacement against an unrouted service is ordinary
+// manual-beats-service precedence and must stay silent.
+func TestManualRecordDisplacingUnroutedServiceLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone: "home.arpa.",
+		Services: []store.Service{{
+			ID: 1, Name: "grafana",
+			Addresses: []store.Address{{Address: "192.168.1.30"}},
+		}},
+		Records: []store.Record{{Name: "grafana.home.arpa.", Type: "A", Value: "192.168.1.60"}},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("log = %q, want nothing for a displaced service with routing off", out)
+	}
+}
+
 // A multi-homed service (two addresses, one service) writes two distinct PTRs
 // and must never be mistaken for two services sharing one address.
 func TestMultiHomedServiceLogsNothing(t *testing.T) {
