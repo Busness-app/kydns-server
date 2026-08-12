@@ -58,7 +58,7 @@ func validLabel(s string) error {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-':
 		default:
 			return errNotADomain
 		}
