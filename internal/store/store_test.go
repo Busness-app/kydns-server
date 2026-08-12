@@ -241,7 +241,6 @@ func TestOpenMigratesAnOlderDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() on a pre-migration database: %v", err)
 	}
-	defer s.Close()
 
 	svcs, err := s.Services()
 	if err != nil {
@@ -253,21 +252,28 @@ func TestOpenMigratesAnOlderDatabase(t *testing.T) {
 	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
 		t.Errorf("migrated row = %+v, want the new fields at their zero values", svcs[0])
 	}
-}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
 
-// Opening twice must not re-apply a migration.
-func TestOpenIsIdempotent(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "twice.db")
-	s, err := Open(path)
+	// Reopening an already-migrated database is the path a live deployment
+	// takes on every restart after the upgrade; it must not try to reapply
+	// the ALTERs or lose the row.
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen of a migrated database: %v", err)
+	}
+	defer s.Close()
+	svcs, err = s.Services()
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
-	s, err = Open(path)
-	if err != nil {
-		t.Fatalf("second Open(): %v", err)
+	if len(svcs) != 1 || svcs[0].Name != "legacy" {
+		t.Fatalf("Services() after reopen = %v, want the row still there", svcs)
 	}
-	defer s.Close()
+	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
+		t.Errorf("reopened row = %+v, want the new fields at their zero values", svcs[0])
+	}
 }
 
 func TestServiceRoundTripsProxyFields(t *testing.T) {

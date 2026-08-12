@@ -92,17 +92,32 @@ func migrate(db *sql.DB, freshDB bool) error {
 	if freshDB {
 		version = len(migrations)
 	}
+	if version >= len(migrations) {
+		if !freshDB {
+			return nil
+		}
+		// A fresh database already has the columns from schema, but still
+		// needs user_version set so a later Open doesn't try to ALTER them in.
+		_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
+		return err
+	}
+
+	// A crash between an ALTER and the user_version bump must not leave a
+	// database that fails every future Open, so both run in one transaction.
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for i := version; i < len(migrations); i++ {
-		if _, err := db.Exec(migrations[i]); err != nil {
+		if _, err := tx.Exec(migrations[i]); err != nil {
 			return fmt.Errorf("migration %d: %w", i+1, err)
 		}
 	}
-	if version < len(migrations) || freshDB {
-		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
-			return err
-		}
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+		return err
 	}
-	return nil
+	return tx.Commit()
 }
 
 func Open(path string) (*Store, error) {
@@ -133,7 +148,7 @@ func Open(path string) (*Store, error) {
 
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, fmt.Errorf("schema: %w", err)
 	}
 	if err := migrate(db, fresh); err != nil {
 		db.Close()
