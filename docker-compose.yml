@@ -42,29 +42,31 @@ services:
         max-file: "3"
 
 networks:
-  # An existing LAN-attached network, created and owned by the host — not by
-  # this file. On unRAID that is br0. Anything already giving containers real
-  # LAN addresses works: AdGuard Home or Pi-hole on the same network is the
-  # sign you have one.
+  # The LAN-attached network KyDNS answers on. Compose creates it if it is
+  # missing, so `docker compose up -d` works on a fresh host.
   #
-  # Compose joins it and never creates or removes it. A network that hands out
-  # addresses on your physical LAN outlives any one stack, so `compose down`
-  # has no business tearing it down.
+  # Already have one — unRAID's br0, or whatever AdGuard Home or Pi-hole is on?
+  # Set KYDNS_NETWORK to its name. Compose adopts it, prints a warning saying
+  # it did not create it, and leaves it in place on `compose down`.
   #
-  # No such network? `make up` creates it. By hand it is:
+  # ipvlan shares the host's MAC and only adds an address, so switch port
+  # security and DHCP snooping have nothing to object to. macvlan buys a
+  # distinct MAC per container, which only matters if you want a DHCP
+  # reservation for it; KyDNS uses a static address.
   #
-  #   docker network create -d ipvlan \
-  #     -o parent=eth0 \
-  #     --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
-  #     --ip-range 192.168.1.53/32 \
-  #     br0
-  #
-  # The /32 range confines Docker to the one address KyDNS uses. Give it the
-  # whole subnet and it will eventually pick one your router leases to a
+  # ip_range is pinned to the single address KyDNS uses. Give Docker the whole
+  # subnet and it will eventually allocate one your router later leases to a
   # phone, which presents as DNS failing at unpredictable hours.
   lan:
     name: ${KYDNS_NETWORK:-br0}
-    external: true
+    driver: ${KYDNS_NET_DRIVER:-ipvlan}
+    driver_opts:
+      parent: ${KYDNS_PARENT_IF:?run `make setup` to detect it, or set it in .env}
+    ipam:
+      config:
+        - subnet: ${KYDNS_SUBNET:?run `make setup` to detect it, or set it in .env}
+          gateway: ${KYDNS_GATEWAY:?run `make setup` to detect it, or set it in .env}
+          ip_range: ${KYDNS_IP:?set KYDNS_IP in .env}/32
 
 volumes:
   kydns-data:
@@ -91,15 +93,12 @@ volumes:
 #    it is not on the host. Put a TLS-terminating proxy in front if you want
 #    encryption; KyDNS speaks plain HTTP.
 #
-# 3. make up
+# 3. make setup                  fills in your interface, subnet and gateway
+# 4. docker compose up -d
 #
-#    That runs scripts/create-network.sh, which creates the network only if it
-#    is missing, then starts the stack. `make network` alone shows the values
-#    it derived without starting anything.
-#
-# 4. docker compose logs kydns | grep setup-token
+# 5. docker compose logs kydns | grep setup-token
 #    Open http://$KYDNS_IP:8053/ and complete setup with that token.
-# 5. Point a client at $KYDNS_IP for DNS and try:
+# 6. Point a client at $KYDNS_IP for DNS and try:
 #      dig @$KYDNS_IP kypost.home.arpa
 #
 # Running alongside AdGuard Home or Pi-hole
