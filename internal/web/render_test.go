@@ -124,6 +124,19 @@ func TestNavFooterOpensLicense(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /static/agpl-3.0.txt = %d, want the license to be embedded", rec.Code)
 	}
+	// A display rule outside :popover-open beats the UA rule that hides a
+	// closed popover, which pins the panel over every page with no way to
+	// close it.
+	css := static(t, srv, "/static/app.css").Body.String()
+	if !strings.Contains(css, ".license-window:popover-open { display: flex; }") {
+		t.Error("the license popover is not shown via :popover-open")
+	}
+	_, rest, _ := strings.Cut(css, ".license-window {")
+	block, _, _ := strings.Cut(rest, "}")
+	if strings.Contains(block, "display") {
+		t.Errorf(".license-window sets display while closed, so it never hides:\n%s", block)
+	}
+
 	// The served copy is what the operator reads, so it must stay identical to
 	// the license the project ships under.
 	want, err := os.ReadFile("../../LICENSE")
