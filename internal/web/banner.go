@@ -82,6 +82,34 @@ func PlaintextUpstreamBanner(statuses []dnsserver.UpstreamStatus) *Banner {
 	}
 }
 
+// UpstreamsDownBanner fires when every upstream is failing, which means
+// nothing outside the private zone resolves at all. Without it an
+// all-encrypted list with every entry timing out renders exactly like a
+// healthy system, and the operator is pushed away from the screen that has
+// the answer.
+func UpstreamsDownBanner(statuses []dnsserver.UpstreamStatus) *Banner {
+	if len(statuses) == 0 {
+		return nil
+	}
+	reasons := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		if s.LastError == "" {
+			return nil
+		}
+		reasons = append(reasons, s.Spec+": "+s.LastError)
+	}
+	return &Banner{
+		Title: "No upstream is answering.",
+		Body: fmt.Sprintf(
+			"Every upstream failed, so nothing outside your private zone resolves. %s.",
+			strings.Join(reasons, "; ")),
+		Fix: "Encrypted upstreams need outbound TCP port 853 for tls:// and 443 for https://; " +
+			"a firewall blocking those is the usual cause. If they cannot be opened, adding a " +
+			"udp:// entry to dns.upstreams and restarting KyDNS restores resolution, at the cost " +
+			"of authentication on every answer it serves.",
+	}
+}
+
 // unreachableViews names the views whose subnets the ACL rejects outright.
 // The settings screen reuses this to flag each row inline.
 func unreachableViews(views []store.View, allowTailscale bool) []string {

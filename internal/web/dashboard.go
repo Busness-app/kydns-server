@@ -15,6 +15,9 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	if s.o.Upstreams != nil {
 		up := s.o.Upstreams()
 		data["Upstreams"] = up
+		if b := UpstreamsDownBanner(up); b != nil {
+			banners = append(banners, b)
+		}
 		if b := PlaintextUpstreamBanner(up); b != nil {
 			banners = append(banners, b)
 		}
