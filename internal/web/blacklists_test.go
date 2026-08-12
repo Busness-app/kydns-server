@@ -141,6 +141,18 @@ func TestTestBoxNamesTheDecidingRule(t *testing.T) {
 	}
 }
 
+// A missing id means "refresh everything," but a typo in the id field must be
+// an error, not silently fall back to refreshing every list.
+func TestRefreshRejectsAnUnparseableID(t *testing.T) {
+	h, _, c, csrf := loggedIn(t)
+	rec := postForm(t, h, "/blacklists/refresh", url.Values{
+		"id": {"not-a-number"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("refresh with an unparseable id = %d, want 400", rec.Code)
+	}
+}
+
 // Every mutating route must be CSRF-protected, like every other form.
 func TestBlacklistFormsRequireCSRF(t *testing.T) {
 	h, _, c, _ := loggedIn(t)

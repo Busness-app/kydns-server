@@ -40,7 +40,7 @@ func newBlacklistAPI(t *testing.T) (http.Handler, string, *policy.Service) {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	svc := policy.NewService(st, h, policy.NewRefresher(st, policy.NewFetcher(0), h, nil))
+	svc := policy.NewService(st, h, policy.NewRefresher(st, policy.NewFetcher(0), h, nil), nil)
 	api := NewAPI(reg, nil, nil).WithPolicy(svc)
 	return api.Handler(), tok, svc
 }
@@ -189,6 +189,55 @@ func TestRefreshUnknownListIs404(t *testing.T) {
 	h, tok, _ := newBlacklistAPI(t)
 	if rec := do(t, h, "POST", "/api/v1/blacklists/lists/999/refresh", tok, ""); rec.Code != http.StatusNotFound {
 		t.Errorf("refresh of an unknown id = %d, want 404", rec.Code)
+	}
+}
+
+// /api/v1/stats must surface the per-list block counters the spec asks for.
+func TestStatsIncludesBlockedCounters(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	reg := registry.New(st, "home.arpa.", func() error { return nil })
+	tok, err := reg.CreateToken("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := policy.NewHolder(func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
+		set, err := st.BlacklistSettings()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		lists, err := st.BlacklistLists()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		rules, err := st.BlacklistRules()
+		return set, lists, rules, err
+	})
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	svc := policy.NewService(st, h, policy.NewRefresher(st, policy.NewFetcher(0), h, nil), nil)
+	if _, err := svc.AddRule("deny", "ads.example"); err != nil {
+		t.Fatal(err)
+	}
+	h.Decide("ads.example")
+	h.Decide("ads.example")
+
+	api := NewAPI(reg, nil, nil).WithPolicy(svc)
+	got := decodeBody(t, do(t, api.Handler(), "GET", "/api/v1/stats", tok, ""))
+	blocked, ok := got["blocked"].(map[string]any)
+	if !ok {
+		t.Fatalf("stats = %v, want a blocked object", got)
+	}
+	if blocked["total"] != float64(2) {
+		t.Errorf("blocked.total = %v, want 2", blocked["total"])
+	}
+	byList, ok := blocked["by_list"].(map[string]any)
+	if !ok || byList["deny"] != float64(2) {
+		t.Errorf("blocked.by_list = %v, want deny:2", blocked["by_list"])
 	}
 }
 

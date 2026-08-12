@@ -49,7 +49,7 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 	if err := ph.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil))
+	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil), nil)
 	srv := New(Options{
 		Store:      st,
 		Registry:   reg,

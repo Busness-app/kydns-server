@@ -119,7 +119,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return fmt.Errorf("initial blacklist policy: %w", err)
 	}
 	refresher := policy.NewRefresher(st, policy.NewFetcher(30*time.Second), policyHolder, logger)
-	policySvc := policy.NewService(st, policyHolder, refresher)
+	policySvc := policy.NewService(st, policyHolder, refresher, logger)
 
 	if cfg.Discovery.DHCPLeaseFile != "" {
 		poller = discovery.NewPoller(

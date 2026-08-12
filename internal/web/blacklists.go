@@ -205,12 +205,22 @@ func (s *Server) postBlacklistListDelete(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, "/blacklists", http.StatusSeeOther)
 }
 
-// postBlacklistRefresh downloads one list, or every list when no id is given.
+// postBlacklistRefresh downloads one list, or every list when the id field is
+// missing or empty. A present-but-unparseable id is an error, not "all": a
+// typo must never trigger a full re-download of every list.
 func (s *Server) postBlacklistRefresh(w http.ResponseWriter, r *http.Request) {
 	if !s.requirePolicy(w) {
 		return
 	}
-	id, _ := strconv.ParseInt(r.PostFormValue("id"), 10, 64)
+	var id int64
+	if raw := strings.TrimSpace(r.PostFormValue("id")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			s.blacklistsError(w, r, err)
+			return
+		}
+		id = v
+	}
 	if err := s.o.Policy.Refresh(r.Context(), id); err != nil {
 		s.blacklistsError(w, r, err)
 		return

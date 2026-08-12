@@ -673,6 +673,10 @@ func (a *API) stats(w http.ResponseWriter, _ *http.Request) {
 	if a.cache != nil {
 		out["cache"] = map[string]any{"entries": a.cache.Len()}
 	}
+	if a.policy != nil {
+		total, byList := a.policy.Counters()
+		out["blocked"] = map[string]any{"total": total, "by_list": byList}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

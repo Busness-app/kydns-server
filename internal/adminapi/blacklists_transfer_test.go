@@ -55,8 +55,16 @@ func TestImportReplaceRestoresThePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lists) != 1 || lists[0].Name != "restored" {
-		t.Errorf("lists = %+v, want the imported definition", lists)
+	// A replace-import also reseeds the shipped built-in, so the imported
+	// definition sits alongside it rather than being the only list.
+	var foundRestored bool
+	for _, l := range lists {
+		if l.Name == "restored" {
+			foundRestored = true
+		}
+	}
+	if !foundRestored {
+		t.Errorf("lists = %+v, want the imported definition present", lists)
 	}
 	rules, err := svc.Rules()
 	if err != nil {
