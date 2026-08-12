@@ -84,9 +84,12 @@ var migrations = []string{
 	 ALTER TABLE services ADD COLUMN route_via_proxy INTEGER NOT NULL DEFAULT 0;`,
 }
 
-func migrate(db *sql.DB, freshDB bool) error {
+// migrate runs against a transaction Open already holds, so a crash
+// partway through - whether mid-ALTER or mid-schema-creation - rolls back
+// cleanly instead of leaving a database that wedges every future Open.
+func migrate(tx *sql.Tx, freshDB bool) error {
 	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		return err
 	}
 	if freshDB {
@@ -98,26 +101,16 @@ func migrate(db *sql.DB, freshDB bool) error {
 		}
 		// A fresh database already has the columns from schema, but still
 		// needs user_version set so a later Open doesn't try to ALTER them in.
-		_, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
+		_, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
 		return err
 	}
-
-	// A crash between an ALTER and the user_version bump must not leave a
-	// database that fails every future Open, so both run in one transaction.
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	for i := version; i < len(migrations); i++ {
 		if _, err := tx.Exec(migrations[i]); err != nil {
 			return fmt.Errorf("migration %d: %w", i+1, err)
 		}
 	}
-	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
+	return err
 }
 
 func Open(path string) (*Store, error) {
@@ -146,11 +139,24 @@ func Open(path string) (*Store, error) {
 	}
 	fresh := n == 0
 
-	if _, err := db.Exec(schema); err != nil {
+	// Schema creation and the migration bookkeeping run in one transaction,
+	// so a crash partway through leaves nothing behind instead of a
+	// half-built database that wedges every future Open.
+	tx, err := db.Begin()
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("schema: %w", err)
 	}
-	if err := migrate(db, fresh); err != nil {
+	if err := migrate(tx, fresh); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		db.Close()
 		return nil, err
 	}

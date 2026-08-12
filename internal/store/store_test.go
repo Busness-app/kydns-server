@@ -309,6 +309,43 @@ func TestServiceRoundTripsProxyFields(t *testing.T) {
 	}
 }
 
+// A crash partway through building a fresh database must not leave a
+// half-built schema behind: either every table lands and user_version is
+// set, or none of it does. Force a failure partway through the schema
+// batch by pre-claiming a name one of its later statements needs.
+func TestFreshDatabaseInitIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "torn.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE idx_view_subnets_cidr (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open() with a colliding name, want an error")
+	}
+
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('views','view_subnets')`).
+		Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("tables committed despite the later failure: %d, want 0 (atomic rollback)", n)
+	}
+}
+
 // ReplaceAll must be all-or-nothing: a document that fails partway through
 // must leave the prior registry untouched, not half-wiped.
 func TestReplaceAllRollsBackOnFailure(t *testing.T) {
