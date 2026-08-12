@@ -1,0 +1,22 @@
+# The configuration baked into the container image at /etc/kydns/kydns.yaml.
+#
+# It differs from kydns.example.yaml in exactly two settings, both of which are
+# wrong for a container at their defaults. Everything else is left out on
+# purpose, so the code's defaults stay the single source of truth — see
+# kydns.example.yaml for what they are and how to change them.
+#
+# Mount your own file over /etc/kydns/kydns.yaml to replace this one.
+
+# The volume the image declares. Holds kydns.db plus the setup and bootstrap
+# tokens; back it up.
+data_dir: /var/lib/kydns
+
+admin:
+  # The default, 127.0.0.1:8053, would bind the *container's* loopback, which
+  # is reachable from nowhere at all. 0.0.0.0 here means the container's own
+  # addresses only — with a LAN-attached network that is its LAN address, and
+  # with a bridge network it is whatever ports you publish.
+  #
+  # KyDNS speaks plain HTTP. Put a TLS-terminating reverse proxy in front of
+  # it if you expose it beyond your LAN.
+  listen: "0.0.0.0:8053"

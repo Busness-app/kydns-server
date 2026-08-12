@@ -10,6 +10,32 @@ import (
 // examplePath is the shipped example, two directories up from this package.
 const examplePath = "../../kydns.example.yaml"
 
+// dockerPath is the config the image bakes in at /etc/kydns/kydns.yaml.
+const dockerPath = "../../kydns.docker.yaml"
+
+// The image's config is what a fresh container runs on with nothing prepared
+// on the host, so a broken one is a container that will not start.
+func TestDockerConfigLoads(t *testing.T) {
+	c, err := Load(dockerPath)
+	if err != nil {
+		t.Fatalf("kydns.docker.yaml does not load: %v", err)
+	}
+	if c.DataDir != "/var/lib/kydns" {
+		t.Errorf("data_dir is %q, want the volume the image declares", c.DataDir)
+	}
+	// Loopback here is the container's own, reachable from nowhere. This is
+	// the setting the whole file exists to change.
+	if strings.HasPrefix(c.Admin.Listen, "127.") || strings.HasPrefix(c.Admin.Listen, "[::1]") {
+		t.Errorf("admin.listen is %q; the admin UI would be unreachable", c.Admin.Listen)
+	}
+	if c.DNS.AllowTailscale {
+		t.Error("image config ships with allow_tailscale on; the default must be closed")
+	}
+	if c.Discovery.DHCPLeaseFile != "" {
+		t.Error("image config ships with discovery enabled; it must be opt-in")
+	}
+}
+
 // The shipped example must actually load. A broken example is worse than none:
 // it is the first thing an operator copies.
 func TestExampleConfigLoads(t *testing.T) {

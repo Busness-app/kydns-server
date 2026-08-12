@@ -290,6 +290,12 @@ In `kydns.yaml` change two settings from their defaults: `data_dir:
 /var/lib/kydns`, and `admin.listen: "0.0.0.0:8053"`. Leaving admin on
 `127.0.0.1` would bind the *container's* loopback, reachable from nowhere.
 
+The image already has both set, in `kydns.docker.yaml` baked in at
+`/etc/kydns/kydns.yaml`, so a `docker run` with no config mounted at all
+starts and serves. The compose file mounts your `kydns.yaml` over it, which is
+what makes the two settings above yours to get right. Everything else takes
+the same defaults `kydns.example.yaml` documents.
+
 Pick a `KYDNS_IP` inside that network's subnet, **outside the router's DHCP
 pool**, and different from any address AdGuard Home or Pi-hole already holds.
 Two DNS servers can each own port 53 at once when each has its own LAN
