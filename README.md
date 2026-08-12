@@ -159,17 +159,21 @@ kydns service add kypost \
   --check http://192.168.1.30:8080/health
 ```
 
-`kypost.urlxl.us` now answers `192.168.1.20`, and so does every alias. The
-reverse record for `192.168.1.30` still names `kypost.urlxl.us`, so several
+`kypost.home.arpa` now answers `192.168.1.20`, and so does every alias. The
+reverse record for `192.168.1.30` still names `kypost.home.arpa`, so several
 services behind one proxy each keep a correct PTR.
 
 Point the health check at the service, not the proxy. A proxy returning 502 for
 a dead backend still answers a prober perfectly, so checking the proxy tells you
 only that the proxy is up.
 
-Untick the box to send clients straight at the service without losing the proxy
-address — the fastest way to tell whether a problem is the application or the
-proxy in front of it.
+Routing is chosen when the service is created; neither the web UI nor the CLI
+can change it afterward — both only add services. To change it later, call
+`PATCH /api/v1/services/{id}` with the **complete** service object. That
+endpoint replaces the service rather than merging into it, so any field you
+leave out comes back cleared. A body of `{"route_via_proxy": false}` on its
+own does not just turn routing off — it also erases the stored
+`proxy_address`.
 
 A service with both an IPv4 and an IPv6 address behind one proxy answers `A`
 only: `--proxy` takes one address, so the `AAAA` query gets `NODATA` instead of
