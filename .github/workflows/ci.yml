@@ -108,6 +108,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{"name":"ci","addresses":[{"address":"192.168.1.20"}]}' \
             http://127.0.0.1:18053/api/v1/services
+          sudo apt-get update -qq
           sudo apt-get install -y -qq dnsutils
           answer=$(dig @127.0.0.1 -p 15353 ci.home.arpa A +short)
           test "$answer" = "192.168.1.20" || {
