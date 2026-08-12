@@ -340,4 +340,48 @@ func TestForwarderStatus(t *testing.T) {
 	if st[1].LastError != "" || st[1].LastOKAt.IsZero() {
 		t.Errorf("Status()[1] = %+v, want a clean success", st[1])
 	}
+
+	// The recorded reason must not repeat the Spec column: Status.Spec
+	// already names the upstream, so the UI would print it twice.
+	dup := newForwarder(servfailUpstream("tls://6.6.6.6:853", true))
+	if _, err := dup.Resolve(context.Background(), question("a.example.com."), false); err == nil {
+		t.Fatal("Resolve() error = nil, want the single upstream's SERVFAIL to fail the query")
+	}
+	if got := dup.Status()[0].LastError; strings.Contains(got, "upstream ") {
+		t.Errorf("Status()[0].LastError = %q, want no upstream-spec prefix", got)
+	} else if got != "returned SERVFAIL" {
+		t.Errorf("Status()[0].LastError = %q, want %q", got, "returned SERVFAIL")
+	}
+
+	// Recovery: a failure followed by success must not leave a stale
+	// LastErrAt next to an empty LastError.
+	flaky := &fakeUpstream{name: "tls://5.5.5.5:853", secure: true}
+	attempts := 0
+	flaky.reply = func(m *dns.Msg) (*dns.Msg, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, errors.New("dial tcp: i/o timeout")
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		resp.Answer = reply(m.Question[0].Name, 300).Answer
+		return resp, nil
+	}
+	rf := newForwarder(flaky)
+	if _, err := rf.Resolve(context.Background(), question("a.example.com."), false); err == nil {
+		t.Fatal("Resolve() error = nil, want the first attempt to fail")
+	}
+	if _, err := rf.Resolve(context.Background(), question("b.example.com."), false); err != nil {
+		t.Fatal(err)
+	}
+	rst := rf.Status()[0]
+	if rst.LastError != "" {
+		t.Errorf("recovered upstream LastError = %q, want empty after success", rst.LastError)
+	}
+	if !rst.LastErrAt.IsZero() {
+		t.Errorf("recovered upstream LastErrAt = %v, want zero after success", rst.LastErrAt)
+	}
+	if rst.LastOKAt.IsZero() {
+		t.Error("recovered upstream LastOKAt is zero after success")
+	}
 }

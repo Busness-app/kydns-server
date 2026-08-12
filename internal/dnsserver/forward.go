@@ -59,6 +59,7 @@ func (f *Forwarder) record(i int, err error) {
 		return
 	}
 	f.status[i].LastError = ""
+	f.status[i].LastErrAt = time.Time{}
 	f.status[i].LastOKAt = time.Now()
 }
 
@@ -113,15 +114,22 @@ func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns
 			f.record(i, nil)
 			return resp, nil
 		}
+		var reason string // bare: Status.Spec already names the upstream
 		switch {
 		case err != nil:
+			reason = err.Error()
 			lastErr = err
 		case resp == nil:
-			lastErr = fmt.Errorf("upstream %s returned no message", u)
+			reason = "returned no message"
+			lastErr = fmt.Errorf("upstream %s %s", u, reason)
 		default:
-			lastErr = fmt.Errorf("upstream %s returned %s", u, dns.RcodeToString[resp.Rcode])
+			reason = "returned " + dns.RcodeToString[resp.Rcode]
+			lastErr = fmt.Errorf("upstream %s %s", u, reason)
 		}
-		f.record(i, lastErr)
+		// record keeps the bare reason so the UI doesn't print the upstream
+		// twice in adjacent columns; lastErr keeps the spec prefix, since the
+		// aggregate error below has no such column to lean on.
+		f.record(i, errors.New(reason))
 	}
 	return nil, fmt.Errorf("all upstreams failed: %w", lastErr)
 }
