@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,41 @@ func TestAllowTailscaleExplicit(t *testing.T) {
 	}
 	if !c.DNS.AllowTailscale {
 		t.Error("AllowTailscale = false, want true")
+	}
+}
+
+// Encryption is the default. An operator who does nothing gets a private path
+// to the upstream.
+func TestDefaultUpstreamsAreEncrypted(t *testing.T) {
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DNS.Upstreams) == 0 {
+		t.Fatal("no default upstreams")
+	}
+	for _, u := range c.DNS.Upstreams {
+		if !strings.HasPrefix(u, "tls://") {
+			t.Errorf("default upstream %q is not encrypted", u)
+		}
+	}
+}
+
+func TestUpstreamValidation(t *testing.T) {
+	body := func(u string) string {
+		return "data_dir: /tmp/x\ndns:\n  upstreams: [\"" + u + "\"]\n"
+	}
+	for _, good := range []string{
+		"tls://1.1.1.1:853", "https://9.9.9.9/dns-query", "udp://192.168.1.1:53", "1.1.1.1:53",
+	} {
+		if _, err := Load(write(t, body(good))); err != nil {
+			t.Errorf("upstreams [%q] rejected: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"tls://dns.quad9.net:853", "quic://1.1.1.1:853", "1.1.1.1:no"} {
+		if _, err := Load(write(t, body(bad))); err == nil {
+			t.Errorf("upstreams [%q] accepted, want a rejection", bad)
+		}
 	}
 }
 

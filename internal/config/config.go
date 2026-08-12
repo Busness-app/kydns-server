@@ -5,11 +5,11 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"strings"
 
+	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"gopkg.in/yaml.v3"
 )
 
@@ -125,7 +125,7 @@ func (c *Config) applyDefaults() {
 	setInt(&c.Health.Timeout, 5)
 	setInt(&c.Health.Workers, 8)
 	if len(c.DNS.Upstreams) == 0 {
-		c.DNS.Upstreams = []string{"1.1.1.1:53", "9.9.9.9:53"}
+		c.DNS.Upstreams = []string{"tls://1.1.1.1:853", "tls://9.9.9.9:853"}
 	}
 	if len(c.DNS.AllowQuery) == 0 {
 		c.DNS.AllowQuery = append([]string(nil), defaultAllowQuery...)
@@ -149,14 +149,8 @@ func (c *Config) validate() error {
 			return fmt.Errorf("dns.reverse_zones %q: %w", s, err)
 		}
 	}
-	for _, s := range c.DNS.Upstreams {
-		host, port, err := net.SplitHostPort(s)
-		if err != nil || host == "" || port == "" {
-			return fmt.Errorf("dns.upstreams %q: must be host:port", s)
-		}
-		if _, err := net.LookupPort("udp", port); err != nil {
-			return fmt.Errorf("dns.upstreams %q: bad port", s)
-		}
+	if _, err := upstream.ParseAll(c.DNS.Upstreams); err != nil {
+		return fmt.Errorf("dns.upstreams: %w", err)
 	}
 	if c.DNS.CacheMinTTL > c.DNS.CacheMaxTTL {
 		return errors.New("dns.cache_min_ttl exceeds dns.cache_max_ttl")
