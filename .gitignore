@@ -6,3 +6,6 @@
 # Local deployment settings. Copy from the .example files.
 .env
 /kydns.yaml
+
+# Isolated workspaces for in-progress plans.
+/.worktrees/
