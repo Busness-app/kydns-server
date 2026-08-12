@@ -182,6 +182,13 @@ func TestTestEndpointReportsTheDecision(t *testing.T) {
 	}
 }
 
+func TestRefreshUnknownListIs404(t *testing.T) {
+	h, tok, _ := newBlacklistAPI(t)
+	if rec := do(t, h, "POST", "/api/v1/blacklists/lists/999/refresh", tok, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("refresh of an unknown id = %d, want 404", rec.Code)
+	}
+}
+
 // With no policy wired the endpoints answer cleanly rather than panicking.
 func TestBlacklistEndpointsWithoutAPolicy(t *testing.T) {
 	h, tok := newAPI(t)

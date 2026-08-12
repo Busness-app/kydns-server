@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -194,6 +195,10 @@ func (a *API) refreshBlacklistList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.policy.Refresh(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeRegistryErr(w, err)
+			return
+		}
 		writeErr(w, http.StatusBadGateway, "refresh_failed", "", err.Error())
 		return
 	}
