@@ -83,6 +83,29 @@
   </form>
 </div>
 
+{{if .Upstreams}}
+<div class="card">
+  <h3>Upstreams</h3>
+  <p class="muted">Tried in order. {{.RestartNote}}</p>
+  <table class="grid">
+    <tr><th>Upstream</th><th>Channel</th><th>Last result</th></tr>
+    {{range .Upstreams}}
+    <tr>
+      <td><code>{{.Spec}}</code></td>
+      <td>{{if .Secure}}encrypted{{else}}<span class="badge warn">plaintext</span>{{end}}</td>
+      <td>
+        {{if .LastError}}<span class="error">{{.LastError}}</span>
+        {{else if .LastOKAt.IsZero}}<span class="muted">not used yet</span>
+        {{else}}ok{{end}}
+      </td>
+    </tr>
+    {{end}}
+  </table>
+  <p class="muted">An answer over a plaintext channel is served with the
+     authenticated-data flag cleared, because nothing authenticated it.</p>
+</div>
+{{end}}
+
 {{if .Config}}
 <div class="card">
   <h3>Configuration</h3>

@@ -84,3 +84,28 @@ func TestNoBannerForNonCGNATView(t *testing.T) {
 		t.Errorf("TailscaleBanner() = %+v for a reachable view, want nil", b)
 	}
 }
+
+func TestPlaintextUpstreamBanner(t *testing.T) {
+	secure := []dnsserver.UpstreamStatus{
+		{Spec: "tls://1.1.1.1:853", Secure: true},
+		{Spec: "https://9.9.9.9/dns-query", Secure: true},
+	}
+	if b := PlaintextUpstreamBanner(secure); b != nil {
+		t.Errorf("banner = %+v with every upstream encrypted, want nil", b)
+	}
+
+	mixed := append(secure, dnsserver.UpstreamStatus{Spec: "udp://192.168.1.1:53"})
+	b := PlaintextUpstreamBanner(mixed)
+	if b == nil {
+		t.Fatal("banner = nil with a plaintext upstream configured")
+	}
+	if !strings.Contains(b.Body, "udp://192.168.1.1:53") {
+		t.Errorf("body %q does not name the plaintext upstream", b.Body)
+	}
+	if strings.Contains(b.Body, "tls://1.1.1.1:853") {
+		t.Errorf("body %q names an encrypted upstream", b.Body)
+	}
+	if b.Fix == "" {
+		t.Error("banner has no fix")
+	}
+}

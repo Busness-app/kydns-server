@@ -60,6 +60,28 @@ func TailscaleBanner(acl *dnsserver.ACL, views []store.View, allowTailscale bool
 	return nil
 }
 
+// PlaintextUpstreamBanner fires when any upstream is unencrypted. Encryption is
+// the default, so a udp:// entry is always something someone chose, and the
+// operator looking at this screen may not be the one who chose it.
+func PlaintextUpstreamBanner(statuses []dnsserver.UpstreamStatus) *Banner {
+	var names []string
+	for _, s := range statuses {
+		if !s.Secure {
+			names = append(names, s.Spec)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return &Banner{
+		Title: "Some upstream queries are unencrypted.",
+		Body: fmt.Sprintf(
+			"Plain DNS is used for %s. Anyone on the network path can read and forge those answers, so KyDNS clears the authenticated-data flag on everything they return.",
+			strings.Join(names, ", ")),
+		Fix: "Replace them with tls:// or https:// entries in dns.upstreams and restart KyDNS.",
+	}
+}
+
 // unreachableViews names the views whose subnets the ACL rejects outright.
 // The settings screen reuses this to flag each row inline.
 func unreachableViews(views []store.View, allowTailscale bool) []string {

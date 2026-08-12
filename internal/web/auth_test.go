@@ -38,7 +38,6 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 		Backoff:    auth.NewBackoff(),
 		ACL:        acl,
 		Cache:      cache,
-		Upstreams:  []string{"1.1.1.1:53"},
 		SetupToken: "setup-me",
 	})
 	mux := http.NewServeMux()

@@ -174,7 +174,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		ACL:            acl,
 		Cache:          cache,
 		AllowTailscale: cfg.DNS.AllowTailscale,
-		Upstreams:      cfg.DNS.Upstreams,
+		Upstreams:      fwd.Status,
 		SetupToken:     setupToken,
 		Logger:         logger,
 		Health:         checker.Statuses,

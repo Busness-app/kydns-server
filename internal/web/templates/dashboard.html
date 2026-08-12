@@ -1,5 +1,5 @@
 {{define "page"}}
-{{with .Banner}}
+{{range .Banners}}
 <div class="banner">
   <strong>{{.Title}}</strong>
   <p>{{.Body}}</p>
@@ -19,7 +19,7 @@
     <tr><th>Metric</th><th>Value</th></tr>
     <tr><td>Refused queries (total)</td><td>{{.RefusedTotal}}</td></tr>
     <tr><td>Refused from Tailscale range</td><td>{{.RefusedCGNAT}}</td></tr>
-    <tr><td>Upstreams</td><td>{{range .Upstreams}}<span class="badge">{{.}}</span> {{else}}<span class="muted">none</span>{{end}}</td></tr>
+    <tr><td>Upstreams</td><td>{{range .Upstreams}}<span class="badge{{if not .Secure}} warn{{end}}">{{.Spec}}</span> {{else}}<span class="muted">none</span>{{end}}</td></tr>
   </table>
 </div>
 {{end}}
