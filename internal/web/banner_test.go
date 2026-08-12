@@ -84,3 +84,70 @@ func TestNoBannerForNonCGNATView(t *testing.T) {
 		t.Errorf("TailscaleBanner() = %+v for a reachable view, want nil", b)
 	}
 }
+
+func TestPlaintextUpstreamBanner(t *testing.T) {
+	secure := []dnsserver.UpstreamStatus{
+		{Spec: "tls://1.1.1.1:853", Secure: true},
+		{Spec: "https://9.9.9.9/dns-query", Secure: true},
+	}
+	if b := PlaintextUpstreamBanner(secure); b != nil {
+		t.Errorf("banner = %+v with every upstream encrypted, want nil", b)
+	}
+
+	mixed := append(secure, dnsserver.UpstreamStatus{Spec: "udp://192.168.1.1:53"})
+	b := PlaintextUpstreamBanner(mixed)
+	if b == nil {
+		t.Fatal("banner = nil with a plaintext upstream configured")
+	}
+	if !strings.Contains(b.Body, "udp://192.168.1.1:53") {
+		t.Errorf("body %q does not name the plaintext upstream", b.Body)
+	}
+	if strings.Contains(b.Body, "tls://1.1.1.1:853") {
+		t.Errorf("body %q names an encrypted upstream", b.Body)
+	}
+	if b.Fix == "" {
+		t.Error("banner has no fix")
+	}
+}
+
+func TestUpstreamsDownBanner(t *testing.T) {
+	if b := UpstreamsDownBanner(nil); b != nil {
+		t.Errorf("banner = %+v with no upstreams wired, want nil", b)
+	}
+	fresh := []dnsserver.UpstreamStatus{
+		{Spec: "tls://1.1.1.1:853", Secure: true},
+		{Spec: "tls://9.9.9.9:853", Secure: true},
+	}
+	if b := UpstreamsDownBanner(fresh); b != nil {
+		t.Errorf("banner = %+v before any upstream has failed, want nil", b)
+	}
+	partial := []dnsserver.UpstreamStatus{
+		{Spec: "tls://1.1.1.1:853", Secure: true, LastError: "dial tcp 1.1.1.1:853: i/o timeout"},
+		{Spec: "tls://9.9.9.9:853", Secure: true},
+	}
+	if b := UpstreamsDownBanner(partial); b != nil {
+		t.Errorf("banner = %+v while one upstream still answers, want nil", b)
+	}
+
+	down := []dnsserver.UpstreamStatus{
+		{Spec: "tls://1.1.1.1:853", Secure: true, LastError: "dial tcp 1.1.1.1:853: i/o timeout"},
+		{Spec: "tls://9.9.9.9:853", Secure: true, LastError: "returned SERVFAIL"},
+	}
+	b := UpstreamsDownBanner(down)
+	if b == nil {
+		t.Fatal("banner = nil with every upstream failing")
+	}
+	for _, want := range []string{
+		"tls://1.1.1.1:853", "i/o timeout", "tls://9.9.9.9:853", "returned SERVFAIL",
+	} {
+		if !strings.Contains(b.Body, want) {
+			t.Errorf("body %q does not name %q", b.Body, want)
+		}
+	}
+	if !strings.Contains(b.Fix, "853") {
+		t.Errorf("Fix = %q, want the blocked outbound port named", b.Fix)
+	}
+	if !strings.Contains(b.Fix, "udp://") {
+		t.Errorf("Fix = %q, want the documented escape hatch named", b.Fix)
+	}
+}

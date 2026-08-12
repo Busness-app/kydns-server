@@ -5,8 +5,10 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/config"
+	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 )
 
 func TestViewCreateAndList(t *testing.T) {
@@ -228,6 +230,43 @@ func TestConfigViewCarriesNoSecrets(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("settings page leaked %q", forbidden)
 		}
+	}
+}
+
+// Strict mode is only survivable if the operator can see why it is failing.
+func TestSettingsShowsUpstreamStatus(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	srv.o.Upstreams = func() []dnsserver.UpstreamStatus {
+		return []dnsserver.UpstreamStatus{
+			{
+				Spec: "tls://1.1.1.1:853", Secure: true,
+				LastError: "dial tcp 1.1.1.1:853: i/o timeout",
+				LastErrAt: time.Date(2026, 8, 14, 9, 30, 0, 0, time.UTC),
+			},
+			{Spec: "udp://192.168.1.1:53"},
+		}
+	}
+	body := page(t, h, "/settings", c)
+	for _, want := range []string{
+		"tls://1.1.1.1:853",
+		"i/o timeout",
+		// A three-second-old timeout and a three-day-old one read alike
+		// without this.
+		"2026-08-14 09:30:00 UTC",
+		"udp://192.168.1.1:53",
+		"plaintext",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("settings page does not contain %q", want)
+		}
+	}
+}
+
+// With no forwarder wired the card is absent rather than an empty table.
+func TestSettingsOmitsUpstreamsWhenUnset(t *testing.T) {
+	h, _, c, _ := loggedIn(t)
+	if strings.Contains(page(t, h, "/settings", c), "<h3>Upstreams</h3>") {
+		t.Error("settings renders an upstream card with no forwarder wired")
 	}
 }
 

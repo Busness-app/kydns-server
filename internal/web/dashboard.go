@@ -9,11 +9,24 @@ import (
 const bannerWindow = time.Hour
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"Title": "Dashboard", "Nav": "dashboard", "Upstreams": s.o.Upstreams}
+	data := map[string]any{"Title": "Dashboard", "Nav": "dashboard"}
+
+	var banners []*Banner
+	if s.o.Upstreams != nil {
+		up := s.o.Upstreams()
+		data["Upstreams"] = up
+		if b := UpstreamsDownBanner(up); b != nil {
+			banners = append(banners, b)
+		}
+		if b := PlaintextUpstreamBanner(up); b != nil {
+			banners = append(banners, b)
+		}
+	}
 
 	views, err := s.o.Registry.Views()
 	if err != nil {
 		data["Error"] = err.Error()
+		data["Banners"] = banners
 		s.render(w, r, "dashboard.html", data)
 		return
 	}
@@ -26,7 +39,10 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 		data["Error"] = err.Error()
 	}
 
-	data["Banner"] = TailscaleBanner(s.o.ACL, views, s.o.AllowTailscale, bannerWindow)
+	if b := TailscaleBanner(s.o.ACL, views, s.o.AllowTailscale, bannerWindow); b != nil {
+		banners = append(banners, b)
+	}
+	data["Banners"] = banners
 	data["Services"] = len(svcs)
 	data["Records"] = len(recs)
 	data["Views"] = len(views)

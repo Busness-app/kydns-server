@@ -27,14 +27,14 @@ type Options struct {
 	ACL            *dnsserver.ACL
 	Cache          *dnsserver.Cache
 	AllowTailscale bool
-	Upstreams      []string
 	SetupToken     string
 	Logger         *slog.Logger
 
-	// Leases and Health are nil when discovery or health checking is off,
-	// which the screens render as "not enabled" rather than as empty.
-	Leases func() []dhcp.Lease
-	Health func() []health.Status
+	// Leases, Health and Upstreams are nil when the corresponding subsystem is
+	// off, which the screens render as "not enabled" rather than as empty.
+	Leases    func() []dhcp.Lease
+	Health    func() []health.Status
+	Upstreams func() []dnsserver.UpstreamStatus
 }
 
 type Server struct{ o Options }

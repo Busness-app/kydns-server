@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -41,6 +42,15 @@ func onOff(b bool) string {
 }
 
 func secs(n int) string { return strconv.Itoa(n) + "s" }
+
+// upstreams is nil when the forwarder is not wired, which the template renders
+// as "not enabled" rather than as an empty table.
+func (s *Server) upstreams() []dnsserver.UpstreamStatus {
+	if s.o.Upstreams == nil {
+		return nil
+	}
+	return s.o.Upstreams()
+}
 
 // configRows renders the loaded config for display. Config holds no secrets
 // today; if a credentialed upstream is ever added, it must be excluded here
@@ -119,6 +129,7 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 		"Title": "Settings", "Nav": "settings",
 		"Views": rows, "Tokens": toks, "NewToken": newToken,
 		"Config": s.configRows(), "RestartNote": restartNote, "Error": errMsg,
+		"Upstreams": s.upstreams(),
 	}
 }
 

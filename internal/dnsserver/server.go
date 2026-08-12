@@ -41,6 +41,11 @@ func New(o Options) *Server {
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
 	reply := func(m *dns.Msg, source, view string) {
+		// Every reply passes through here, so no path can forget the datagram
+		// ceiling. Over-large answers are common now that DO=1 is forwarded.
+		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
+			m.Truncate(clientUDPSize(r))
+		}
 		if err := w.WriteMsg(m); err != nil {
 			s.o.Logger.Warn("write reply", "error", err)
 		}
@@ -92,7 +97,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resp, err := s.o.Forwarder.Resolve(ctx, q)
+	edns := r.IsEdns0()
+	resp, err := s.o.Forwarder.Resolve(ctx, q, edns != nil && edns.Do())
 	if err != nil {
 		s.o.Logger.Warn("forward failed", "qname", q.Name, "error", err)
 		fail(dns.RcodeServerFailure, "forward")
@@ -103,6 +109,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	out.SetRcode(r, rcode)
 	out.Authoritative = false
 	out.RecursionAvailable = true
+	if edns == nil {
+		stripOPT(out)
+	}
 	reply(out, "forward", view)
 }
 
@@ -118,6 +127,28 @@ func sourceAddr(w dns.ResponseWriter) netip.Addr {
 		return netip.Addr{}
 	}
 	return a.Unmap()
+}
+
+// clientUDPSize is the datagram budget the client advertised. A client that
+// sent no OPT record does not speak EDNS0, so 512 is its ceiling.
+func clientUDPSize(r *dns.Msg) int {
+	if edns := r.IsEdns0(); edns != nil {
+		return int(edns.UDPSize())
+	}
+	return dns.MinMsgSize
+}
+
+// stripOPT removes the EDNS0 record from a response. The forwarder always
+// speaks EDNS0 upstream, but a client that did not offer an OPT record must
+// not be handed one back.
+func stripOPT(m *dns.Msg) {
+	extra := m.Extra[:0]
+	for _, rr := range m.Extra {
+		if rr.Header().Rrtype != dns.TypeOPT {
+			extra = append(extra, rr)
+		}
+	}
+	m.Extra = extra
 }
 
 // logQuery honors the two-flag policy: query logging is off by default, and

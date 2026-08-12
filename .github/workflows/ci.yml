@@ -113,6 +113,18 @@ jobs:
           test "$answer" = "192.168.1.20" || {
             echo "resolved '$answer', wanted 192.168.1.20"; exit 1; }
 
+      # The only check here that needs the internet. Everything else proves the
+      # code is right against a fake; this proves it is right against
+      # Cloudflare, over the tls:// default.
+      - name: resolves a public name over DoT
+        run: |
+          set -eux
+          answer=$(dig @127.0.0.1 -p 15353 example.com A +short)
+          test -n "$answer" || {
+            echo "no answer for example.com over DoT"
+            docker logs kydns-ci
+            exit 1; }
+
       - name: logs on failure
         if: failure()
         run: docker logs kydns-ci || true

@@ -27,9 +27,22 @@ dns:
   reverse_zones: []
   # reverse_zones: ["192.168.1.0/24", "fd00::/64"]
 
-  # Where non-local queries go, tried in order. Plain UDP/TCP only in this
-  # release: no DNS-over-TLS or DNS-over-HTTPS yet.
-  upstreams: ["1.1.1.1:53", "9.9.9.9:53"]
+  # Where non-local queries go, tried in order. The scheme is the policy:
+  #
+  #   tls://IP[:port]      DNS-over-TLS, port 853 by default
+  #   https://IP[/path]    DNS-over-HTTPS, port 443 and /dns-query by default
+  #   udp://IP[:port]      plain DNS — readable and forgeable in transit
+  #
+  # The host must be an IP address: a hostname would need DNS to resolve it,
+  # and KyDNS may be the thing resolving. Add #name after the address when the
+  # provider's certificate needs a hostname, e.g.
+  # tls://45.90.28.0:853#abc123.dns.nextdns.io
+  #
+  # With only encrypted upstreams, a query fails with SERVFAIL rather than
+  # falling back to plain DNS. That is deliberate. Adding a udp:// entry is the
+  # escape hatch, and it gives up authentication for every answer it serves.
+  upstreams: ["tls://1.1.1.1:853", "tls://9.9.9.9:853"]
+  # upstreams: ["tls://1.1.1.1:853", "udp://192.168.1.1:53"]
 
   # Who may query. Default-closed: anything not listed gets REFUSED, so a
   # KyDNS accidentally exposed to the internet is not an open resolver.

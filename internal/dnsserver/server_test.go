@@ -49,7 +49,6 @@ func newTestServer(t *testing.T, allow []netip.Prefix) string {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": okReply}}
 	return startUDP(t, New(Options{
 		Holder: h,
 		ACL:    NewACL(allow),
@@ -57,7 +56,7 @@ func newTestServer(t *testing.T, allow []netip.Prefix) string {
 			Zone: "home.arpa.", TTL: 60,
 			ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
 		},
-		Forwarder: newForwarder(x, "1.1.1.1:53"),
+		Forwarder: newForwarder(okUpstream("tls://1.1.1.1:853", true)),
 	}))
 }
 
@@ -155,12 +154,11 @@ func TestRefusedForNonINClass(t *testing.T) {
 
 func TestServfailWhenSnapshotMissingAndUpstreamsDown(t *testing.T) {
 	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
-	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": failReply}}
 	addr := startUDP(t, New(Options{
 		Holder:    h, // never rebuilt: Current() is nil
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
 		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
-		Forwarder: newForwarder(x, "1.1.1.1:53"),
+		Forwarder: newForwarder(deadUpstream("tls://1.1.1.1:853", true)),
 	}))
 	resp := queryFrom(t, addr, "127.0.0.1", "example.com.", dns.TypeA)
 	if resp.Rcode != dns.RcodeServerFailure {
@@ -180,12 +178,11 @@ func TestAuthoritativeUnaffectedByUpstreamFailure(t *testing.T) {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": failReply}}
 	addr := startUDP(t, New(Options{
 		Holder:    h,
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
 		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
-		Forwarder: newForwarder(x, "1.1.1.1:53"),
+		Forwarder: newForwarder(deadUpstream("tls://1.1.1.1:853", true)),
 	}))
 	resp := queryFrom(t, addr, "127.0.0.1", "nas.home.arpa.", dns.TypeA)
 	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
@@ -240,5 +237,216 @@ func TestTCPListener(t *testing.T) {
 	}
 	if len(resp.Answer) != 1 {
 		t.Errorf("TCP answer = %v", resp.Answer)
+	}
+}
+
+// A client that did not offer EDNS0 must not be handed an OPT record back, even
+// though the forwarder always uses EDNS0 upstream.
+func TestForwardedReplyHasNoOPTForAPlainClient(t *testing.T) {
+	addr := newTestServer(t, allowLoopback(t))
+	resp := queryFrom(t, addr, "127.0.0.1", "example.com.", dns.TypeA)
+	if resp.IsEdns0() != nil {
+		t.Error("reply carries an OPT record the client never asked for")
+	}
+}
+
+// A client that did ask for DNSSEC records still gets an OPT record back.
+func TestForwardedReplyKeepsOPTForAnEDNSClient(t *testing.T) {
+	addr := newTestServer(t, allowLoopback(t))
+	c := &dns.Client{
+		Net:     "udp",
+		Timeout: 3 * time.Second,
+		Dialer:  &net.Dialer{LocalAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1")}},
+	}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	m.SetEdns0(1232, true)
+	resp, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsEdns0() == nil {
+		t.Error("reply dropped the OPT record an EDNS0 client asked for")
+	}
+}
+
+// The server must read the client's own DO bit and forward it, not hardcode
+// one: hardcoding false would leave every other test green, since none of
+// them check which DO value actually reached the reply. This checks a fresh
+// query (a cache miss) and a repeat of the same query (a cache hit), since a
+// cache that mishandled the OPT record would only show it on the second.
+func TestServerReadsClientDOBit(t *testing.T) {
+	for _, do := range []bool{true, false} {
+		addr := newTestServer(t, allowLoopback(t))
+		c := &dns.Client{
+			Net:     "udp",
+			Timeout: 3 * time.Second,
+			Dialer:  &net.Dialer{LocalAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1")}},
+		}
+		for i := 0; i < 2; i++ {
+			m := new(dns.Msg)
+			m.SetQuestion("example.com.", dns.TypeA)
+			m.SetEdns0(1232, do)
+			resp, _, err := c.Exchange(m, addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opt := resp.IsEdns0()
+			if opt == nil {
+				t.Fatalf("do=%t query %d: reply carries no OPT", do, i)
+			}
+			if opt.Do() != do {
+				t.Errorf("do=%t query %d: reply DO=%t, want %t", do, i, opt.Do(), do)
+			}
+		}
+	}
+}
+
+// forwardOnlyServer holds an empty zone, so every query reaches u.
+func forwardOnlyServer(t *testing.T, u *fakeUpstream) string {
+	t.Helper()
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	return startUDP(t, New(Options{
+		Holder:    h,
+		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
+		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Forwarder: newForwarder(u),
+	}))
+}
+
+// udpExchange sends one datagram and returns the parsed reply plus the byte
+// count that actually crossed the wire. The read buffer is deliberately larger
+// than any advertised size, so the count measures the server, not the client.
+func udpExchange(t *testing.T, server string, m *dns.Msg) (*dns.Msg, int) {
+	t.Helper()
+	wire, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("udp", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(wire); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, dns.MaxMsgSize)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := new(dns.Msg)
+	if err := resp.Unpack(buf[:n]); err != nil {
+		t.Fatalf("reply of %d bytes does not parse: %v", n, err)
+	}
+	return resp, n
+}
+
+// A UDP reply larger than the client advertised is chopped by the kernel, and
+// with TC clear the stub has no signal to retry over TCP. Forwarding the DO
+// bit made over-large answers routine, so this has to hold for every client
+// class.
+func TestUDPReplyRespectsTheClientsBufferSize(t *testing.T) {
+	t.Run("edns client gets TC and a reply within its budget", func(t *testing.T) {
+		addr := forwardOnlyServer(t, bigUpstream("tls://1.1.1.1:853", true))
+		m := new(dns.Msg)
+		m.SetQuestion("big.example.com.", dns.TypeTXT)
+		m.SetEdns0(1232, true)
+		resp, n := udpExchange(t, addr, m)
+		if n > 1232 {
+			t.Errorf("reply = %d bytes to a client advertising 1232", n)
+		}
+		if !resp.Truncated {
+			t.Error("TC clear on a shortened reply: nothing tells the client to retry over TCP")
+		}
+	})
+
+	t.Run("a big enough client gets the whole answer", func(t *testing.T) {
+		addr := forwardOnlyServer(t, bigUpstream("tls://1.1.1.1:853", true))
+		m := new(dns.Msg)
+		m.SetQuestion("big.example.com.", dns.TypeTXT)
+		m.SetEdns0(4096, true)
+		resp, n := udpExchange(t, addr, m)
+		if n <= 1232 {
+			t.Errorf("reply = %d bytes, want the full answer a 4096 client can hold", n)
+		}
+		if resp.Truncated {
+			t.Error("TC set on a reply that fits")
+		}
+		if len(resp.Answer) != 10 {
+			t.Errorf("Answer = %d records, want all 10", len(resp.Answer))
+		}
+	})
+
+	t.Run("a non-EDNS client is held to 512", func(t *testing.T) {
+		addr := forwardOnlyServer(t, bigUpstream("tls://1.1.1.1:853", true))
+		m := new(dns.Msg)
+		m.SetQuestion("big.example.com.", dns.TypeTXT)
+		resp, n := udpExchange(t, addr, m)
+		if n > dns.MinMsgSize {
+			t.Errorf("reply = %d bytes to a client that never offered EDNS0", n)
+		}
+		if !resp.Truncated {
+			t.Error("TC clear on a shortened reply to a non-EDNS client")
+		}
+		if resp.IsEdns0() != nil {
+			t.Error("reply carries an OPT record the client never asked for")
+		}
+	})
+}
+
+// TCP has no datagram ceiling, so the same over-large answer must arrive whole.
+func TestTCPReplyIsNotTruncated(t *testing.T) {
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Options{
+		Holder:    h,
+		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
+		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Forwarder: newForwarder(bigUpstream("tls://1.1.1.1:853", true)),
+	})
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &dns.Server{Listener: l, Handler: srv}
+	go ds.ActivateAndServe()
+	defer ds.Shutdown()
+
+	c := &dns.Client{Net: "tcp", Timeout: 3 * time.Second}
+	m := new(dns.Msg)
+	m.SetQuestion("big.example.com.", dns.TypeTXT)
+	m.SetEdns0(1232, true)
+	resp, _, err := c.Exchange(m, l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Truncated || len(resp.Answer) != 10 {
+		t.Errorf("TCP reply: TC=%t answers=%d, want the whole answer", resp.Truncated, len(resp.Answer))
+	}
+}
+
+// Authoritative answers are unsigned local data. Nothing validated them, so
+// they must never claim to be authenticated.
+func TestAuthoritativeAnswerNeverCarriesAD(t *testing.T) {
+	addr := newTestServer(t, allowLoopback(t))
+	for _, name := range []string{"kypost.home.arpa.", "20.1.168.192.in-addr.arpa."} {
+		qtype := dns.TypeA
+		if name != "kypost.home.arpa." {
+			qtype = dns.TypePTR
+		}
+		resp := queryFrom(t, addr, "127.0.0.2", name, qtype)
+		if resp.AuthenticatedData {
+			t.Errorf("%s: AD = true on an unsigned local answer", name)
+		}
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"github.com/yoshiofthewire/kydns-server/internal/web"
 	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
@@ -120,8 +121,18 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	warnUnreachableViews(st, cfg, logger)
 
 	cache := dnsserver.NewCache(cfg.DNS.CacheEntries, cfg.DNS.CacheMinTTL, cfg.DNS.CacheMaxTTL, cfg.DNS.NegativeMaxTTL)
-	fwd := dnsserver.NewForwarder(cfg.DNS.Upstreams, 2*time.Second, cache,
-		dnsserver.UDPExchanger{Timeout: 2 * time.Second})
+	ups, err := upstream.NewAll(cfg.DNS.Upstreams, 2*time.Second)
+	if err != nil {
+		return err
+	}
+	for _, u := range ups {
+		if !u.Secure() {
+			logger.Warn("upstream is unencrypted; answers from it cannot be authenticated",
+				"upstream", u.String(),
+				"fix", "use a tls:// or https:// upstream in dns.upstreams")
+		}
+	}
+	fwd := dnsserver.NewForwarder(ups, 2*time.Second, cache)
 
 	dnsSrv := dnsserver.New(dnsserver.Options{
 		Holder: holder, ACL: acl,
@@ -163,7 +174,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		ACL:            acl,
 		Cache:          cache,
 		AllowTailscale: cfg.DNS.AllowTailscale,
-		Upstreams:      cfg.DNS.Upstreams,
+		Upstreams:      fwd.Status,
 		SetupToken:     setupToken,
 		Logger:         logger,
 		Health:         checker.Statuses,
