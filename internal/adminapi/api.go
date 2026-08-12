@@ -17,6 +17,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -27,6 +28,7 @@ type API struct {
 	cache  *dnsserver.Cache
 	leases func() []dhcp.Lease
 	health func() []health.Status
+	policy *policy.Service
 }
 
 func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) *API {
@@ -37,6 +39,13 @@ func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) 
 // API still constructs where neither subsystem is running.
 func (a *API) WithProviders(leases func() []dhcp.Lease, statuses func() []health.Status) *API {
 	a.leases, a.health = leases, statuses
+	return a
+}
+
+// WithPolicy attaches the blacklist service. It is optional, so the API still
+// constructs where filtering is not running.
+func (a *API) WithPolicy(p *policy.Service) *API {
+	a.policy = p
 	return a
 }
 
@@ -123,6 +132,18 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/health", auth(a.listHealth))
 	mux.HandleFunc("GET /api/v1/stats", auth(a.stats))
 	mux.HandleFunc("POST /api/v1/cache/flush", auth(a.flushCache))
+
+	mux.HandleFunc("GET /api/v1/blacklists/settings", auth(a.getBlacklistSettings))
+	mux.HandleFunc("PATCH /api/v1/blacklists/settings", auth(a.patchBlacklistSettings))
+	mux.HandleFunc("GET /api/v1/blacklists/lists", auth(a.listBlacklistLists))
+	mux.HandleFunc("POST /api/v1/blacklists/lists", auth(a.createBlacklistList))
+	mux.HandleFunc("PATCH /api/v1/blacklists/lists/{id}", auth(a.updateBlacklistList))
+	mux.HandleFunc("DELETE /api/v1/blacklists/lists/{id}", auth(a.deleteBlacklistList))
+	mux.HandleFunc("POST /api/v1/blacklists/lists/{id}/refresh", auth(a.refreshBlacklistList))
+	mux.HandleFunc("GET /api/v1/blacklists/rules/{kind}", auth(a.listBlacklistRules))
+	mux.HandleFunc("POST /api/v1/blacklists/rules/{kind}", auth(a.createBlacklistRule))
+	mux.HandleFunc("DELETE /api/v1/blacklists/rules/{kind}/{id}", auth(a.deleteBlacklistRule))
+	mux.HandleFunc("GET /api/v1/blacklists/test", auth(a.testBlacklist))
 }
 
 type errBody struct {
