@@ -5045,6 +5045,16 @@ In `internal/web/templates/layout.html`, after the Records link:
 
 - [ ] **Step 5: Write `internal/web/blacklists.go`**
 
+> **Correction applied during implementation (commit 02eb6aa).** The
+> `blacklistsData` below guards later error assignments with
+> `data["Error"] == nil`. That never fires: `data["Error"]` already holds a
+> string (possibly empty), and a string is never nil as an interface, so a
+> `Lists()` or `Rules()` failure after a successful `Settings()` call is
+> silently swallowed and the screen renders as if nothing went wrong. The
+> shipped code uses a plain `errMsg string` accumulator and assigns
+> `data["Error"] = errMsg` once at the end, mirroring `settingsData`. Read
+> `internal/web/blacklists.go` for the authoritative version.
+
 ```go
 package web
 
