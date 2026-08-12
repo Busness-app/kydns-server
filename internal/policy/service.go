@@ -47,34 +47,45 @@ func (s *Service) SetSettings(enabled bool, blockTTL int) error {
 // Lists returns list metadata without the downloaded bodies.
 func (s *Service) Lists() ([]store.BlacklistList, error) { return s.st.BlacklistListMetas() }
 
-// PutList validates and writes a list definition, then rebuilds. A built-in
-// may be enabled, disabled and re-tuned, but never renamed away from its
-// manifest entry or re-pointed at a different URL.
-func (s *Service) PutList(l store.BlacklistList) (int64, error) {
+// validateList normalizes and validates a list definition. It never touches
+// the store, so ReplacePolicy can validate a whole document before writing
+// any of it.
+func (s *Service) validateList(l store.BlacklistList) (store.BlacklistList, error) {
 	l.Name = strings.ToLower(strings.TrimSpace(l.Name))
 	l.URL = strings.TrimSpace(l.URL)
 	l.Format = strings.ToLower(strings.TrimSpace(l.Format))
 	l.Description = strings.TrimSpace(l.Description)
 
 	if l.Name == "" {
-		return 0, registry.Invalid("name", "name_required", "a list needs a name")
+		return l, registry.Invalid("name", "name_required", "a list needs a name")
 	}
 	if err := validListURL(l.URL); err != nil {
-		return 0, err
+		return l, err
 	}
 	if l.Format == "" {
 		l.Format = FormatDomains
 	}
 	if !ValidFormat(l.Format) {
-		return 0, registry.Invalid("format", "format_unsupported",
+		return l, registry.Invalid("format", "format_unsupported",
 			"format must be %s, %s or %s", FormatDomains, FormatHosts, FormatAdblock)
 	}
 	if l.IntervalSeconds == 0 {
 		l.IntervalSeconds = defaultInterval
 	}
 	if l.IntervalSeconds < minInterval {
-		return 0, registry.Invalid("interval_seconds", "interval_too_short",
+		return l, registry.Invalid("interval_seconds", "interval_too_short",
 			"the refresh interval must be at least %d seconds", minInterval)
+	}
+	return l, nil
+}
+
+// PutList validates and writes a list definition, then rebuilds. A built-in
+// may be enabled, disabled and re-tuned, but never renamed away from its
+// manifest entry or re-pointed at a different URL.
+func (s *Service) PutList(l store.BlacklistList) (int64, error) {
+	l, err := s.validateList(l)
+	if err != nil {
+		return 0, err
 	}
 
 	if l.ID != 0 {
@@ -177,3 +188,39 @@ func (s *Service) Test(name string) (Decision, error) {
 
 // Counters reports blocked totals and counts by list. Never by client.
 func (s *Service) Counters() (uint64, map[string]uint64) { return s.h.Counters() }
+
+// ReplacePolicy validates every list and rule before writing any of them, then
+// writes them all in the one transaction store.ReplaceBlacklist opens and
+// rebuilds once. Import --replace goes through here so a bad document can
+// neither bypass the rules PutList enforces one at a time, nor leave the
+// policy half-wiped.
+func (s *Service) ReplacePolicy(set store.BlacklistSettings, lists []store.BlacklistList, rules []store.BlacklistRule) error {
+	if set.BlockTTL < 1 || set.BlockTTL > maxBlockTTL {
+		return registry.Invalid("block_ttl", "block_ttl_range",
+			"the block TTL must be between 1 and %d seconds", maxBlockTTL)
+	}
+	ls := make([]store.BlacklistList, 0, len(lists))
+	for _, l := range lists {
+		v, err := s.validateList(l)
+		if err != nil {
+			return err
+		}
+		ls = append(ls, v)
+	}
+	rs := make([]store.BlacklistRule, 0, len(rules))
+	for _, r := range rules {
+		kind := strings.ToLower(strings.TrimSpace(r.Kind))
+		if kind != PolicyAllow && kind != PolicyDeny {
+			return registry.Invalid("kind", "kind_invalid", "a rule is either allow or deny")
+		}
+		n, err := Normalize(r.Domain)
+		if err != nil {
+			return registry.Invalid("domain", "domain_invalid", "%q is not a domain name", r.Domain)
+		}
+		rs = append(rs, store.BlacklistRule{Kind: kind, Domain: n})
+	}
+	if err := s.st.ReplaceBlacklist(set, ls, rs); err != nil {
+		return err
+	}
+	return s.h.Rebuild()
+}

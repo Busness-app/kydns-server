@@ -22,10 +22,10 @@ type blacklistListDTO struct {
 	IntervalSeconds int64  `json:"interval_seconds" yaml:"interval_seconds"`
 
 	// Runtime state, reported but never imported.
-	EntryCount    int    `json:"entry_count" yaml:"-"`
-	SkippedCount  int    `json:"skipped_count" yaml:"-"`
-	LastOKAt      int64  `json:"last_ok_at" yaml:"-"`
-	LastAttemptAt int64  `json:"last_attempt_at" yaml:"-"`
+	EntryCount    int    `json:"entry_count,omitempty" yaml:"-"`
+	SkippedCount  int    `json:"skipped_count,omitempty" yaml:"-"`
+	LastOKAt      int64  `json:"last_ok_at,omitempty" yaml:"-"`
+	LastAttemptAt int64  `json:"last_attempt_at,omitempty" yaml:"-"`
 	LastError     string `json:"last_error,omitempty" yaml:"-"`
 }
 
@@ -274,6 +274,41 @@ func (a *API) deleteBlacklistRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// applyBlacklistDoc writes the imported policy. A document with no blacklist
+// block changes nothing, so an older backup imports cleanly. Replace validates
+// the whole policy before writing any of it; merge adds without wiping.
+func (a *API) applyBlacklistDoc(doc *blacklistDoc, replace bool) error {
+	if doc == nil || a.policy == nil {
+		return nil
+	}
+	lists := make([]store.BlacklistList, 0, len(doc.Lists))
+	for _, l := range doc.Lists {
+		lists = append(lists, fromBlacklistListDTO(l))
+	}
+	rules := make([]store.BlacklistRule, 0, len(doc.Rules))
+	for _, r := range doc.Rules {
+		rules = append(rules, store.BlacklistRule{Kind: r.Kind, Domain: r.Domain})
+	}
+	if replace {
+		return a.policy.ReplacePolicy(
+			store.BlacklistSettings{Enabled: doc.Enabled, BlockTTL: doc.BlockTTL}, lists, rules)
+	}
+	if err := a.policy.SetSettings(doc.Enabled, doc.BlockTTL); err != nil {
+		return err
+	}
+	for _, l := range lists {
+		if _, err := a.policy.PutList(l); err != nil {
+			return err
+		}
+	}
+	for _, r := range rules {
+		if _, err := a.policy.AddRule(r.Kind, r.Domain); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *API) testBlacklist(w http.ResponseWriter, r *http.Request) {

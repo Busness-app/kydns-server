@@ -112,8 +112,11 @@ func TestListCRUD(t *testing.T) {
 		t.Fatalf("GET lists = %v, want one entry", listed)
 	}
 	first, _ := lists[0].(map[string]any)
-	if first["name"] != "custom" || first["entry_count"] != float64(0) {
+	if first["name"] != "custom" {
 		t.Errorf("list = %v, want the created definition", first)
+	}
+	if _, ok := first["entry_count"]; ok {
+		t.Errorf("list = %v, want no entry count before the first refresh", first)
 	}
 	// A list body is never in an API response.
 	if _, leaked := first["snapshot"]; leaked {

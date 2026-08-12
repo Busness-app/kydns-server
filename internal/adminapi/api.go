@@ -78,12 +78,23 @@ type viewDTO struct {
 	Subnets []string `json:"subnets" yaml:"subnets"`
 }
 
+// blacklistDoc is the exportable slice of filtering policy: settings, list
+// definitions and one-off rules. Downloaded bodies and cache validators are
+// runtime state and have no field here to live in.
+type blacklistDoc struct {
+	Enabled  bool               `json:"enabled" yaml:"enabled"`
+	BlockTTL int                `json:"block_ttl" yaml:"block_ttl"`
+	Lists    []blacklistListDTO `json:"lists" yaml:"lists"`
+	Rules    []blacklistRuleDTO `json:"rules" yaml:"rules"`
+}
+
 // transfer is the export/import document. It carries no secrets by
 // construction: there is nowhere in this struct to put one.
 type transfer struct {
-	Views    []viewDTO    `json:"views" yaml:"views"`
-	Services []serviceDTO `json:"services" yaml:"services"`
-	Records  []recordDTO  `json:"records" yaml:"records"`
+	Views     []viewDTO     `json:"views" yaml:"views"`
+	Services  []serviceDTO  `json:"services" yaml:"services"`
+	Records   []recordDTO   `json:"records" yaml:"records"`
+	Blacklist *blacklistDoc `json:"blacklist,omitempty" yaml:"blacklist,omitempty"`
 }
 
 func (a *API) Handler() http.Handler {
@@ -483,6 +494,36 @@ func (a *API) snapshotDoc() (transfer, error) {
 	for _, r := range recs {
 		doc.Records = append(doc.Records, recordDTO{Name: r.Name, Type: r.Type, Value: r.Value, View: r.View})
 	}
+	if a.policy != nil {
+		set, err := a.policy.Settings()
+		if err != nil {
+			return doc, err
+		}
+		bl := &blacklistDoc{
+			Enabled: set.Enabled, BlockTTL: set.BlockTTL,
+			Lists: []blacklistListDTO{}, Rules: []blacklistRuleDTO{},
+		}
+		lists, err := a.policy.Lists()
+		if err != nil {
+			return doc, err
+		}
+		for _, l := range lists {
+			// Definition only: the yaml tags drop every runtime field, and the
+			// zero values keep them out of the JSON form too.
+			bl.Lists = append(bl.Lists, blacklistListDTO{
+				Name: l.Name, URL: l.URL, Format: l.Format, Description: l.Description,
+				Enabled: l.Enabled, Builtin: l.Builtin, IntervalSeconds: l.IntervalSeconds,
+			})
+		}
+		rules, err := a.policy.Rules()
+		if err != nil {
+			return doc, err
+		}
+		for _, r := range rules {
+			bl.Rules = append(bl.Rules, blacklistRuleDTO{Kind: r.Kind, Domain: r.Domain})
+		}
+		doc.Blacklist = bl
+	}
 	return doc, nil
 }
 
@@ -537,6 +578,10 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 			writeRegistryErr(w, err)
 			return
 		}
+		if err := a.applyBlacklistDoc(doc.Blacklist, true); err != nil {
+			writeRegistryErr(w, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "replace"})
 		return
 	}
@@ -558,6 +603,10 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 			writeRegistryErr(w, err)
 			return
 		}
+	}
+	if err := a.applyBlacklistDoc(doc.Blacklist, false); err != nil {
+		writeRegistryErr(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mode": "merge"})
 }
