@@ -16,11 +16,13 @@ type addressRow struct {
 }
 
 type serviceRow struct {
-	ID        int64
-	Name      string
-	Addresses []addressRow
-	Aliases   string
-	Health    string
+	ID            int64
+	Name          string
+	Addresses     []addressRow
+	Aliases       string
+	Health        string
+	ProxyAddress  string
+	RouteViaProxy bool
 }
 
 // allViews is what an untagged address is labelled. A blank cell reads as
@@ -49,6 +51,7 @@ func (s *Server) servicesData(errMsg string) map[string]any {
 		row := serviceRow{
 			ID: svc.ID, Name: svc.Name,
 			Aliases: strings.Join(svc.Aliases, ", "), Health: state,
+			ProxyAddress: svc.ProxyAddress, RouteViaProxy: svc.RouteViaProxy,
 		}
 		for _, a := range svc.Addresses {
 			if a.View == "" {
@@ -86,6 +89,9 @@ func (s *Server) postServiceNew(w http.ResponseWriter, r *http.Request) {
 			View:    r.PostFormValue("view"),
 		}},
 	}
+	svc.ProxyAddress = strings.TrimSpace(r.PostFormValue("proxy_address"))
+	svc.RouteViaProxy = r.PostFormValue("route_via_proxy") != ""
+	svc.CheckInsecure = r.PostFormValue("check_insecure") != ""
 	if a := strings.TrimSpace(r.PostFormValue("aliases")); a != "" {
 		for _, al := range strings.Split(a, ",") {
 			if al = strings.TrimSpace(al); al != "" {
