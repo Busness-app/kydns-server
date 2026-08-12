@@ -45,3 +45,38 @@ type Token struct {
 	CreatedAt  int64
 	LastUsedAt int64
 }
+
+// BlacklistSettings is the global filtering policy. Filtering is on by
+// default; the toggle disables new blocks without deleting anything.
+type BlacklistSettings struct {
+	Enabled  bool
+	BlockTTL int // seconds a client should cache a block
+}
+
+// BlacklistList is one source. Snapshot is the last known-good normalized
+// body, and is loaded only where it is needed.
+type BlacklistList struct {
+	ID              int64
+	Name            string
+	URL             string
+	Format          string
+	Description     string
+	Enabled         bool
+	Builtin         bool
+	IntervalSeconds int64
+	LastAttemptAt   int64
+	LastOKAt        int64
+	LastError       string
+	ETag            string
+	LastModified    string
+	EntryCount      int
+	SkippedCount    int
+	Snapshot        []string
+}
+
+// BlacklistRule is one one-off rule. Kind is "allow" or "deny".
+type BlacklistRule struct {
+	ID     int64
+	Kind   string
+	Domain string
+}

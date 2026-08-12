@@ -73,6 +73,37 @@ CREATE TABLE IF NOT EXISTS admin (
   password_hash TEXT NOT NULL,
   updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
 );
+CREATE TABLE IF NOT EXISTS blacklist_settings (
+  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled   INTEGER NOT NULL DEFAULT 1,
+  block_ttl INTEGER NOT NULL DEFAULT 60
+);
+INSERT OR IGNORE INTO blacklist_settings(id, enabled, block_ttl) VALUES(1, 1, 60);
+CREATE TABLE IF NOT EXISTS blacklist_lists (
+  id               INTEGER PRIMARY KEY,
+  name             TEXT NOT NULL UNIQUE,
+  url              TEXT NOT NULL,
+  format           TEXT NOT NULL DEFAULT 'domains',
+  description      TEXT NOT NULL DEFAULT '',
+  enabled          INTEGER NOT NULL DEFAULT 1,
+  builtin          INTEGER NOT NULL DEFAULT 0,
+  interval_seconds INTEGER NOT NULL DEFAULT 86400,
+  last_attempt_at  INTEGER NOT NULL DEFAULT 0,
+  last_ok_at       INTEGER NOT NULL DEFAULT 0,
+  last_error       TEXT NOT NULL DEFAULT '',
+  etag             TEXT NOT NULL DEFAULT '',
+  last_modified    TEXT NOT NULL DEFAULT '',
+  entry_count      INTEGER NOT NULL DEFAULT 0,
+  skipped_count    INTEGER NOT NULL DEFAULT 0,
+  snapshot         TEXT NOT NULL DEFAULT ''
+);
+-- One rule per domain: a domain that is both allowed and denied is refused
+-- here rather than by a check some caller could skip.
+CREATE TABLE IF NOT EXISTS blacklist_rules (
+  id     INTEGER PRIMARY KEY,
+  kind   TEXT NOT NULL,
+  domain TEXT NOT NULL UNIQUE
+);
 `
 
 // migrations run in order on a database whose user_version is below their
