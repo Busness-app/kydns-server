@@ -41,6 +41,11 @@ func New(o Options) *Server {
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
 	reply := func(m *dns.Msg, source, view string) {
+		// Every reply passes through here, so no path can forget the datagram
+		// ceiling. Over-large answers are common now that DO=1 is forwarded.
+		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
+			m.Truncate(clientUDPSize(r))
+		}
 		if err := w.WriteMsg(m); err != nil {
 			s.o.Logger.Warn("write reply", "error", err)
 		}
@@ -122,6 +127,15 @@ func sourceAddr(w dns.ResponseWriter) netip.Addr {
 		return netip.Addr{}
 	}
 	return a.Unmap()
+}
+
+// clientUDPSize is the datagram budget the client advertised. A client that
+// sent no OPT record does not speak EDNS0, so 512 is its ceiling.
+func clientUDPSize(r *dns.Msg) int {
+	if edns := r.IsEdns0(); edns != nil {
+		return int(edns.UDPSize())
+	}
+	return dns.MinMsgSize
 }
 
 // stripOPT removes the EDNS0 record from a response. The forwarder always

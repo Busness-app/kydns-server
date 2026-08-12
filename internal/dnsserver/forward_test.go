@@ -67,6 +67,25 @@ func okUpstream(name string, secure bool) *fakeUpstream {
 	}}
 }
 
+// bigUpstream answers with roughly 2 KB of records, standing in for the
+// DNSSEC-signed answers that RRSIGs push past a UDP datagram budget.
+func bigUpstream(name string, secure bool) *fakeUpstream {
+	return &fakeUpstream{name: name, secure: secure, reply: func(m *dns.Msg) (*dns.Msg, error) {
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		for i := 0; i < 10; i++ {
+			resp.Answer = append(resp.Answer, &dns.TXT{
+				Hdr: dns.RR_Header{
+					Name: m.Question[0].Name, Rrtype: dns.TypeTXT,
+					Class: dns.ClassINET, Ttl: 300,
+				},
+				Txt: []string{strings.Repeat("x", 200)},
+			})
+		}
+		return resp, nil
+	}}
+}
+
 // adUpstream answers with AD set, which is what a validating resolver does.
 func adUpstream(name string, secure bool) *fakeUpstream {
 	u := okUpstream(name, secure)
