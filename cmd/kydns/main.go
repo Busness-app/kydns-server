@@ -23,6 +23,7 @@ commands:
   token     manage API tokens
   export    write registry contents to YAML or JSON
   import    load registry contents from YAML or JSON
+  admin     local recovery: reset-password
 `
 
 func run(args []string, stdout io.Writer) int {
@@ -41,6 +42,24 @@ func run(args []string, stdout io.Writer) int {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := app.Serve(ctx, *cfg, nil); err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		return 0
+	case "admin":
+		// flag.Parse stops at the first positional, so take the subcommand
+		// before parsing the flags that follow it.
+		if len(args) < 2 || args[1] != "reset-password" {
+			fmt.Fprintln(stdout, "usage: kydns admin reset-password [--config path]")
+			return 2
+		}
+		fs := flag.NewFlagSet("admin reset-password", flag.ContinueOnError)
+		fs.SetOutput(stdout)
+		cfg := fs.String("config", "/etc/kydns/kydns.yaml", "path to the config file")
+		if err := fs.Parse(args[2:]); err != nil {
+			return 2
+		}
+		if err := app.ResetAdminPassword(*cfg, app.TerminalPassword, stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "kydns:", err)
 			return 1
 		}

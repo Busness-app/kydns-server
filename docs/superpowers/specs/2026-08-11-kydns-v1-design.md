@@ -553,6 +553,7 @@ same interface shape. Not required for views and not in v1.
 | `modernc.org/sqlite` | Pure-Go SQLite, so builds stay cgo-free |
 | `golang.org/x/crypto` | argon2id |
 | `golang.org/x/sync` | `singleflight` for cache-miss collapsing |
+| `golang.org/x/term` | No-echo password entry for `kydns admin reset-password`. Already present in the module graph as an indirect dependency, so using it adds no new download |
 | `gopkg.in/yaml.v3` | YAML export and import |
 
 Everything else — HTTP, templates, embedding, logging via `log/slog` — is

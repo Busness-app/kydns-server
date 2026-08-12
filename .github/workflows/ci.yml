@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go mod tidy is clean
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      # The race detector needs cgo, so this run cannot also prove the
+      # cgo-free build. The build job below does that.
+      - name: test
+        run: go test -race -timeout 10m ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # KyDNS ships on a distroless base with no libc, so the binary must
+      # build with cgo off and the pure-Go SQLite driver.
+      - name: build without cgo
+        env:
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o /tmp/kydns ./cmd/kydns
+
+      - name: binary runs
+        run: |
+          /tmp/kydns 2>&1 | grep -q "usage:" || {
+            echo "binary did not print usage"; exit 1; }
+
+      # A stale example is worse than none, since it is the first thing an
+      # operator copies. The config package tests assert it matches the
+      # code's defaults; this proves the shipped file also loads standalone.
+      - name: example config loads
+        run: go test ./internal/config/ -run TestExample -v
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build image
+        run: docker build -t kydns:ci .
+
+      - name: image starts and serves DNS
+        run: |
+          set -eux
+          mkdir -p /tmp/ci
+          cat > /tmp/ci/kydns.yaml <<'YAML'
+          data_dir: /var/lib/kydns
+          dns:
+            listen: "127.0.0.1:15353"
+            allow_query: ["127.0.0.0/8"]
+          admin:
+            listen: "127.0.0.1:18053"
+          YAML
+          docker run -d --name kydns-ci --network=host \
+            --cap-drop ALL --cap-add NET_BIND_SERVICE \
+            -v /tmp/ci/kydns.yaml:/etc/kydns/kydns.yaml:ro \
+            -v kydns-ci-data:/var/lib/kydns \
+            kydns:ci
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:18053/api/v1/healthz && break
+            sleep 1
+          done
+          token=$(docker run --rm -v kydns-ci-data:/d busybox cat /d/bootstrap-token)
+          curl -sf -X POST -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci","addresses":[{"address":"192.168.1.20"}]}' \
+            http://127.0.0.1:18053/api/v1/services
+          sudo apt-get install -y -qq dnsutils
+          answer=$(dig @127.0.0.1 -p 15353 ci.home.arpa A +short)
+          test "$answer" = "192.168.1.20" || {
+            echo "resolved '$answer', wanted 192.168.1.20"; exit 1; }
+
+      - name: logs on failure
+        if: failure()
+        run: docker logs kydns-ci || true
+
+      - name: clean up
+        if: always()
+        run: |
+          docker rm -f kydns-ci || true
+          docker volume rm kydns-ci-data || true

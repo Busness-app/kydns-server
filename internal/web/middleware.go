@@ -49,7 +49,7 @@ func New(o Options) *Server {
 // Options exposes the wiring for tests and for handlers in sibling files.
 func (s *Server) Options() Options { return s.o }
 
-const minPasswordLen = 12
+const minPasswordLen = auth.MinPasswordLen
 
 func (s *Server) hasAdmin() bool {
 	ok, err := s.o.Store.HasAdmin()

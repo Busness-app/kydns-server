@@ -110,6 +110,24 @@ token, and choose a password. A bootstrap API token for the CLI is written to
 
 The CLI reads `KYDNS_URL` (default `http://127.0.0.1:8053`) and `KYDNS_TOKEN`.
 
+### Forgot the admin password
+
+```sh
+kydns admin reset-password --config /etc/kydns/kydns.yaml
+```
+
+This is the one command that opens the database directly instead of going
+through the API, because there is otherwise no way back in. It needs write
+access to the database file — anyone who has that can already read every hash
+and token in it, so it is not an extra way in. Restart KyDNS afterwards to end
+any sessions that are still signed in.
+
+In Docker, where the image has no shell:
+
+```sh
+docker compose run --rm -it kydns admin reset-password
+```
+
 ### Docker
 
 The container gets **its own IP address on your LAN**, so it owns port 53 there

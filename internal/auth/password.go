@@ -15,6 +15,10 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
+// MinPasswordLen is the shortest admin password accepted, wherever one is
+// set: the web setup form and the reset-password command both use it.
+const MinPasswordLen = 12
+
 // argon2id parameters. Tuned for a homelab box: roughly 64 MiB and a few tens
 // of milliseconds, which is ample for an interactive login and painful for an
 // offline attacker.
