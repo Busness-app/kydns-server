@@ -27,6 +27,8 @@ func New(s Spec, timeout time.Duration) (Upstream, error) {
 		return &plain{spec: s, timeout: timeout}, nil
 	case DoT:
 		return newDoT(s, timeout), nil
+	case DoH:
+		return newDoH(s, timeout), nil
 	}
 	return nil, fmt.Errorf("upstream %q: unsupported transport %s", s.Raw, s.Transport)
 }
