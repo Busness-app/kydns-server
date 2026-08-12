@@ -184,13 +184,22 @@ Compose joins the network. It never creates or deletes it — a network handing
 out addresses on your physical LAN outlives any one stack.
 
 ```sh
-docker network ls                       # find it; br0 on unRAID
-docker network inspect br0              # note the subnet
-cp .env.example .env                    # set KYDNS_NETWORK and KYDNS_IP
+cp .env.example .env                    # set KYDNS_IP, and KYDNS_NETWORK if not br0
 cp kydns.example.yaml kydns.yaml
-docker compose up -d
+make up                                 # creates the network if missing, then starts
 docker compose logs kydns | grep setup-token
 ```
+
+`make up` runs `scripts/create-network.sh` first. That script is idempotent and
+never destructive: if the network already exists it prints what it is and stops,
+because other containers are probably on it. Otherwise it reads your default
+route for the parent interface, subnet and gateway, picks `macvlan` on a wired
+parent or `ipvlan` on a wireless one, and confines Docker's address pool to the
+single `KYDNS_IP` you chose. Run it alone with `make network` to see the values
+before anything starts.
+
+Already have the network — unRAID's `br0`, or whatever AdGuard Home and Pi-hole
+are on? Set `KYDNS_NETWORK` to its name and `make up` will join it untouched.
 
 In `kydns.yaml` change two settings from their defaults: `data_dir:
 /var/lib/kydns`, and `admin.listen: "0.0.0.0:8053"`. Leaving admin on
@@ -202,21 +211,25 @@ Two DNS servers can each own port 53 at once when each has its own LAN
 address, which is how you move one client at a time instead of the whole
 house.
 
-#### No such network yet
+#### Doing it by hand
 
-Create it once, on the host, matching your LAN. This is host configuration,
-not something a compose file should own:
+`make network` wraps this, but the underlying command is no secret. Compose
+deliberately does not own it: a network handing out addresses on your physical
+LAN outlives any one stack, and `compose down` has no business removing one
+AdGuard is sitting on.
 
 ```sh
 docker network create -d macvlan \
   -o parent=eth0 \
   --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
-  --ip-range 192.168.1.48/28 \
+  --ip-range 192.168.1.53/32 \
   br0
 ```
 
-`--ip-range` keeps Docker's allocations out of your DHCP pool. Use `-d ipvlan`
-if the parent is WiFi — see below.
+The `/32` range is deliberate. Give Docker the whole subnet and it will
+eventually allocate an address your router later leases to a phone, which
+presents as DNS failing at unpredictable hours. Use `-d ipvlan` if the parent
+is WiFi — see below.
 
 #### Three things that bite
 

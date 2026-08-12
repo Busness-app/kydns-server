@@ -76,16 +76,12 @@ volumes:
 # ---------------------------------------------------------------------------
 # Setup
 #
-# 1. Confirm the network exists and note its subnet:
+# 1. cp .env.example .env        and set KYDNS_IP
 #
-#      docker network ls
-#      docker network inspect br0
+#    Already run AdGuard Home or Pi-hole with a LAN address? KyDNS joins the
+#    same network — set KYDNS_NETWORK to its name if it is not br0.
 #
-#    If you already run AdGuard Home or Pi-hole with a LAN address, KyDNS
-#    joins the same network. Set KYDNS_NETWORK in .env if it is not br0.
-#
-# 2. cp .env.example .env        and set KYDNS_IP
-# 3. cp kydns.example.yaml kydns.yaml
+# 2. cp kydns.example.yaml kydns.yaml
 #
 #    Change two things in kydns.yaml from their defaults:
 #
@@ -99,10 +95,15 @@ volumes:
 #    it is not on the host. Put a TLS-terminating proxy in front if you want
 #    encryption; KyDNS speaks plain HTTP.
 #
-# 4. docker compose up -d
-# 5. docker compose logs kydns | grep setup-token
+# 3. make up
+#
+#    That runs scripts/create-network.sh, which creates the network only if it
+#    is missing, then starts the stack. `make network` alone shows the values
+#    it derived without starting anything.
+#
+# 4. docker compose logs kydns | grep setup-token
 #    Open http://$KYDNS_IP:8053/ and complete setup with that token.
-# 6. Point a client at $KYDNS_IP for DNS and try:
+# 5. Point a client at $KYDNS_IP for DNS and try:
 #      dig @$KYDNS_IP kypost.home.arpa
 #
 # Running alongside AdGuard Home or Pi-hole
