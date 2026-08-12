@@ -69,6 +69,16 @@ func (r *Registry) PutService(svc store.Service) (int64, error) {
 			return 0, invalid(fmt.Sprintf("addresses[%d].view", i), "view_unknown", "view %q does not exist", a.View)
 		}
 	}
+	svc.ProxyAddress = strings.TrimSpace(svc.ProxyAddress)
+	if svc.ProxyAddress != "" {
+		if err := ValidateAddress(svc.ProxyAddress); err != nil {
+			return 0, invalid("proxy_address", "proxy_address_invalid", "%s", err)
+		}
+	}
+	if svc.RouteViaProxy && svc.ProxyAddress == "" {
+		return 0, invalid("proxy_address", "proxy_address_required",
+			"routing through a proxy needs a proxy address")
+	}
 	for i, al := range svc.Aliases {
 		svc.Aliases[i] = strings.ToLower(strings.TrimSpace(al))
 		if err := ValidateName(svc.Aliases[i]+"."+r.zone, r.zone); err != nil {

@@ -3,6 +3,7 @@ package registry
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -201,5 +202,41 @@ func TestMultipleTokens(t *testing.T) {
 	}
 	if !r.AuthenticateToken(a) || !r.AuthenticateToken(b) {
 		t.Error("not every token authenticates")
+	}
+}
+
+func TestPutServiceValidatesProxy(t *testing.T) {
+	r, _ := newRegistry(t)
+
+	// Routing on with nowhere to route is the one invalid combination the
+	// two-field design makes possible.
+	_, err := r.PutService(store.Service{
+		Name:          "kypost",
+		Addresses:     []store.Address{{Address: "192.168.1.30"}},
+		RouteViaProxy: true,
+	})
+	if err == nil {
+		t.Fatal("PutService() error = nil with routing on and no proxy address")
+	}
+	if !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("error = %v, want it to name the proxy address", err)
+	}
+
+	if _, err := r.PutService(store.Service{
+		Name:          "nas",
+		Addresses:     []store.Address{{Address: "192.168.1.30"}},
+		ProxyAddress:  "not-an-ip",
+		RouteViaProxy: true,
+	}); err == nil {
+		t.Error("PutService() error = nil with a malformed proxy address")
+	}
+
+	// An address kept while routing is off is deliberate, not an error.
+	if _, err := r.PutService(store.Service{
+		Name:         "git",
+		Addresses:    []store.Address{{Address: "192.168.1.30"}},
+		ProxyAddress: "192.168.1.20",
+	}); err != nil {
+		t.Errorf("PutService() with routing off rejected: %v", err)
 	}
 }
