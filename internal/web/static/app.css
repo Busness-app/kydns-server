@@ -2,12 +2,27 @@
    The marketing theme is not modified. */
 
 .app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
-.app-nav { background: var(--panel); border-right: 1px solid var(--line); padding: 1.5rem 0; }
+.app-nav { background: var(--panel); border-right: 1px solid var(--line); padding: 1.5rem 0;
+           display: flex; flex-direction: column; }
 .app-nav h1 { font-family: var(--font-display); font-size: 1.1rem; margin: 0 1.25rem 1.5rem; color: var(--accent); }
 .app-nav a { display: block; padding: .55rem 1.25rem; color: var(--ink); text-decoration: none;
              font-family: var(--font-mono); font-size: .85rem; }
 .app-nav a:hover { color: var(--ink-strong); background: rgba(255,255,255,.03); }
 .app-nav a[aria-current="page"] { color: var(--accent); border-left: 2px solid var(--accent); }
+.app-footer { margin-top: auto; padding: 1rem 1.25rem 0; }
+.license-link { background: none; border: 0; padding: 0; text-align: left; cursor: pointer;
+                font-family: var(--font-mono); font-size: .7rem; color: var(--ink); }
+.license-link:hover { color: var(--accent); text-decoration: underline; }
+.license-window { width: min(46rem, 90vw); height: min(34rem, 85vh); border: 1px solid var(--line);
+                  border-radius: 8px; background: var(--panel); color: var(--ink-strong);
+                  padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+.license-window::backdrop { background: rgba(0,0,0,.6); }
+.license-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+.license-header p { margin: .15rem 0; font-family: var(--font-mono); font-size: .8rem; color: var(--ink); }
+.license-header .license-app { font-family: var(--font-display); font-size: 1.1rem; color: var(--accent); }
+.license-text { flex: 1; width: 100%; border: 1px solid var(--line); border-radius: 6px;
+                background: var(--bg); }
+
 .app-main { padding: 2rem 2.5rem; max-width: var(--max-width); }
 .app-main h2 { font-family: var(--font-display); color: var(--ink-strong); margin-top: 0; }
 .app-main h3 { font-family: var(--font-display); color: var(--ink-strong); font-size: 1rem; margin-top: 0; }

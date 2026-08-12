@@ -3,8 +3,11 @@ package web
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func static(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
@@ -92,6 +95,43 @@ func TestRenderIncludesNavAndAssets(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page missing %q", want)
 		}
+	}
+}
+
+// The AGPL obliges us to tell the operator what they are running and to hand
+// them the license, so the nav footer, the About popover and the embedded
+// license text are checked together.
+func TestNavFooterOpensLicense(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+
+	body := get(t, h, "/", c).Body.String()
+	for _, want := range []string{
+		`popovertarget="about"`,
+		"Licensed under AGPL v3",
+		"KyDNS <span class=\"badge accent\">v" + Version,
+		"Developed by Busnes.app",
+		`src="/static/agpl-3.0.txt"`,
+		"&copy; " + strconv.Itoa(time.Now().Year()),
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered page missing %q", want)
+		}
+	}
+
+	rec := static(t, srv, "/static/agpl-3.0.txt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/agpl-3.0.txt = %d, want the license to be embedded", rec.Code)
+	}
+	// The served copy is what the operator reads, so it must stay identical to
+	// the license the project ships under.
+	want, err := os.ReadFile("../../LICENSE")
+	if err != nil {
+		t.Fatalf("read LICENSE: %v", err)
+	}
+	if rec.Body.String() != string(want) {
+		t.Error("embedded agpl-3.0.txt has drifted from LICENSE")
 	}
 }
 

@@ -5,7 +5,11 @@ import (
 	"embed"
 	"html/template"
 	"net/http"
+	"time"
 )
+
+// Version is the release shown in the About popover.
+const Version = "0.1.0"
 
 //go:embed templates/*.html
 var templateFS embed.FS
@@ -59,6 +63,8 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	if _, ok := data["Nav"]; !ok {
 		data["Nav"] = ""
 	}
+	data["Version"] = Version
+	data["Year"] = time.Now().Year()
 	s.execute(w, t, data)
 }
 
