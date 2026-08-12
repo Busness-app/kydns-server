@@ -34,7 +34,8 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 - Per-subnet views: one name can answer differently on the LAN and over a VPN.
 - DHCP lease discovery from dnsmasq, with promote-to-service.
 - Health checks over HTTP, HTTPS, and TCP, with status in the web interface.
-- Upstream forwarding with a cache, sequential failover, and single-flight.
+- Upstream forwarding over DNS-over-TLS and DNS-over-HTTPS, with a cache,
+  sequential failover, and single-flight.
 - A web UI, a JSON API, and a CLI that talks to the API.
 - YAML and JSON import/export for backup and Git-based configuration.
 
@@ -44,7 +45,10 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
   of any kind. Local naming came first, deliberately.
 - Linked-server replication between KyDNS peers. The store keeps a single write
   chokepoint so the change log can be added without restructuring.
-- DNS-over-TLS and DNS-over-HTTPS to upstreams. Plain UDP and TCP only.
+- **Local DNSSEC validation.** KyDNS trusts the upstream's verdict over an
+  encrypted channel; it does not verify signatures itself. An `AD` bit from
+  KyDNS means "the resolver we talked to privately said it validated," not
+  "KyDNS checked the chain."
 - Docker Compose discovery, and lease formats other than dnsmasq.
 - Local TLS certificate issuance for private service names.
 
@@ -66,7 +70,7 @@ actually has.
 | `dns.listen` | `:53` | UDP and TCP. Port 53 needs root or `CAP_NET_BIND_SERVICE`. |
 | `dns.private_domain` | `home.arpa` | Reserved for this purpose by RFC 8375. |
 | `dns.reverse_zones` | none | CIDRs to derive PTR records for. |
-| `dns.upstreams` | `1.1.1.1:53`, `9.9.9.9:53` | Tried in order. `host:port` required. |
+| `dns.upstreams` | `tls://1.1.1.1:853`, `tls://9.9.9.9:853` | Tried in order. `tls://`, `https://`, or `udp://` before an **IP address**. See below. |
 | `dns.allow_query` | loopback, RFC1918, ULA | Default-closed; everything else gets `REFUSED`. |
 | `dns.allow_tailscale` | `false` | Adds `100.64.0.0/10`. See below. |
 | `dns.ttl` | `60` | TTL on authoritative answers. |
@@ -82,6 +86,46 @@ actually has.
 | `health.interval` | `30` | Seconds between probes. |
 | `health.timeout` | `5` | Per-probe timeout. |
 | `health.workers` | `8` | Concurrent probes. |
+
+### Upstream encryption
+
+The scheme decides how much you trust the answer:
+
+```yaml
+dns:
+  upstreams:
+    - tls://1.1.1.1:853              # DNS-over-TLS
+    - https://9.9.9.9/dns-query      # DNS-over-HTTPS
+    - udp://192.168.1.1:53           # plain DNS, opted into per upstream
+```
+
+The host must be an **IP address**. A hostname would need DNS to resolve it,
+and KyDNS may be the thing resolving — on a machine that points at itself that
+is a loop. Cloudflare, Quad9 and Google all present certificates valid for
+their IPs, so nothing further is needed. When a provider's certificate needs a
+hostname, put it after a `#`:
+
+```yaml
+    - tls://45.90.28.0:853#abc123.dns.nextdns.io
+```
+
+That sets the TLS server name while still dialling the address you gave.
+Certificate verification is always on and there is no option to turn it off.
+
+**With only encrypted upstreams, a query fails rather than falling back.** If
+every one is unreachable, clients get `SERVFAIL` and the Settings screen names
+the upstream and the error — usually a firewall blocking port 853. That is the
+intended behaviour: silently dropping to plain DNS is exactly what an attacker
+who blocks 853 is hoping for.
+
+The escape hatch is one line. Add a `udp://` upstream and KyDNS will use it
+when the encrypted ones fail. Answers it serves have the authenticated-data
+flag cleared, because nothing authenticated them, and the dashboard carries a
+banner for as long as the entry is there.
+
+KyDNS is not a validating resolver. It does not verify signatures, hold a trust
+anchor, or walk a chain of trust. It makes the path to a resolver that does all
+of that private and tamper-proof, and passes that resolver's verdict through.
 
 ### Tailscale
 
