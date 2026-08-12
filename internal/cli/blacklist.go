@@ -68,6 +68,10 @@ func blacklistCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "removed list %s\n", args[1])
 		return 0
 	case "refresh":
+		if len(args) > 2 {
+			fmt.Fprintln(stderr, "usage: kydns blacklist refresh [id|all]")
+			return 2
+		}
 		target := "all"
 		if len(args) == 2 {
 			target = args[1]
@@ -155,11 +159,11 @@ func blacklistList(c *Client, stdout, stderr io.Writer) int {
 		}
 		note := ""
 		switch {
+		case l.LastOKAt == 0:
+			note = " never loaded"
 		case l.LastError != "":
 			// The stale snapshot is still serving; say so rather than "broken".
 			note = " stale: " + l.LastError
-		case l.LastOKAt == 0:
-			note = " never loaded"
 		}
 		fmt.Fprintf(stdout, "%-6d %-20s %-4s %-8s %7d entries%s\n",
 			l.ID, l.Name, state, l.Format, l.EntryCount, note)

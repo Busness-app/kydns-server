@@ -50,7 +50,10 @@ func TestBlacklistStatus(t *testing.T) {
 			t.Errorf("status output missing %q:\n%s", want, out)
 		}
 	}
-	_ = seen
+	if len(*seen) != 2 || !strings.HasPrefix((*seen)[0], "GET /api/v1/blacklists/settings") ||
+		!strings.HasPrefix((*seen)[1], "GET /api/v1/blacklists/lists") {
+		t.Errorf("sent %v, want settings then lists", *seen)
+	}
 }
 
 func TestBlacklistOffSendsPatch(t *testing.T) {
@@ -137,6 +140,22 @@ func TestBlacklistRefreshAll(t *testing.T) {
 	}
 	if !strings.HasPrefix((*seen)[0], "POST /api/v1/blacklists/lists/all/refresh") {
 		t.Errorf("sent %q, want the all-lists refresh", (*seen)[0])
+	}
+}
+
+func TestBlacklistListShowsNeverLoadedNotStale(t *testing.T) {
+	blacklistServer(t, map[string]string{
+		"GET /api/v1/blacklists/lists": `{"lists":[{"id":1,"name":"broken","enabled":true,"format":"domains","last_error":"dial tcp: i/o timeout"}]}`,
+	})
+	code, out, errOut := runCLI(t, "blacklist", "list")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	if !strings.Contains(out, "never loaded") {
+		t.Errorf("output = %q, want a list that never loaded reported as such", out)
+	}
+	if strings.Contains(out, "stale") {
+		t.Errorf("output = %q, want no 'stale' claim: nothing has ever loaded", out)
 	}
 }
 
