@@ -121,19 +121,25 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 					Address string `json:"address"`
 					View    string `json:"view"`
 				} `json:"addresses"`
+				ProxyAddress  string `json:"proxy_address"`
+				RouteViaProxy bool   `json:"route_via_proxy"`
 			} `json:"services"`
 		}
 		if err := c.Do("GET", "/api/v1/services", nil, &out); err != nil {
 			return fail(stderr, err)
 		}
 		for _, s := range out.Services {
+			suffix := ""
+			if s.RouteViaProxy {
+				suffix = " -> " + s.ProxyAddress
+			}
 			for _, a := range s.Addresses {
 				view := a.View
 				if view == "" {
 					// Blank reads as broken; "all views" reads as everywhere.
 					view = "all views"
 				}
-				fmt.Fprintf(stdout, "%-6d %-24s %-18s %s\n", s.ID, s.Name, a.Address, view)
+				fmt.Fprintf(stdout, "%-6d %-24s %-18s %s%s\n", s.ID, s.Name, a.Address, view, suffix)
 			}
 		}
 		return 0
