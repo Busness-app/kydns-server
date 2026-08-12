@@ -1243,7 +1243,7 @@ git commit -m "feat(store): blacklist settings, lists and one-off rules"
   - `policy.Build(set store.BlacklistSettings, lists []store.BlacklistList, rules []store.BlacklistRule) *Snapshot`
   - `(*policy.Snapshot).Decide(name string) Decision` — `name` may be any form; it normalizes internally
   - `policy.Source func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error)`
-  - `policy.NewHolder(src Source, logger *slog.Logger) *Holder`
+  - `policy.NewHolder(src Source) *Holder`
   - `(*policy.Holder).Rebuild() error`, `.Current() *Snapshot`
   - `(*policy.Holder).Decide(name string) (blocked bool, decision string, ttl uint32)` — counts as it decides
   - `(*policy.Holder).Counters() (total uint64, byList map[string]uint64)`
@@ -1457,9 +1457,6 @@ func (s *Snapshot) Decide(name string) Decision {
 	}
 	return Decision{Policy: PolicyForwarded}
 }
-
-// Enabled reports whether filtering is on, for the UI's warning banner.
-func (s *Snapshot) Enabled() bool { return s != nil && s.enabled }
 ```
 
 - [ ] **Step 4: Write the failing holder test**
@@ -1478,7 +1475,7 @@ import (
 
 func testHolder(t *testing.T, src Source) *Holder {
 	t.Helper()
-	h := NewHolder(src, nil)
+	h := NewHolder(src)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -1530,7 +1527,7 @@ func TestFailedRebuildKeepsThePreviousSnapshot(t *testing.T) {
 func TestHolderBeforeFirstBuildBlocksNothing(t *testing.T) {
 	h := NewHolder(func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
 		return store.BlacklistSettings{}, nil, nil, nil
-	}, nil)
+	})
 	if blocked, decision, _ := h.Decide("ads.example"); blocked || decision != PolicyForwarded {
 		t.Errorf("Decide() before the first build = %v %q, want forwarded", blocked, decision)
 	}
@@ -1558,20 +1555,18 @@ type Source func() (store.BlacklistSettings, []store.BlacklistList, []store.Blac
 // Decide with no lock on the snapshot itself; writers call Rebuild, which
 // builds fully before swapping the pointer.
 type Holder struct {
-	src    Source
-	logger *slog.Logger
-	cur    atomic.Pointer[Snapshot]
+	src Source
+	cur atomic.Pointer[Snapshot]
 
 	blocked atomic.Uint64
 	mu      sync.Mutex
 	byList  map[string]uint64
 }
 
-func NewHolder(src Source, logger *slog.Logger) *Holder {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Holder{src: src, logger: logger, byList: map[string]uint64{}}
+// NewHolder takes no logger: Rebuild returns its error and the caller logs it,
+// so there is nothing here to log.
+func NewHolder(src Source) *Holder {
+	return &Holder{src: src, byList: map[string]uint64{}}
 }
 
 // Rebuild pulls fresh inputs, builds a complete snapshot, and swaps it in. It
@@ -2498,7 +2493,7 @@ func newRefresher(t *testing.T, srv *httptest.Server) (*store.Store, *Refresher,
 		}
 		rules, err := st.BlacklistRules()
 		return set, lists, rules, err
-	}, nil)
+	})
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -3421,7 +3416,7 @@ func newBlacklistAPI(t *testing.T) (http.Handler, string, *policy.Service) {
 		}
 		rules, err := st.BlacklistRules()
 		return set, lists, rules, err
-	}, nil)
+	})
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4967,7 +4962,7 @@ In `internal/web/auth_test.go`, inside `newWeb`, after `reg := registry.New(...)
 		}
 		rules, err := st.BlacklistRules()
 		return set, lists, rules, err
-	}, nil)
+	})
 	if err := policy.SeedBuiltins(st); err != nil {
 		t.Fatal(err)
 	}
@@ -5515,7 +5510,7 @@ func buildPolicy(t *testing.T, st *store.Store) *policy.Service {
 		}
 		rules, err := st.BlacklistRules()
 		return set, lists, rules, err
-	}, nil)
+	})
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -5632,7 +5627,7 @@ In `internal/app/serve.go`, after the `reg := registry.New(...)` block:
 		}
 		rules, err := st.BlacklistRules()
 		return set, lists, rules, err
-	}, logger)
+	})
 	if err := policyHolder.Rebuild(); err != nil {
 		return fmt.Errorf("initial blacklist policy: %w", err)
 	}
