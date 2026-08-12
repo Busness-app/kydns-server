@@ -34,11 +34,13 @@ CREATE TABLE IF NOT EXISTS view_subnets (
 -- are the same network, so uniqueness is the whole ambiguity check.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_view_subnets_cidr ON view_subnets(cidr);
 CREATE TABLE IF NOT EXISTS services (
-  id             INTEGER PRIMARY KEY,
-  name           TEXT NOT NULL UNIQUE,
-  check_url      TEXT NOT NULL DEFAULT '',
-  check_insecure INTEGER NOT NULL DEFAULT 0,
-  created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  check_url       TEXT NOT NULL DEFAULT '',
+  check_insecure  INTEGER NOT NULL DEFAULT 0,
+  proxy_address   TEXT NOT NULL DEFAULT '',
+  route_via_proxy INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE TABLE IF NOT EXISTS service_addresses (
   id         INTEGER PRIMARY KEY,
@@ -73,6 +75,36 @@ CREATE TABLE IF NOT EXISTS admin (
 );
 `
 
+// migrations run in order on a database whose user_version is below their
+// index+1. A fresh database gets everything from schema above and then skips
+// straight to the end, because applying an ALTER to a column that is already
+// there would fail.
+var migrations = []string{
+	`ALTER TABLE services ADD COLUMN proxy_address TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE services ADD COLUMN route_via_proxy INTEGER NOT NULL DEFAULT 0;`,
+}
+
+func migrate(db *sql.DB, freshDB bool) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	if freshDB {
+		version = len(migrations)
+	}
+	for i := version; i < len(migrations); i++ {
+		if _, err := db.Exec(migrations[i]); err != nil {
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+	}
+	if version < len(migrations) || freshDB {
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations))); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)")
 	if err != nil {
@@ -88,9 +120,24 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("%s: %w", p, err)
 		}
 	}
+
+	// A database with no services table has never been written by KyDNS, so
+	// the schema below creates everything and no migration should run.
+	var n int
+	if err := db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='services'`).Scan(&n); err != nil {
+		db.Close()
+		return nil, err
+	}
+	fresh := n == 0
+
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	if err := migrate(db, fresh); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return &Store{db: db}, nil
 }
@@ -183,8 +230,9 @@ func (s *Store) PutService(svc Service) (int64, error) {
 	}
 	defer tx.Rollback()
 	if svc.ID == 0 {
-		res, err := tx.Exec(`INSERT INTO services(name, check_url, check_insecure) VALUES(?, ?, ?)`,
-			svc.Name, svc.CheckURL, svc.CheckInsecure)
+		res, err := tx.Exec(
+			`INSERT INTO services(name, check_url, check_insecure, proxy_address, route_via_proxy) VALUES(?, ?, ?, ?, ?)`,
+			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy)
 		if err != nil {
 			if isUnique(err, "services.name") {
 				return 0, fmt.Errorf("%w: service %s", ErrDuplicateName, svc.Name)
@@ -195,8 +243,9 @@ func (s *Store) PutService(svc Service) (int64, error) {
 			return 0, err
 		}
 	} else {
-		if _, err := tx.Exec(`UPDATE services SET name=?, check_url=?, check_insecure=? WHERE id=?`,
-			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ID); err != nil {
+		if _, err := tx.Exec(
+			`UPDATE services SET name=?, check_url=?, check_insecure=?, proxy_address=?, route_via_proxy=? WHERE id=?`,
+			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy, svc.ID); err != nil {
 			return 0, err
 		}
 		for _, q := range []string{
@@ -234,8 +283,9 @@ func nullable(s string) any {
 
 func (s *Store) Service(id int64) (Service, error) {
 	var svc Service
-	err := s.db.QueryRow(`SELECT id, name, check_url, check_insecure FROM services WHERE id = ?`, id).
-		Scan(&svc.ID, &svc.Name, &svc.CheckURL, &svc.CheckInsecure)
+	err := s.db.QueryRow(
+		`SELECT id, name, check_url, check_insecure, proxy_address, route_via_proxy FROM services WHERE id = ?`, id).
+		Scan(&svc.ID, &svc.Name, &svc.CheckURL, &svc.CheckInsecure, &svc.ProxyAddress, &svc.RouteViaProxy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Service{}, fmt.Errorf("%w: service %d", ErrNotFound, id)
 	}

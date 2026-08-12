@@ -21,6 +21,12 @@ type Service struct {
 	Aliases       []string
 	CheckURL      string
 	CheckInsecure bool
+
+	// ProxyAddress is where clients are sent when RouteViaProxy is on. The
+	// two are separate so routing can be turned off for a moment without
+	// discarding the address.
+	ProxyAddress  string
+	RouteViaProxy bool
 }
 
 // Record is a manually authored record. View == "" means every view.

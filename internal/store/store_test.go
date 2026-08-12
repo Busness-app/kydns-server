@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -206,5 +207,98 @@ func TestDeleteServiceCascades(t *testing.T) {
 		Aliases:   []string{"webmail"},
 	}); err != nil {
 		t.Errorf("alias not released by cascade: %v", err)
+	}
+}
+
+// A database created before proxy routing existed must gain the new columns
+// on open, not fail. This is the first schema change since v1 shipped with
+// live data in it.
+func TestOpenMigratesAnOlderDatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+
+	// Build a v1-shaped services table by hand, with a row in it.
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE services (
+		id             INTEGER PRIMARY KEY,
+		name           TEXT NOT NULL UNIQUE,
+		check_url      TEXT NOT NULL DEFAULT '',
+		check_insecure INTEGER NOT NULL DEFAULT 0,
+		created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO services(name) VALUES('legacy')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on a pre-migration database: %v", err)
+	}
+	defer s.Close()
+
+	svcs, err := s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].Name != "legacy" {
+		t.Fatalf("Services() = %v, want the pre-existing row preserved", svcs)
+	}
+	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
+		t.Errorf("migrated row = %+v, want the new fields at their zero values", svcs[0])
+	}
+}
+
+// Opening twice must not re-apply a migration.
+func TestOpenIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "twice.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("second Open(): %v", err)
+	}
+	defer s.Close()
+}
+
+func TestServiceRoundTripsProxyFields(t *testing.T) {
+	s := open(t)
+	id, err := s.PutService(Service{
+		Name:          "kypost",
+		Addresses:     []Address{{Address: "192.168.1.30"}},
+		ProxyAddress:  "192.168.1.20",
+		RouteViaProxy: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Service(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyAddress != "192.168.1.20" || !got.RouteViaProxy {
+		t.Errorf("Service() = %+v, want the proxy fields preserved", got)
+	}
+
+	// Turning routing off keeps the address, which is the point of two fields.
+	got.RouteViaProxy = false
+	if _, err := s.PutService(got); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.Service(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyAddress != "192.168.1.20" || got.RouteViaProxy {
+		t.Errorf("Service() = %+v, want the address kept and routing off", got)
 	}
 }
