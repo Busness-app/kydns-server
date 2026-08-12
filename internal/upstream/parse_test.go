@@ -85,6 +85,29 @@ func TestParseUnknownSchemeNamesTheAlternatives(t *testing.T) {
 	}
 }
 
+// Credentials never authenticated anything — the request URL is built from
+// Spec.Addr — but Raw kept them verbatim, and String() carries Raw into logs,
+// into LastError, and onto two web pages. Rejecting them closes both halves.
+func TestParseRejectsCredentials(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:hunter2@1.1.1.1/dns-query",
+		"tls://user:hunter2@1.1.1.1:853",
+		"udp://user@192.168.1.1:53",
+	} {
+		_, err := Parse(raw)
+		if err == nil {
+			t.Errorf("Parse(%q) error = nil, want a rejection", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), "credentials are not supported") {
+			t.Errorf("Parse(%q) error = %v, want the credential rejection", raw, err)
+		}
+		if strings.Contains(err.Error(), "hunter2") {
+			t.Errorf("Parse(%q) error = %v, which leaks the password it rejected", raw, err)
+		}
+	}
+}
+
 func TestTransportSecure(t *testing.T) {
 	for tr, want := range map[Transport]bool{Plain: false, DoT: true, DoH: true} {
 		if got := tr.Secure(); got != want {

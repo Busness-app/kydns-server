@@ -74,6 +74,13 @@ func Parse(raw string) (Spec, error) {
 	if err != nil {
 		return Spec{}, fmt.Errorf("upstream %q: %w", raw, err)
 	}
+	if u.User != nil {
+		// The error omits raw on purpose: raw is the thing holding the
+		// credentials, and this error reaches the log.
+		return Spec{}, fmt.Errorf(
+			"upstream %s://%s: credentials are not supported, remove the user:password@ prefix",
+			u.Scheme, u.Host)
+	}
 	spec := Spec{Raw: raw, ServerName: u.Fragment}
 	var defPort string
 	switch u.Scheme {
