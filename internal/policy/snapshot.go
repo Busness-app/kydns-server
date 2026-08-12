@@ -87,6 +87,3 @@ func (s *Snapshot) Decide(name string) Decision {
 	}
 	return Decision{Policy: PolicyForwarded}
 }
-
-// Enabled reports whether filtering is on, for the UI's warning banner.
-func (s *Snapshot) Enabled() bool { return s != nil && s.enabled }

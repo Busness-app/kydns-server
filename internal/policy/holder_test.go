@@ -9,7 +9,7 @@ import (
 
 func testHolder(t *testing.T, src Source) *Holder {
 	t.Helper()
-	h := NewHolder(src, nil)
+	h := NewHolder(src)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestFailedRebuildKeepsThePreviousSnapshot(t *testing.T) {
 func TestHolderBeforeFirstBuildBlocksNothing(t *testing.T) {
 	h := NewHolder(func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
 		return store.BlacklistSettings{}, nil, nil, nil
-	}, nil)
+	})
 	if blocked, decision, _ := h.Decide("ads.example"); blocked || decision != PolicyForwarded {
 		t.Errorf("Decide() before the first build = %v %q, want forwarded", blocked, decision)
 	}

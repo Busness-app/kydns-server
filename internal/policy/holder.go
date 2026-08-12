@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -16,20 +15,16 @@ type Source func() (store.BlacklistSettings, []store.BlacklistList, []store.Blac
 // Decide with no lock on the snapshot itself; writers call Rebuild, which
 // builds fully before swapping the pointer.
 type Holder struct {
-	src    Source
-	logger *slog.Logger
-	cur    atomic.Pointer[Snapshot]
+	src Source
+	cur atomic.Pointer[Snapshot]
 
 	blocked atomic.Uint64
 	mu      sync.Mutex
 	byList  map[string]uint64
 }
 
-func NewHolder(src Source, logger *slog.Logger) *Holder {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Holder{src: src, logger: logger, byList: map[string]uint64{}}
+func NewHolder(src Source) *Holder {
+	return &Holder{src: src, byList: map[string]uint64{}}
 }
 
 // Rebuild pulls fresh inputs, builds a complete snapshot, and swaps it in. It
