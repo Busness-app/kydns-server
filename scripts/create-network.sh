@@ -4,8 +4,9 @@
 # Idempotent, and never destructive: if the network already exists this
 # reports what it is and stops. Other containers may be on it.
 #
-# Everything not set is derived from the host's default route. Override with
-# KYDNS_NETWORK, KYDNS_NET_DRIVER, KYDNS_PARENT_IF, KYDNS_SUBNET, KYDNS_GATEWAY.
+# The parent interface, subnet and gateway come from the host's default route.
+# Override any of it with KYDNS_NETWORK, KYDNS_NET_DRIVER, KYDNS_PARENT_IF,
+# KYDNS_SUBNET, KYDNS_GATEWAY.
 set -eu
 
 # Environment first, then .env, then detection — the order docker compose uses.
@@ -40,16 +41,10 @@ fi
 : "${SUBNET:=$(ip -o -4 route show dev "$PARENT" proto kernel scope link | awk '{print $1; exit}')}"
 [ -n "$SUBNET" ] || { echo "Could not read the subnet on $PARENT: set KYDNS_SUBNET in .env" >&2; exit 1; }
 
-# An access point drops frames from the second MAC address macvlan needs, so
-# wireless parents get ipvlan, which shares the host's MAC instead.
-if [ -z "$DRIVER" ]; then
-	if [ -d "/sys/class/net/$PARENT/wireless" ]; then
-		DRIVER=ipvlan
-		echo "$PARENT is wireless, using ipvlan. Some access points still drop this."
-	else
-		DRIVER=macvlan
-	fi
-fi
+# ipvlan shares the host's MAC and only adds an address. That keeps switch
+# port security and DHCP snooping happy, and is the one that survives WiFi.
+# Set KYDNS_NET_DRIVER=macvlan if you need a distinct MAC per container.
+DRIVER="${DRIVER:-ipvlan}"
 
 # Confine Docker's allocations to the one address KyDNS uses. Handing it the
 # whole subnet invites it to pick something the router later leases to a

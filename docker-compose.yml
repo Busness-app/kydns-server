@@ -51,21 +51,17 @@ networks:
   # addresses on your physical LAN outlives any one stack, so `compose down`
   # has no business tearing it down.
   #
-  # No such network? Create it once, on the host, matching your LAN:
+  # No such network? `make up` creates it. By hand it is:
   #
-  #   docker network create -d macvlan \
+  #   docker network create -d ipvlan \
   #     -o parent=eth0 \
   #     --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
-  #     --ip-range 192.168.1.48/28 \
+  #     --ip-range 192.168.1.53/32 \
   #     br0
   #
-  # Use `-d ipvlan` instead if the parent is WiFi: an access point drops
-  # frames from the second MAC address macvlan needs. You cannot enslave a
-  # WiFi interface to a Linux bridge at all, so there is no br0 over WiFi —
-  # ipvlan on wlan0 is the closest thing.
-  #
-  # --ip-range keeps Docker's own allocations away from your DHCP pool. Pick a
-  # slice your router does not lease.
+  # The /32 range confines Docker to the one address KyDNS uses. Give it the
+  # whole subnet and it will eventually pick one your router leases to a
+  # phone, which presents as DNS failing at unpredictable hours.
   lan:
     name: ${KYDNS_NETWORK:-br0}
     external: true
@@ -120,26 +116,15 @@ volumes:
 #   the Docker host itself cannot. That matters if the host resolves through
 #   KyDNS, or if KyDNS health-checks a service running on the host.
 #
-#   Fix with a shim interface, matching the driver and parent of your network
-#   — `docker network inspect <name>` reports both. For a macvlan on eth0:
+#   Fix with a shim interface. Match the parent of your network, which
+#   `docker network inspect <name>` reports:
 #
-#     sudo ip link add kydns-shim link eth0 type macvlan mode bridge
+#     sudo ip link add kydns-shim link eth0 type ipvlan mode l2
 #     sudo ip addr add 192.168.1.2/32 dev kydns-shim
 #     sudo ip link set kydns-shim up
 #     sudo ip route add 192.168.1.53/32 dev kydns-shim
 #
-#   For ipvlan, use `type ipvlan mode l2` instead. Either way the shim is not
-#   persistent; add it to systemd-networkd or your distro's equivalent once it
-#   works.
-#
-# WiFi
-#
-#   There is no br0 over WiFi. A station-mode interface cannot be enslaved to
-#   a Linux bridge, and macvlan fails too because the access point drops
-#   frames from a second MAC address. An ipvlan network with parent=wlan0
-#   shares the host's MAC and is the closest you get; some APs with client
-#   isolation still interfere. On WiFi, publishing ports on the host's own
-#   address is usually the better trade — but note that Docker's bridge
-#   networking can rewrite client source addresses, and KyDNS keys views and
-#   the query ACL on those.
+#   Use `type macvlan mode bridge` if you overrode the driver. Either way the
+#   shim is not persistent; add it to systemd-networkd or your distro's
+#   equivalent once it works.
 # ---------------------------------------------------------------------------

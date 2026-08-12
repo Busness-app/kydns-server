@@ -193,10 +193,9 @@ docker compose logs kydns | grep setup-token
 `make up` runs `scripts/create-network.sh` first. That script is idempotent and
 never destructive: if the network already exists it prints what it is and stops,
 because other containers are probably on it. Otherwise it reads your default
-route for the parent interface, subnet and gateway, picks `macvlan` on a wired
-parent or `ipvlan` on a wireless one, and confines Docker's address pool to the
-single `KYDNS_IP` you chose. Run it alone with `make network` to see the values
-before anything starts.
+route for the parent interface, subnet and gateway, and confines Docker's
+address pool to the single `KYDNS_IP` you chose. Run it alone with `make
+network` to see the values before anything starts.
 
 Already have the network — unRAID's `br0`, or whatever AdGuard Home and Pi-hole
 are on? Set `KYDNS_NETWORK` to its name and `make up` will join it untouched.
@@ -219,7 +218,7 @@ LAN outlives any one stack, and `compose down` has no business removing one
 AdGuard is sitting on.
 
 ```sh
-docker network create -d macvlan \
+docker network create -d ipvlan \
   -o parent=eth0 \
   --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
   --ip-range 192.168.1.53/32 \
@@ -228,8 +227,14 @@ docker network create -d macvlan \
 
 The `/32` range is deliberate. Give Docker the whole subnet and it will
 eventually allocate an address your router later leases to a phone, which
-presents as DNS failing at unpredictable hours. Use `-d ipvlan` if the parent
-is WiFi — see below.
+presents as DNS failing at unpredictable hours.
+
+`ipvlan` shares the host's MAC and only adds an address, so switch port
+security and DHCP snooping have nothing to object to, and it is the driver
+that survives WiFi. `macvlan` gives each container its own MAC, which matters
+only if you want the router to hold a DHCP reservation for it — KyDNS uses a
+static address, so it does not. Set `KYDNS_NET_DRIVER=macvlan` if you want it
+anyway.
 
 #### Three things that bite
 
@@ -251,17 +256,11 @@ docker run --rm -v kydns-server_kydns-data:/d busybox cat /d/setup-token
 
 #### WiFi
 
-**There is no `br0` over WiFi.** A station-mode wireless interface cannot be
-enslaved to a Linux bridge — 802.11 client frames carry three MAC addresses and
-a bridge needs four-address mode, which almost no access point supports.
-macvlan fails for a related reason: the AP drops frames from a second MAC.
-
-An ipvlan network with `parent=wlan0` shares the host's MAC and is the closest
-equivalent, though some APs with client isolation still interfere. Publishing
-ports on the host's own address is often the better trade there — but Docker's
-bridge networking can rewrite client source addresses, and KyDNS keys both
-views and the query ACL on those, so check that split-horizon still works
-before relying on it.
+`ipvlan` works over WiFi, which is why it is the default. Some access points
+with client isolation still interfere. Note that there is no `br0` over WiFi in
+the literal sense — a station-mode interface cannot be enslaved to a Linux
+bridge — but nothing here needs one: the network just has to exist under that
+name, and an ipvlan network with `parent=wlan0` does.
 
 ## Security model
 
