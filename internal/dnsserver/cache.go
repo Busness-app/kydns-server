@@ -71,6 +71,9 @@ func (c *Cache) Get(q dns.Question, do bool) (*dns.Msg, bool) {
 	out := e.msg.Copy()
 	for _, section := range [][]dns.RR{out.Answer, out.Ns, out.Extra} {
 		for _, rr := range section {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue // OPT's "TTL" field is EXTENDED-RCODE/VERSION/DO/Z, not a TTL
+			}
 			h := rr.Header()
 			if h.Ttl > age {
 				h.Ttl -= age
@@ -100,6 +103,9 @@ func (c *Cache) Put(q dns.Question, do bool, m *dns.Msg) {
 	// Normalize stored TTLs so Get's age subtraction starts from the clamp.
 	for _, section := range [][]dns.RR{entry.msg.Answer, entry.msg.Ns, entry.msg.Extra} {
 		for _, rr := range section {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue // OPT's "TTL" field is EXTENDED-RCODE/VERSION/DO/Z, not a TTL
+			}
 			rr.Header().Ttl = ttl
 		}
 	}

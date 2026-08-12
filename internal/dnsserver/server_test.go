@@ -272,3 +272,35 @@ func TestForwardedReplyKeepsOPTForAnEDNSClient(t *testing.T) {
 		t.Error("reply dropped the OPT record an EDNS0 client asked for")
 	}
 }
+
+// The server must read the client's own DO bit and forward it, not hardcode
+// one: hardcoding false would leave every other test green, since none of
+// them check which DO value actually reached the reply. This checks a fresh
+// query (a cache miss) and a repeat of the same query (a cache hit), since a
+// cache that mishandled the OPT record would only show it on the second.
+func TestServerReadsClientDOBit(t *testing.T) {
+	for _, do := range []bool{true, false} {
+		addr := newTestServer(t, allowLoopback(t))
+		c := &dns.Client{
+			Net:     "udp",
+			Timeout: 3 * time.Second,
+			Dialer:  &net.Dialer{LocalAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1")}},
+		}
+		for i := 0; i < 2; i++ {
+			m := new(dns.Msg)
+			m.SetQuestion("example.com.", dns.TypeA)
+			m.SetEdns0(1232, do)
+			resp, _, err := c.Exchange(m, addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opt := resp.IsEdns0()
+			if opt == nil {
+				t.Fatalf("do=%t query %d: reply carries no OPT", do, i)
+			}
+			if opt.Do() != do {
+				t.Errorf("do=%t query %d: reply DO=%t, want %t", do, i, opt.Do(), do)
+			}
+		}
+	}
+}

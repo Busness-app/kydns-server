@@ -38,8 +38,10 @@ func (f *fakeExchanger) Exchange(_ context.Context, m *dns.Msg, addr string) (*d
 		if rcode == dns.RcodeSuccess {
 			resp.Answer = reply(m.Question[0].Name, 300).Answer
 		}
-		// SetReply drops Extra, but a real EDNS0-aware upstream echoes an OPT
-		// record on every reply to an EDNS0 query (RFC 6891).
+		// okReply's resp never had an OPT; a real EDNS0 upstream echoes the
+		// DO bit in its reply, so add one. Its UDP size would really be the
+		// upstream's own buffer size, not the requestor's, but that
+		// distinction doesn't matter for a fake.
 		if opt := m.IsEdns0(); opt != nil {
 			resp.SetEdns0(opt.UDPSize(), opt.Do())
 		}
@@ -126,6 +128,34 @@ func TestForwarderSingleFlight(t *testing.T) {
 	wg.Wait()
 	if got := x.calls.Load(); got != 1 {
 		t.Errorf("upstream calls = %d, want exactly 1 collapsed query", got)
+	}
+}
+
+// Concurrent misses for the same name but different DO must not collapse
+// into one leader: the singleflight key includes DO, so a DO=0 miss and a
+// DO=1 miss stay two separate upstream queries instead of one leader handing
+// its differently-shaped answer to the other's followers.
+func TestForwarderSingleFlightSeparatesByDO(t *testing.T) {
+	x := &fakeExchanger{
+		perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": okReply},
+		delay:   50 * time.Millisecond,
+	}
+	f := newForwarder(x, "1.1.1.1:53")
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		do := i%2 == 0
+		wg.Add(1)
+		go func(do bool) {
+			defer wg.Done()
+			if _, err := f.Resolve(context.Background(), question("a.example.com."), do); err != nil {
+				t.Error(err)
+			}
+		}(do)
+	}
+	wg.Wait()
+	if got := x.calls.Load(); got != 2 {
+		t.Errorf("upstream calls = %d, want exactly 2 (one per DO value)", got)
 	}
 }
 

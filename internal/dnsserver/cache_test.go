@@ -178,3 +178,31 @@ func TestCacheSeparatesByDOBit(t *testing.T) {
 		t.Error("Get(do=false) missed after its own Put")
 	}
 }
+
+// The OPT record's "TTL" field is not a TTL (RFC 6891 section 6.1.3): it packs
+// EXTENDED-RCODE, VERSION, DO, and Z. Both the clamp-on-Put and the
+// age-decrement-on-Get loops must leave it alone, or a cached response hands
+// out a forged DO bit and OPT version. A large cache_max_ttl (operator
+// reachable) exercises the version byte, not just the DO bit.
+func TestCachePreservesOPTRecord(t *testing.T) {
+	c := NewCache(10, 5, 86400, 300)
+	q := question("a.example.com.")
+	m := reply("a.example.com.", 300)
+	m.SetEdns0(1232, true)
+
+	c.Put(q, true, m)
+	out, ok := c.Get(q, true)
+	if !ok {
+		t.Fatal("Get() after Put() missed")
+	}
+	opt := out.IsEdns0()
+	if opt == nil {
+		t.Fatal("cached response lost its OPT record")
+	}
+	if !opt.Do() {
+		t.Error("cached response lost the DO bit")
+	}
+	if opt.Version() != 0 {
+		t.Errorf("OPT version = %d, want 0", opt.Version())
+	}
+}
