@@ -58,18 +58,29 @@ func parseLimit(r io.Reader, format string, max int) (ParseResult, error) {
 	}
 	var res ParseResult
 	seen := map[string]struct{}{}
-	br := bufio.NewReader(r)
+	br := bufio.NewReaderSize(r, maxLineBytes)
 	for {
-		raw, err := br.ReadString('\n')
+		raw, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// The line exceeds the ceiling: count it once, then discard the
+			// rest of it without growing any buffer.
+			res.Skipped++
+			for err == bufio.ErrBufferFull {
+				_, err = br.ReadSlice('\n')
+			}
+			if err != nil && err != io.EOF {
+				return ParseResult{}, err
+			}
+			if err == io.EOF {
+				break
+			}
+			continue
+		}
 		if err != nil && err != io.EOF {
 			return ParseResult{}, err
 		}
 		done := err == io.EOF
-		if len(raw) > maxLineBytes {
-			// A line over the ceiling is malformed input, not a reason to
-			// abort the rest of the list.
-			res.Skipped++
-		} else if line := strings.TrimSpace(raw); line != "" &&
+		if line := strings.TrimSpace(string(raw)); line != "" &&
 			!strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "!") {
 			names, ok := lineDomains(line, format)
 			if !ok || len(names) == 0 {

@@ -112,6 +112,51 @@ func TestParseSkipsAnOverlongLineWithoutAborting(t *testing.T) {
 	}
 }
 
+// A final line with no trailing newline must still be parsed, not dropped.
+func TestParseParsesAFinalLineWithoutTrailingNewline(t *testing.T) {
+	got, err := Parse(strings.NewReader("before.example\nafter.example"), FormatDomains)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"after.example", "before.example"}
+	if strings.Join(got.Domains, ",") != strings.Join(want, ",") {
+		t.Errorf("Domains = %v, want %v", got.Domains, want)
+	}
+}
+
+// A body with no newline at all must not be buffered whole.
+func TestParseBoundsAPathologicalUnterminatedLine(t *testing.T) {
+	// One "line" far larger than the per-line ceiling, no newline anywhere.
+	huge := strings.Repeat("x", maxLineBytes*8)
+	got, err := Parse(strings.NewReader(huge), FormatDomains)
+	if err != nil {
+		t.Fatalf("Parse() = %v, want the line skipped rather than an error", err)
+	}
+	if len(got.Domains) != 0 {
+		t.Errorf("Domains = %v, want none", got.Domains)
+	}
+	if got.Skipped != 1 {
+		t.Errorf("Skipped = %d, want exactly 1 for a single overlong line", got.Skipped)
+	}
+}
+
+// An overlong line must count once and not swallow the good lines around it.
+func TestParseSkipsAnOverlongLineOnceAmongGoodLines(t *testing.T) {
+	huge := strings.Repeat("x", maxLineBytes*8)
+	in := "before.example\n" + huge + "\nafter.example\n"
+	got, err := Parse(strings.NewReader(in), FormatDomains)
+	if err != nil {
+		t.Fatalf("Parse() = %v, want the overlong line skipped, not an error", err)
+	}
+	want := []string{"after.example", "before.example"}
+	if strings.Join(got.Domains, ",") != strings.Join(want, ",") {
+		t.Errorf("Domains = %v, want %v", got.Domains, want)
+	}
+	if got.Skipped != 1 {
+		t.Errorf("Skipped = %d, want the overlong line counted once", got.Skipped)
+	}
+}
+
 func TestValidFormat(t *testing.T) {
 	for _, f := range []string{FormatDomains, FormatHosts, FormatAdblock} {
 		if !ValidFormat(f) {
