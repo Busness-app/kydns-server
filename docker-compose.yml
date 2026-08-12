@@ -5,11 +5,11 @@ services:
     container_name: kydns
     restart: unless-stopped
 
-    # The container gets its own address on the LAN, so it owns port 53 there
+    # The container gets its own address on your LAN, so it owns port 53 there
     # and never contends with systemd-resolved or dnsmasq on the host.
     # Settings live in .env — copy .env.example and edit.
     networks:
-      kydns_lan:
+      lan:
         ipv4_address: ${KYDNS_IP:?set KYDNS_IP in .env}
 
     # Binding port 53 needs this one capability. Everything else is dropped.
@@ -42,14 +42,33 @@ services:
         max-file: "3"
 
 networks:
-  kydns_lan:
-    driver: ${KYDNS_NET_DRIVER:-ipvlan}
-    driver_opts:
-      parent: ${KYDNS_PARENT_IF:?set KYDNS_PARENT_IF in .env}
-    ipam:
-      config:
-        - subnet: ${KYDNS_SUBNET:?set KYDNS_SUBNET in .env}
-          gateway: ${KYDNS_GATEWAY:?set KYDNS_GATEWAY in .env}
+  # An existing LAN-attached network, created and owned by the host — not by
+  # this file. On unRAID that is br0. Anything already giving containers real
+  # LAN addresses works: AdGuard Home or Pi-hole on the same network is the
+  # sign you have one.
+  #
+  # Compose joins it and never creates or removes it. A network that hands out
+  # addresses on your physical LAN outlives any one stack, so `compose down`
+  # has no business tearing it down.
+  #
+  # No such network? Create it once, on the host, matching your LAN:
+  #
+  #   docker network create -d macvlan \
+  #     -o parent=eth0 \
+  #     --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
+  #     --ip-range 192.168.1.48/28 \
+  #     br0
+  #
+  # Use `-d ipvlan` instead if the parent is WiFi: an access point drops
+  # frames from the second MAC address macvlan needs. You cannot enslave a
+  # WiFi interface to a Linux bridge at all, so there is no br0 over WiFi —
+  # ipvlan on wlan0 is the closest thing.
+  #
+  # --ip-range keeps Docker's own allocations away from your DHCP pool. Pick a
+  # slice your router does not lease.
+  lan:
+    name: ${KYDNS_NETWORK:-br0}
+    external: true
 
 volumes:
   kydns-data:
@@ -57,8 +76,16 @@ volumes:
 # ---------------------------------------------------------------------------
 # Setup
 #
-# 1. cp .env.example .env        and fill in your LAN details
-# 2. cp kydns.example.yaml kydns.yaml
+# 1. Confirm the network exists and note its subnet:
+#
+#      docker network ls
+#      docker network inspect br0
+#
+#    If you already run AdGuard Home or Pi-hole with a LAN address, KyDNS
+#    joins the same network. Set KYDNS_NETWORK in .env if it is not br0.
+#
+# 2. cp .env.example .env        and set KYDNS_IP
+# 3. cp kydns.example.yaml kydns.yaml
 #
 #    Change two things in kydns.yaml from their defaults:
 #
@@ -72,34 +99,46 @@ volumes:
 #    it is not on the host. Put a TLS-terminating proxy in front if you want
 #    encryption; KyDNS speaks plain HTTP.
 #
-# 3. docker compose up -d
-# 4. docker compose logs kydns | grep setup-token
+# 4. docker compose up -d
+# 5. docker compose logs kydns | grep setup-token
 #    Open http://$KYDNS_IP:8053/ and complete setup with that token.
-# 5. Point a client at $KYDNS_IP for DNS and try:
+# 6. Point a client at $KYDNS_IP for DNS and try:
 #      dig @$KYDNS_IP kypost.home.arpa
+#
+# Running alongside AdGuard Home or Pi-hole
+#
+#   Give KYDNS_IP an address the other one is not using. Both can hold port 53
+#   at once, because each has its own LAN address. That is the point of this
+#   network, and it is what lets you cut over one client at a time instead of
+#   swapping the whole house at once.
 #
 # The host cannot reach the container
 #
-#   Both macvlan and ipvlan deliberately block traffic between the host and
+#   macvlan and ipvlan both deliberately block traffic between the host and
 #   its own containers. Everything else on the LAN reaches KyDNS fine; only
 #   the Docker host itself cannot. That matters if the host resolves through
 #   KyDNS, or if KyDNS health-checks a service running on the host.
 #
-#   Fix with a shim interface on the host, matching your driver. Replace the
-#   interface name, address, and subnet to suit. For ipvlan:
+#   Fix with a shim interface, matching the driver and parent of your network
+#   — `docker network inspect <name>` reports both. For a macvlan on eth0:
 #
-#     sudo ip link add kydns-shim link eth0 type ipvlan mode l2
+#     sudo ip link add kydns-shim link eth0 type macvlan mode bridge
 #     sudo ip addr add 192.168.1.2/32 dev kydns-shim
 #     sudo ip link set kydns-shim up
 #     sudo ip route add 192.168.1.53/32 dev kydns-shim
 #
-#   For macvlan, use `type macvlan mode bridge` instead. Either way the shim
-#   is not persistent; add it to systemd-networkd or your distro's equivalent
-#   once it works.
+#   For ipvlan, use `type ipvlan mode l2` instead. Either way the shim is not
+#   persistent; add it to systemd-networkd or your distro's equivalent once it
+#   works.
 #
 # WiFi
 #
-#   macvlan does not work over WiFi — the access point drops frames from a
-#   second MAC address. Use KYDNS_NET_DRIVER=ipvlan there, which reuses the
-#   host's MAC. Some APs with client isolation will still interfere.
+#   There is no br0 over WiFi. A station-mode interface cannot be enslaved to
+#   a Linux bridge, and macvlan fails too because the access point drops
+#   frames from a second MAC address. An ipvlan network with parent=wlan0
+#   shares the host's MAC and is the closest you get; some APs with client
+#   isolation still interfere. On WiFi, publishing ports on the host's own
+#   address is usually the better trade — but note that Docker's bridge
+#   networking can rewrite client source addresses, and KyDNS keys views and
+#   the query ACL on those.
 # ---------------------------------------------------------------------------

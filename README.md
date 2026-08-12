@@ -174,11 +174,19 @@ docker compose run --rm -it kydns admin reset-password
 
 ### Docker
 
-The container gets **its own IP address on your LAN**, so it owns port 53 there
-and never contends with systemd-resolved or dnsmasq on the host.
+KyDNS joins a **LAN-attached Docker network your host already owns**, so the
+container gets its own IP address on your LAN, binds port 53 there, and never
+contends with systemd-resolved or dnsmasq on the host. unRAID calls that
+network `br0`. If AdGuard Home or Pi-hole already has a LAN address, KyDNS
+joins the same network they are on.
+
+Compose joins the network. It never creates or deletes it — a network handing
+out addresses on your physical LAN outlives any one stack.
 
 ```sh
-cp .env.example .env          # your interface, subnet, gateway, and IP
+docker network ls                       # find it; br0 on unRAID
+docker network inspect br0              # note the subnet
+cp .env.example .env                    # set KYDNS_NETWORK and KYDNS_IP
 cp kydns.example.yaml kydns.yaml
 docker compose up -d
 docker compose logs kydns | grep setup-token
@@ -188,27 +196,32 @@ In `kydns.yaml` change two settings from their defaults: `data_dir:
 /var/lib/kydns`, and `admin.listen: "0.0.0.0:8053"`. Leaving admin on
 `127.0.0.1` would bind the *container's* loopback, reachable from nowhere.
 
-Find your values with:
+Pick a `KYDNS_IP` inside that network's subnet, **outside the router's DHCP
+pool**, and different from any address AdGuard Home or Pi-hole already holds.
+Two DNS servers can each own port 53 at once when each has its own LAN
+address, which is how you move one client at a time instead of the whole
+house.
+
+#### No such network yet
+
+Create it once, on the host, matching your LAN. This is host configuration,
+not something a compose file should own:
 
 ```sh
-ip -o -4 route show default                    # interface and gateway
-ip -o -4 addr show dev <interface>             # subnet
+docker network create -d macvlan \
+  -o parent=eth0 \
+  --subnet 192.168.1.0/24 --gateway 192.168.1.1 \
+  --ip-range 192.168.1.48/28 \
+  br0
 ```
 
-Pick a `KYDNS_IP` inside your subnet but **outside the router's DHCP pool**, or
-the router will hand it to something else.
-
-#### Choosing the driver
-
-| Driver | Use when | Why |
-|---|---|---|
-| `ipvlan` (default) | WiFi, or anywhere | Shares the host's MAC, adds an IP |
-| `macvlan` | Wired ethernet | Own MAC; **silently fails over WiFi** — APs reject a second MAC from one station |
+`--ip-range` keeps Docker's allocations out of your DHCP pool. Use `-d ipvlan`
+if the parent is WiFi — see below.
 
 #### Three things that bite
 
-- **The host cannot reach the container.** Both drivers deliberately block
-  host-to-container traffic. Everything else on the LAN is fine; only the
+- **The host cannot reach the container.** macvlan and ipvlan both deliberately
+  block host-to-container traffic. Everything else on the LAN is fine; only the
   Docker host itself can't reach KyDNS. That matters if the host resolves
   through it. `docker-compose.yml` has the shim-interface fix.
 - **Use the named volume for `data_dir`, not a host directory.** The container
@@ -222,6 +235,20 @@ the router will hand it to something else.
 ```sh
 docker run --rm -v kydns-server_kydns-data:/d busybox cat /d/setup-token
 ```
+
+#### WiFi
+
+**There is no `br0` over WiFi.** A station-mode wireless interface cannot be
+enslaved to a Linux bridge — 802.11 client frames carry three MAC addresses and
+a bridge needs four-address mode, which almost no access point supports.
+macvlan fails for a related reason: the AP drops frames from a second MAC.
+
+An ipvlan network with `parent=wlan0` shares the host's MAC and is the closest
+equivalent, though some APs with client isolation still interfere. Publishing
+ports on the host's own address is often the better trade there — but Docker's
+bridge networking can rewrite client source addresses, and KyDNS keys both
+views and the query ACL on those, so check that split-horizon still works
+before relying on it.
 
 ## Security model
 
