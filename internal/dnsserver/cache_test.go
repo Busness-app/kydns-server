@@ -206,3 +206,34 @@ func TestCachePreservesOPTRecord(t *testing.T) {
 		t.Errorf("OPT version = %d, want 0", opt.Version())
 	}
 }
+
+// TestCachePreservesOPTRecord above stores and fetches with no elapsed time,
+// so age is 0 and Get's "h.Ttl -= age" is a no-op regardless of whether OPT
+// is skipped — it does not exercise Get's own guard. This test forces a
+// nonzero age so Get's age-decrement loop actually runs against the OPT
+// record, not just Put's clamp loop.
+func TestCacheGetPreservesOPTRecordAfterAgeDecrement(t *testing.T) {
+	c := NewCache(10, 5, 86400, 300)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	q := question("a.example.com.")
+	m := reply("a.example.com.", 300)
+	m.SetEdns0(1232, true)
+	c.Put(q, true, m)
+
+	now = now.Add(40 * time.Second)
+	out, ok := c.Get(q, true)
+	if !ok {
+		t.Fatal("entry expired early")
+	}
+	opt := out.IsEdns0()
+	if opt == nil {
+		t.Fatal("cached response lost its OPT record after aging")
+	}
+	if !opt.Do() {
+		t.Error("cached response lost the DO bit after aging")
+	}
+	if opt.Version() != 0 {
+		t.Errorf("OPT version = %d after aging, want 0", opt.Version())
+	}
+}
