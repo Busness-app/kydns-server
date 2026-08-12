@@ -49,7 +49,6 @@ func newTestServer(t *testing.T, allow []netip.Prefix) string {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": okReply}}
 	return startUDP(t, New(Options{
 		Holder: h,
 		ACL:    NewACL(allow),
@@ -57,7 +56,7 @@ func newTestServer(t *testing.T, allow []netip.Prefix) string {
 			Zone: "home.arpa.", TTL: 60,
 			ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
 		},
-		Forwarder: newForwarder(x, "1.1.1.1:53"),
+		Forwarder: newForwarder(okUpstream("tls://1.1.1.1:853", true)),
 	}))
 }
 
@@ -155,12 +154,11 @@ func TestRefusedForNonINClass(t *testing.T) {
 
 func TestServfailWhenSnapshotMissingAndUpstreamsDown(t *testing.T) {
 	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
-	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": failReply}}
 	addr := startUDP(t, New(Options{
 		Holder:    h, // never rebuilt: Current() is nil
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
 		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
-		Forwarder: newForwarder(x, "1.1.1.1:53"),
+		Forwarder: newForwarder(deadUpstream("tls://1.1.1.1:853", true)),
 	}))
 	resp := queryFrom(t, addr, "127.0.0.1", "example.com.", dns.TypeA)
 	if resp.Rcode != dns.RcodeServerFailure {
@@ -180,12 +178,11 @@ func TestAuthoritativeUnaffectedByUpstreamFailure(t *testing.T) {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": failReply}}
 	addr := startUDP(t, New(Options{
 		Holder:    h,
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
 		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
-		Forwarder: newForwarder(x, "1.1.1.1:53"),
+		Forwarder: newForwarder(deadUpstream("tls://1.1.1.1:853", true)),
 	}))
 	resp := queryFrom(t, addr, "127.0.0.1", "nas.home.arpa.", dns.TypeA)
 	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
@@ -301,6 +298,22 @@ func TestServerReadsClientDOBit(t *testing.T) {
 			if opt.Do() != do {
 				t.Errorf("do=%t query %d: reply DO=%t, want %t", do, i, opt.Do(), do)
 			}
+		}
+	}
+}
+
+// Authoritative answers are unsigned local data. Nothing validated them, so
+// they must never claim to be authenticated.
+func TestAuthoritativeAnswerNeverCarriesAD(t *testing.T) {
+	addr := newTestServer(t, allowLoopback(t))
+	for _, name := range []string{"kypost.home.arpa.", "20.1.168.192.in-addr.arpa."} {
+		qtype := dns.TypeA
+		if name != "kypost.home.arpa." {
+			qtype = dns.TypePTR
+		}
+		resp := queryFrom(t, addr, "127.0.0.2", name, qtype)
+		if resp.AuthenticatedData {
+			t.Errorf("%s: AD = true on an unsigned local answer", name)
 		}
 	}
 }

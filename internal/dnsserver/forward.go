@@ -5,54 +5,62 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"golang.org/x/sync/singleflight"
 )
 
-// Exchanger sends one query to one upstream. The interface exists so tests do
-// not need real sockets, and so DoT or DoH can be added as another
-// implementation without touching the handler.
-type Exchanger interface {
-	Exchange(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, error)
-}
-
-// UDPExchanger is the plain UDP/TCP client. A truncated UDP reply is retried
-// over TCP.
-type UDPExchanger struct{ Timeout time.Duration }
-
-func (u UDPExchanger) Exchange(ctx context.Context, m *dns.Msg, addr string) (*dns.Msg, error) {
-	udp := &dns.Client{Net: "udp", Timeout: u.Timeout}
-	resp, _, err := udp.ExchangeContext(ctx, m, addr)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Truncated {
-		tcp := &dns.Client{Net: "tcp", Timeout: u.Timeout}
-		resp, _, err = tcp.ExchangeContext(ctx, m, addr)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return resp, nil
+// UpstreamStatus is what the last query to one upstream did. Without it, a
+// firewall that blocks port 853 presents to the operator as "DNS is broken".
+type UpstreamStatus struct {
+	Spec      string
+	Secure    bool
+	LastError string
+	LastErrAt time.Time
+	LastOKAt  time.Time
 }
 
 // Forwarder resolves non-authoritative queries through the cache and, on a
 // miss, the upstream list in order.
 type Forwarder struct {
-	upstreams []string
-	timeout   time.Duration
-	cache     *Cache
-	x         Exchanger
-	group     singleflight.Group
+	ups     []upstream.Upstream
+	timeout time.Duration
+	cache   *Cache
+	group   singleflight.Group
+
+	mu     sync.Mutex
+	status []UpstreamStatus
 }
 
-func NewForwarder(upstreams []string, timeout time.Duration, c *Cache, x Exchanger) *Forwarder {
-	return &Forwarder{upstreams: upstreams, timeout: timeout, cache: c, x: x}
+func NewForwarder(ups []upstream.Upstream, timeout time.Duration, c *Cache) *Forwarder {
+	f := &Forwarder{ups: ups, timeout: timeout, cache: c, status: make([]UpstreamStatus, len(ups))}
+	for i, u := range ups {
+		f.status[i] = UpstreamStatus{Spec: u.String(), Secure: u.Secure()}
+	}
+	return f
 }
 
-func (f *Forwarder) Upstreams() []string { return f.upstreams }
+// Status is a snapshot for the UI, copied so callers cannot race the recorder.
+func (f *Forwarder) Status() []UpstreamStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]UpstreamStatus(nil), f.status...)
+}
+
+func (f *Forwarder) record(i int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err != nil {
+		f.status[i].LastError = err.Error()
+		f.status[i].LastErrAt = time.Now()
+		return
+	}
+	f.status[i].LastError = ""
+	f.status[i].LastOKAt = time.Now()
+}
 
 // Resolve answers from cache, or collapses concurrent identical misses into a
 // single upstream query. That collapse is what survives the boot-time
@@ -83,25 +91,37 @@ func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(q.Name), q.Qtype)
 	req.SetEdns0(1232, do)
+	// The upstream is the validator, so it is never told to skip checking, and
+	// AD asks for its verdict without the RRSIG payload (RFC 6840 5.7).
+	req.CheckingDisabled = false
+	req.AuthenticatedData = true
 
-	if len(f.upstreams) == 0 {
+	if len(f.ups) == 0 {
 		return nil, errors.New("no upstreams configured")
 	}
 	var lastErr error
-	for _, addr := range f.upstreams {
+	for i, u := range f.ups {
 		attempt, cancel := context.WithTimeout(ctx, f.timeout)
-		resp, err := f.x.Exchange(attempt, req, addr)
+		resp, err := u.Exchange(attempt, req)
 		cancel()
 		if err == nil && resp != nil && resp.Rcode != dns.RcodeServerFailure {
+			if !u.Secure() {
+				// Cleared here rather than at the response boundary, so a
+				// plaintext answer cannot carry AD into the cache either.
+				resp.AuthenticatedData = false
+			}
+			f.record(i, nil)
 			return resp, nil
 		}
-		if err != nil {
+		switch {
+		case err != nil:
 			lastErr = err
-		} else if resp == nil {
-			lastErr = fmt.Errorf("upstream %s returned no message", addr)
-		} else {
-			lastErr = fmt.Errorf("upstream %s returned %s", addr, dns.RcodeToString[resp.Rcode])
+		case resp == nil:
+			lastErr = fmt.Errorf("upstream %s returned no message", u)
+		default:
+			lastErr = fmt.Errorf("upstream %s returned %s", u, dns.RcodeToString[resp.Rcode])
 		}
+		f.record(i, lastErr)
 	}
 	return nil, fmt.Errorf("all upstreams failed: %w", lastErr)
 }
