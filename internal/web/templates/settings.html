@@ -95,6 +95,7 @@
       <td>{{if .Secure}}encrypted{{else}}<span class="badge warn">plaintext</span>{{end}}</td>
       <td>
         {{if .LastError}}<span class="error">{{.LastError}}</span>
+          <span class="muted">at {{.LastErrAt.Format "2006-01-02 15:04:05 MST"}}</span>
         {{else if .LastOKAt.IsZero}}<span class="muted">not used yet</span>
         {{else}}ok{{end}}
       </td>
