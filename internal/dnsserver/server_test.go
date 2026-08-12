@@ -45,7 +45,7 @@ func newTestServer(t *testing.T, allow []netip.Prefix) string {
 				},
 			}},
 		}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestRefusedForNonINClass(t *testing.T) {
 }
 
 func TestServfailWhenSnapshotMissingAndUpstreamsDown(t *testing.T) {
-	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil)
 	addr := startUDP(t, New(Options{
 		Holder:    h, // never rebuilt: Current() is nil
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
@@ -174,7 +174,7 @@ func TestAuthoritativeUnaffectedByUpstreamFailure(t *testing.T) {
 			Zone:     "home.arpa.",
 			Services: []store.Service{{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}}},
 		}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestAuthoritativeUnaffectedByUpstreamFailure(t *testing.T) {
 
 func TestShutdownIsClean(t *testing.T) {
 	srv := New(Options{
-		Holder: zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }),
+		Holder: zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil),
 		ACL:    NewACL(nil),
 		Auth:   &Authoritative{Zone: "home.arpa.", TTL: 60},
 	})
@@ -211,7 +211,7 @@ func TestTCPListener(t *testing.T) {
 			Zone:     "home.arpa.",
 			Services: []store.Service{{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}}},
 		}, nil
-	})
+	}, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestServerReadsClientDOBit(t *testing.T) {
 // forwardOnlyServer holds an empty zone, so every query reaches u.
 func forwardOnlyServer(t *testing.T, u *fakeUpstream) string {
 	t.Helper()
-	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestUDPReplyRespectsTheClientsBufferSize(t *testing.T) {
 
 // TCP has no datagram ceiling, so the same over-large answer must arrive whole.
 func TestTCPReplyIsNotTruncated(t *testing.T) {
-	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil })
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil)
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}

@@ -83,7 +83,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			Views: views, Services: svcs, Records: recs, Leases: leases,
 			Zone: cfg.PrivateFQDN(), ReverseZones: reverse,
 		}, nil
-	})
+	}, logger)
 	if err := holder.Rebuild(); err != nil {
 		return fmt.Errorf("initial snapshot: %w", err)
 	}

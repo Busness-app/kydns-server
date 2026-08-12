@@ -1,6 +1,9 @@
 package zone
 
-import "sync/atomic"
+import (
+	"log/slog"
+	"sync/atomic"
+)
 
 // Source pulls the current registry contents. It returns an error rather than
 // partial data so a transient store failure cannot silently empty the zone.
@@ -10,12 +13,13 @@ type Source func() (Input, error)
 // no lock; writers call Rebuild, which builds fully before swapping the
 // pointer. A failed build leaves the previous snapshot in place.
 type Holder struct {
-	src Source
-	cur atomic.Pointer[Snapshot]
-	gen atomic.Uint32
+	src    Source
+	logger *slog.Logger
+	cur    atomic.Pointer[Snapshot]
+	gen    atomic.Uint32
 }
 
-func NewHolder(src Source) *Holder { return &Holder{src: src} }
+func NewHolder(src Source, logger *slog.Logger) *Holder { return &Holder{src: src, logger: logger} }
 
 // Rebuild pulls fresh input, builds a complete snapshot, and swaps it in. It
 // is all-or-nothing: any error returns before the swap.
@@ -27,7 +31,7 @@ func (h *Holder) Rebuild() error {
 	// Reserve the generation before building so the SOA serial always advances,
 	// even across a failed attempt. Serials must never go backwards.
 	in.Generation = h.gen.Add(1)
-	snap, err := Build(in)
+	snap, err := Build(in, h.logger)
 	if err != nil {
 		return err
 	}

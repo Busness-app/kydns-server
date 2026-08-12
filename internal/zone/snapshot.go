@@ -2,6 +2,7 @@ package zone
 
 import (
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"strings"
 
@@ -47,7 +48,10 @@ type Snapshot struct {
 
 // Build resolves every view's effective set. It is all-or-nothing: an error
 // means the caller keeps serving the previous snapshot.
-func Build(in Input) (*Snapshot, error) {
+func Build(in Input, logger *slog.Logger) (*Snapshot, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	m, err := NewMatcher(in.Views)
 	if err != nil {
 		return nil, err
@@ -61,7 +65,7 @@ func Build(in Input) (*Snapshot, error) {
 	}
 	// "" is the default view, always present.
 	for _, view := range append([]string{""}, m.Names()...) {
-		idx, err := buildIndex(in, view, snap.Zone)
+		idx, err := buildIndex(in, view, snap.Zone, logger)
 		if err != nil {
 			return nil, fmt.Errorf("view %q: %w", view, err)
 		}
@@ -88,7 +92,7 @@ func pick[T any](view string, tagOf func(T) string, all []T) []T {
 	return untagged
 }
 
-func buildIndex(in Input, view, zone string) (*Index, error) {
+func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error) {
 	idx := &Index{Forward: map[string][]RR{}, Reverse: map[string]string{}}
 
 	// Precedence is applied by writing in ascending priority and letting later
@@ -109,24 +113,40 @@ func buildIndex(in Input, view, zone string) (*Index, error) {
 			continue
 		}
 		primary := qualify(svc.Name, zone)
-		rrs := make([]RR, 0, len(addrs))
-		for _, a := range addrs {
-			rrs = append(rrs, RR{Name: primary, Type: addrType(a.Address), Value: a.Address})
+
+		// Forward records answer with the proxy when routed; reverse records
+		// always name the real host, so several services behind one proxy
+		// keep their own PTRs.
+		answer := addrs
+		if svc.RouteViaProxy && svc.ProxyAddress != "" {
+			answer = []store.Address{{Address: svc.ProxyAddress}}
 		}
-		idx.Forward[primary] = rrs
+
+		names := append([]string{primary}, nil...)
 		for _, alias := range svc.Aliases {
-			an := qualify(alias, zone)
-			ar := make([]RR, 0, len(addrs))
-			for _, a := range addrs {
-				ar = append(ar, RR{Name: an, Type: addrType(a.Address), Value: a.Address})
-			}
-			idx.Forward[an] = ar
+			names = append(names, qualify(alias, zone))
 		}
+		for _, n := range names {
+			rrs := make([]RR, 0, len(answer))
+			for _, a := range answer {
+				rrs = append(rrs, RR{Name: n, Type: addrType(a.Address), Value: a.Address})
+			}
+			idx.Forward[n] = rrs
+		}
+
 		// Only the primary name gets a PTR; aliases do not.
 		for _, a := range addrs {
-			if addr, err := netip.ParseAddr(a.Address); err == nil && inZones(addr, in.ReverseZones) {
-				idx.Reverse[arpaName(addr)] = primary
+			addr, err := netip.ParseAddr(a.Address)
+			if err != nil || !inZones(addr, in.ReverseZones) {
+				continue
 			}
+			key := arpaName(addr)
+			if prior, ok := idx.Reverse[key]; ok && prior != primary {
+				logger.Warn("two services share an address, so its reverse record is ambiguous",
+					"address", a.Address, "previous", prior, "now", primary,
+					"fix", "give them different addresses, or set a proxy address on one")
+			}
+			idx.Reverse[key] = primary
 		}
 	}
 

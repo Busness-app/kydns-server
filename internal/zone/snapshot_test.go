@@ -1,7 +1,10 @@
 package zone
 
 import (
+	"bytes"
+	"log/slog"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -16,7 +19,7 @@ func build(t *testing.T, in Input) *Snapshot {
 			netip.MustParsePrefix("100.64.0.0/10"),
 		}
 	}
-	s, err := Build(in)
+	s, err := Build(in, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +170,7 @@ func TestCNAMEConflictRejected(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := Build(Input{Zone: "home.arpa.", Views: tailnetView(), Records: records})
+			_, err := Build(Input{Zone: "home.arpa.", Views: tailnetView(), Records: records}, nil)
 			if err == nil {
 				t.Fatal("Build() error = nil, want a CNAME conflict")
 			}
@@ -248,5 +251,90 @@ func TestUnknownViewFallsBackToDefault(t *testing.T) {
 	got := values(s.Lookup("does-not-exist", "kypost.home.arpa."))
 	if len(got) != 1 || got[0] != "192.168.1.20" {
 		t.Errorf("= %v, want the default view's answer", got)
+	}
+}
+
+// The headline behaviour: clients are sent to the proxy, reverse lookups still
+// name the real host.
+func TestProxyRoutedServiceAnswersWithTheProxy(t *testing.T) {
+	snap := build(t, Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses:     []store.Address{{Address: "192.168.1.30"}},
+			Aliases:       []string{"webmail"},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+	})
+	idx := snap.Views[""]
+
+	for _, name := range []string{"kypost.home.arpa.", "webmail.home.arpa."} {
+		rrs := idx.Forward[name]
+		if len(rrs) != 1 || rrs[0].Value != "192.168.1.20" {
+			t.Errorf("%s = %v, want the proxy address", name, rrs)
+		}
+	}
+	if got := idx.Reverse["30.1.168.192.in-addr.arpa."]; got != "kypost.home.arpa." {
+		t.Errorf("reverse for the real address = %q, want kypost.home.arpa.", got)
+	}
+	if got := idx.Reverse["20.1.168.192.in-addr.arpa."]; got != "" {
+		t.Errorf("reverse for the proxy address = %q, want none", got)
+	}
+}
+
+func TestUnroutedServiceIgnoresTheProxyAddress(t *testing.T) {
+	snap := build(t, Input{
+		Zone: "home.arpa.",
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses:    []store.Address{{Address: "192.168.1.30"}},
+			ProxyAddress: "192.168.1.20", // stored, routing off
+		}},
+	})
+	rrs := snap.Views[""].Forward["kypost.home.arpa."]
+	if len(rrs) != 1 || rrs[0].Value != "192.168.1.30" {
+		t.Errorf("= %v, want the real address while routing is off", rrs)
+	}
+}
+
+// Routing decides what an answer says, never whether one exists.
+func TestProxyDoesNotCreateAServiceInAViewItIsAbsentFrom(t *testing.T) {
+	snap := build(t, Input{
+		Zone:  "home.arpa.",
+		Views: []store.View{{Name: "lan", Subnets: []string{"192.168.1.0/24"}}},
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses:     []store.Address{{Address: "100.64.0.5", View: "tailnet"}},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+	})
+	if rrs := snap.Views["lan"].Forward["kypost.home.arpa."]; len(rrs) != 0 {
+		t.Errorf("lan view = %v, want nothing: the service has no lan address", rrs)
+	}
+}
+
+// The bug this fixes: two services on one address silently lose a reverse
+// record. Resolution stays last-writer-wins, but it must be visible.
+func TestSharedAddressLogsAReverseConflict(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Services: []store.Service{
+			{ID: 1, Name: "a", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+			{ID: 2, Name: "b", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+		},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{"192.168.1.30", "a.home.arpa.", "b.home.arpa."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log %q does not mention %q", out, want)
+		}
 	}
 }
