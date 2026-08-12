@@ -25,6 +25,27 @@ func TestStaticServesStylesheet(t *testing.T) {
 	}
 }
 
+// A page that links a favicon the binary does not embed shows a broken icon in
+// every tab, so the link and the file are checked together.
+func TestFaviconIsLinkedAndEmbedded(t *testing.T) {
+	_, srv := newWeb(t)
+
+	rec := static(t, srv, "/static/favicon.svg")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/favicon.svg = %d, want the icon to be embedded", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "#4deeea") {
+		t.Error("favicon does not use the --accent color the rest of the UI uses")
+	}
+
+	// /setup renders through base.html with no session, which is where the
+	// link lives, so every screen inherits it.
+	h, _ := newWeb(t)
+	if body := page(t, h, "/setup", nil); !strings.Contains(body, `href="/static/favicon.svg"`) {
+		t.Error("base.html does not link the favicon")
+	}
+}
+
 // The marketing stylesheet shipped with @font-face paths pointing at
 // ../assets/fonts, but the fonts live elsewhere. The embedded copy must be
 // fixed, and the referenced files must actually be present.
