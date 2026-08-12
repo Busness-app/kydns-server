@@ -4705,11 +4705,14 @@ func blacklistList(c *Client, stdout, stderr io.Writer) int {
 		}
 		note := ""
 		switch {
-		case l.LastError != "":
-			// The stale snapshot is still serving; say so rather than "broken".
-			note = " stale: " + l.LastError
+		// "Never loaded" is checked first: a list that has failed and has never
+		// succeeded has no snapshot to be stale, and calling it stale would
+		// claim it is still filtering when it is not.
 		case l.LastOKAt == 0:
 			note = " never loaded"
+		case l.LastError != "":
+			// A stale snapshot is still serving; say so rather than "broken".
+			note = " stale: " + l.LastError
 		}
 		fmt.Fprintf(stdout, "%-6d %-20s %-4s %-8s %7d entries%s\n",
 			l.ID, l.Name, state, l.Format, l.EntryCount, note)
