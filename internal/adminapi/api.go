@@ -166,11 +166,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+	body, ok := bodyBytes(w, r)
+	if !ok {
+		return false
+	}
+	if err := json.Unmarshal(body, v); err != nil {
 		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
 		return false
 	}
 	return true
+}
+
+// bodyBytes reads the whole request body up front so a handler can inspect it
+// (e.g. which keys are present) before unmarshalling it.
+func bodyBytes(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
+		return nil, false
+	}
+	return body, true
 }
 
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -243,20 +258,38 @@ func (a *API) getService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toServiceDTO(svc))
 }
 
-// updateService replaces a service wholesale. Addresses and aliases are
-// rewritten from the body, which is how a tailnet address is added to a name
-// that already exists.
+// updateService merges the body onto the current service: an omitted field
+// keeps its value. A provided addresses or aliases array replaces the whole
+// slice rather than merging element-by-element (which is how a tailnet
+// address gets added without leaking the old address's view onto it).
 func (a *API) updateService(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r)
 	if !ok {
 		return
 	}
-	if _, err := a.reg.Service(id); err != nil {
+	cur, err := a.reg.Service(id)
+	if err != nil {
 		writeRegistryErr(w, err)
 		return
 	}
-	var d serviceDTO
-	if !decode(w, r, &d) {
+	body, ok := bodyBytes(w, r)
+	if !ok {
+		return
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
+		return
+	}
+	d := toServiceDTO(cur)
+	if _, present := raw["addresses"]; present {
+		d.Addresses = nil
+	}
+	if _, present := raw["aliases"]; present {
+		d.Aliases = nil
+	}
+	if err := json.Unmarshal(body, &d); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed_json", "", err.Error())
 		return
 	}
 	svc := fromServiceDTO(d)

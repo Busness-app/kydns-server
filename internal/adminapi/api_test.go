@@ -208,6 +208,117 @@ func TestPatchUnknownServiceIs404(t *testing.T) {
 	}
 }
 
+// A PATCH that omits fields must not clear them: the whole reason PATCH
+// exists instead of PUT.
+func TestPatchOmittedFieldsSurvive(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"grafana","addresses":[{"address":"192.168.1.20"}],"aliases":["metrics"],
+		  "check_url":"https://grafana.home.arpa/health","check_insecure":true,
+		  "proxy_address":"192.168.1.20","route_via_proxy":true}`)
+
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"name":"grafana","addresses":[{"address":"192.168.1.60"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, "GET", "/api/v1/services/1", tok, "")
+	var got serviceDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Aliases) != 1 || got.Aliases[0] != "metrics" {
+		t.Errorf("aliases = %v, want [metrics] preserved", got.Aliases)
+	}
+	if got.CheckURL != "https://grafana.home.arpa/health" {
+		t.Errorf("check_url = %q, want preserved", got.CheckURL)
+	}
+	if !got.CheckInsecure {
+		t.Error("check_insecure was cleared")
+	}
+	if got.ProxyAddress != "192.168.1.20" {
+		t.Errorf("proxy_address = %q, want preserved", got.ProxyAddress)
+	}
+	if !got.RouteViaProxy {
+		t.Error("route_via_proxy was cleared by an omitted key")
+	}
+	if len(got.Addresses) != 1 || got.Addresses[0].Address != "192.168.1.60" {
+		t.Errorf("addresses = %+v, want the new address applied", got.Addresses)
+	}
+}
+
+// A provided addresses array replaces the slice wholesale. encoding/json
+// merges into existing slice elements by default, which would leak the old
+// address's view tag onto the new address.
+func TestPatchAddressesReplaceNotMerge(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/views", tok, `{"name":"vpn","subnets":["100.64.0.0/10"]}`)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"10.0.0.5","view":"vpn"}]}`)
+
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"addresses":[{"address":"192.168.1.60"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, "GET", "/api/v1/services/1", tok, "")
+	var got serviceDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Addresses) != 1 {
+		t.Fatalf("addresses = %+v, want exactly one", got.Addresses)
+	}
+	if got.Addresses[0].Address != "192.168.1.60" {
+		t.Errorf("address = %q, want 192.168.1.60", got.Addresses[0].Address)
+	}
+	if got.Addresses[0].View != "" {
+		t.Errorf("view = %q, the old address's view leaked onto the new one", got.Addresses[0].View)
+	}
+}
+
+// "aliases": [] must explicitly clear the aliases, not be treated as absent.
+func TestPatchEmptyAliasesClears(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.20"}],"aliases":["webmail"]}`)
+
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"aliases":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, "GET", "/api/v1/services/1", tok, "")
+	var got serviceDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Aliases) != 0 {
+		t.Errorf("aliases = %v, want cleared", got.Aliases)
+	}
+}
+
+// "check_url": "" must explicitly clear the field.
+func TestPatchEmptyCheckURLClears(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.20"}],"check_url":"https://kypost.home.arpa/health"}`)
+
+	rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"check_url":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec = do(t, h, "GET", "/api/v1/services/1", tok, "")
+	var got serviceDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.CheckURL != "" {
+		t.Errorf("check_url = %q, want cleared", got.CheckURL)
+	}
+}
+
 func TestPatchValidates(t *testing.T) {
 	h, tok := newAPI(t)
 	do(t, h, "POST", "/api/v1/services", tok, `{"name":"kypost","addresses":[{"address":"192.168.1.20"}]}`)
