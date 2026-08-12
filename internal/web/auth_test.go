@@ -14,6 +14,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
+	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -30,14 +31,34 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 	reg := registry.New(st, "home.arpa.", func() error { return nil })
 	acl := dnsserver.NewACL([]netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")})
 	cache := dnsserver.NewCache(100, 5, 3600, 300)
+	ph := policy.NewHolder(func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
+		set, err := st.BlacklistSettings()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		lists, err := st.BlacklistLists()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		rules, err := st.BlacklistRules()
+		return set, lists, rules, err
+	})
+	if err := policy.SeedBuiltins(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := ph.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil))
 	srv := New(Options{
 		Store:      st,
 		Registry:   reg,
-		API:        adminapi.NewAPI(reg, acl, cache),
+		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol),
 		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
 		Backoff:    auth.NewBackoff(),
 		ACL:        acl,
 		Cache:      cache,
+		Policy:     pol,
 		SetupToken: "setup-me",
 	})
 	mux := http.NewServeMux()

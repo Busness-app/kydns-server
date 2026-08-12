@@ -13,6 +13,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -35,6 +36,10 @@ type Options struct {
 	Leases    func() []dhcp.Lease
 	Health    func() []health.Status
 	Upstreams func() []dnsserver.UpstreamStatus
+
+	// Policy is nil when filtering is not wired, which the screen renders as
+	// "not enabled" rather than as an empty tab.
+	Policy *policy.Service
 }
 
 type Server struct{ o Options }
