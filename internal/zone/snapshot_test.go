@@ -338,3 +338,46 @@ func TestSharedAddressLogsAReverseConflict(t *testing.T) {
 		}
 	}
 }
+
+// A lease and a service at the same address is one ordinary host, not a
+// conflict: the service is expected to overwrite the lease's PTR, and that
+// must stay silent.
+func TestLeaseAndServiceSharingAnAddressLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Leases:       []Lease{{Hostname: "other", Address: "192.168.1.30"}},
+		Services: []store.Service{
+			{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}},
+		},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("log = %q, want nothing for a lease overwritten by its own service", out)
+	}
+}
+
+// A multi-homed service (two addresses, one service) writes two distinct PTRs
+// and must never be mistaken for two services sharing one address.
+func TestMultiHomedServiceLogsNothing(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	if _, err := Build(Input{
+		Zone:         "home.arpa.",
+		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
+		Services: []store.Service{
+			{ID: 1, Name: "nas", Addresses: []store.Address{
+				{Address: "192.168.1.30"},
+				{Address: "192.168.1.31"},
+			}},
+		},
+	}, logger); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); out != "" {
+		t.Errorf("log = %q, want nothing for one service with two addresses", out)
+	}
+}

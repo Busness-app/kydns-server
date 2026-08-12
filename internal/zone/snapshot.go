@@ -107,6 +107,11 @@ func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error
 		}
 	}
 
+	// Tracks which reverse keys this loop itself has written, so the
+	// collision warning fires only for two services sharing an address, not
+	// for a service overwriting a lease's PTR (that overwrite is precedence
+	// working, per the comment above).
+	written := map[string]bool{}
 	for _, svc := range in.Services {
 		addrs := pick(view, func(a store.Address) string { return a.View }, svc.Addresses)
 		if len(addrs) == 0 {
@@ -122,7 +127,7 @@ func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error
 			answer = []store.Address{{Address: svc.ProxyAddress}}
 		}
 
-		names := append([]string{primary}, nil...)
+		names := []string{primary}
 		for _, alias := range svc.Aliases {
 			names = append(names, qualify(alias, zone))
 		}
@@ -141,12 +146,13 @@ func buildIndex(in Input, view, zone string, logger *slog.Logger) (*Index, error
 				continue
 			}
 			key := arpaName(addr)
-			if prior, ok := idx.Reverse[key]; ok && prior != primary {
+			if prior, ok := idx.Reverse[key]; written[key] && ok && prior != primary {
 				logger.Warn("two services share an address, so its reverse record is ambiguous",
-					"address", a.Address, "previous", prior, "now", primary,
+					"address", a.Address, "previous", prior, "now", primary, "view", view,
 					"fix", "give them different addresses, or set a proxy address on one")
 			}
 			idx.Reverse[key] = primary
+			written[key] = true
 		}
 	}
 
