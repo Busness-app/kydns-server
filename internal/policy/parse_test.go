@@ -94,6 +94,24 @@ func TestParseRefusesAListPastTheEntryCeiling(t *testing.T) {
 	}
 }
 
+// A single line over the byte ceiling must be discarded and counted, not
+// abort the whole parse the way bufio.Scanner's ErrTooLong once did.
+func TestParseSkipsAnOverlongLineWithoutAborting(t *testing.T) {
+	long := strings.Repeat("a", maxLineBytes+100) + ".example"
+	in := "before.example\n" + long + "\nafter.example\n"
+	got, err := Parse(strings.NewReader(in), FormatDomains)
+	if err != nil {
+		t.Fatalf("Parse() = %v, want the overlong line skipped, not an error", err)
+	}
+	want := []string{"after.example", "before.example"}
+	if strings.Join(got.Domains, ",") != strings.Join(want, ",") {
+		t.Errorf("Domains = %v, want %v", got.Domains, want)
+	}
+	if got.Skipped != 1 {
+		t.Errorf("Skipped = %d, want the overlong line counted once", got.Skipped)
+	}
+}
+
 func TestValidFormat(t *testing.T) {
 	for _, f := range []string{FormatDomains, FormatHosts, FormatAdblock} {
 		if !ValidFormat(f) {

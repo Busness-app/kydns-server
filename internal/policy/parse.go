@@ -58,39 +58,46 @@ func parseLimit(r io.Reader, format string, max int) (ParseResult, error) {
 	}
 	var res ParseResult
 	seen := map[string]struct{}{}
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 4096), maxLineBytes)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "!") {
-			continue // comments and blanks are not failures
+	br := bufio.NewReader(r)
+	for {
+		raw, err := br.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return ParseResult{}, err
 		}
-		names, ok := lineDomains(line, format)
-		if !ok || len(names) == 0 {
+		done := err == io.EOF
+		if len(raw) > maxLineBytes {
+			// A line over the ceiling is malformed input, not a reason to
+			// abort the rest of the list.
 			res.Skipped++
-			continue
-		}
-		added := 0
-		for _, raw := range names {
-			n, err := Normalize(raw)
-			if err != nil || localNames[n] {
-				continue
+		} else if line := strings.TrimSpace(raw); line != "" &&
+			!strings.HasPrefix(line, "#") && !strings.HasPrefix(line, "!") {
+			names, ok := lineDomains(line, format)
+			if !ok || len(names) == 0 {
+				res.Skipped++
+			} else {
+				added := 0
+				for _, name := range names {
+					n, nerr := Normalize(name)
+					if nerr != nil || localNames[n] {
+						continue
+					}
+					added++
+					if _, dup := seen[n]; dup {
+						continue
+					}
+					seen[n] = struct{}{}
+					if len(seen) > max {
+						return ParseResult{}, errors.New("list exceeds the entry ceiling")
+					}
+				}
+				if added == 0 {
+					res.Skipped++
+				}
 			}
-			added++
-			if _, dup := seen[n]; dup {
-				continue
-			}
-			seen[n] = struct{}{}
-			if len(seen) > max {
-				return ParseResult{}, errors.New("list exceeds the entry ceiling")
-			}
 		}
-		if added == 0 {
-			res.Skipped++
+		if done {
+			break
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return ParseResult{}, err
 	}
 	res.Domains = make([]string, 0, len(seen))
 	for n := range seen {

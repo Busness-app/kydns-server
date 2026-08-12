@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -133,6 +134,52 @@ func TestUnparseableBodyKeepsTheLastGoodSnapshot(t *testing.T) {
 	}
 	if blocked, _, _ := h.Decide("ads.example"); !blocked {
 		t.Error("a junk body dropped the working snapshot")
+	}
+}
+
+// A refresh failure must never let a secret carried in the list URL's query
+// string reach the stored last_error, which the API, the UI and the CLI all
+// surface verbatim.
+func TestFailedRefreshNeverLeaksAURLSecretIntoLastError(t *testing.T) {
+	st := openStore(t)
+	h := NewHolder(func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
+		set, err := st.BlacklistSettings()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		lists, err := st.BlacklistLists()
+		if err != nil {
+			return set, nil, nil, err
+		}
+		rules, err := st.BlacklistRules()
+		return set, lists, rules, err
+	})
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// Port 0 on loopback never accepts a connection, so Fetch fails with a
+	// *url.Error whose text embeds this exact URL.
+	const secretURL = "https://127.0.0.1:0/list?token=SECRET"
+	ref := NewRefresher(st, NewFetcher(2*time.Second), h, nil)
+
+	id, err := st.PutBlacklistList(store.BlacklistList{
+		Name: "l1", URL: secretURL, Format: FormatDomains, Enabled: true, IntervalSeconds: 3600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ref.RefreshList(context.Background(), id); err == nil {
+		t.Fatal("RefreshList() succeeded against an unreachable host")
+	}
+	got, err := st.BlacklistListByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastError == "" {
+		t.Fatal("the failure was not recorded")
+	}
+	if strings.Contains(got.LastError, "SECRET") || strings.Contains(got.LastError, secretURL) {
+		t.Errorf("last_error = %q, leaks the list URL's query string", got.LastError)
 	}
 }
 

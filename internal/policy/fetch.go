@@ -80,6 +80,12 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL, etag, lastModified string) 
 
 	resp, err := f.Client.Do(req)
 	if err != nil {
+		// *url.Error embeds the full URL, including any query-string secret;
+		// unwrap to the underlying cause before it reaches a log or the UI.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return FetchResult{}, fmt.Errorf("download failed: %w", ue.Err)
+		}
 		return FetchResult{}, err
 	}
 	defer resp.Body.Close()

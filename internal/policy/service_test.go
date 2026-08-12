@@ -14,7 +14,7 @@ import (
 func newService(t *testing.T, srv *httptest.Server) (*store.Store, *Service) {
 	t.Helper()
 	st, ref, h := newRefresher(t, srv)
-	return st, NewService(st, h, ref)
+	return st, NewService(st, h, ref, nil)
 }
 
 func quietServer(t *testing.T, body string) *httptest.Server {
@@ -211,6 +211,37 @@ func TestTestReportsTheDecidingList(t *testing.T) {
 	}
 	if _, err := svc.Test("not a domain"); err == nil {
 		t.Error("Test() accepted a malformed name")
+	}
+}
+
+// A URL with embedded credentials must be refused: the export carries list
+// URLs verbatim, so accepting one would write a secret to every backup.
+func TestPutListRejectsCredentialsInURL(t *testing.T) {
+	srv := quietServer(t, "ads.example\n")
+	_, svc := newService(t, srv)
+	_, err := svc.PutList(store.BlacklistList{
+		Name: "l", URL: "https://user:pass@lists.example/x", Format: FormatDomains,
+	})
+	if err == nil {
+		t.Fatal("PutList() accepted a URL with embedded credentials")
+	}
+	var ve *registry.ValidationError
+	if !errors.As(err, &ve) || ve.Code != "url_has_credentials" {
+		t.Errorf("PutList() error = %v, want url_has_credentials", err)
+	}
+}
+
+// The three reserved policy names must never be usable as a list name: a
+// block under one of them would be indistinguishable from a rule decision.
+func TestPutListRejectsReservedNames(t *testing.T) {
+	srv := quietServer(t, "ads.example\n")
+	_, svc := newService(t, srv)
+	for _, name := range []string{PolicyAllow, PolicyDeny, PolicyForwarded} {
+		if _, err := svc.PutList(store.BlacklistList{
+			Name: name, URL: "https://lists.example/x", Format: FormatDomains,
+		}); err == nil {
+			t.Errorf("PutList(name=%q) succeeded, want a validation error", name)
+		}
 	}
 }
 

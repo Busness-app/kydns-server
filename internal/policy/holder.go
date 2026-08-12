@@ -18,6 +18,11 @@ type Holder struct {
 	src Source
 	cur atomic.Pointer[Snapshot]
 
+	// rebuildMu serializes Rebuild so a slower concurrent rebuild can never
+	// publish a stale snapshot after a faster, later one. It is never taken on
+	// the Decide/Current hot path.
+	rebuildMu sync.Mutex
+
 	blocked atomic.Uint64
 	mu      sync.Mutex
 	byList  map[string]uint64
@@ -30,6 +35,8 @@ func NewHolder(src Source) *Holder {
 // Rebuild pulls fresh inputs, builds a complete snapshot, and swaps it in. It
 // is all-or-nothing: any error returns before the swap.
 func (h *Holder) Rebuild() error {
+	h.rebuildMu.Lock()
+	defer h.rebuildMu.Unlock()
 	set, lists, rules, err := h.src()
 	if err != nil {
 		return err

@@ -2,7 +2,11 @@ package policy
 
 import (
 	"errors"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -55,6 +59,49 @@ func TestFailedRebuildKeepsThePreviousSnapshot(t *testing.T) {
 	}
 	if blocked, _, _ := h.Decide("ads.example"); !blocked {
 		t.Error("after a failed rebuild the name is no longer blocked")
+	}
+}
+
+// Rebuild must be serialized end to end (read and store together), or a slow
+// rebuild that read stale data can publish after a fast one that read fresh
+// data, silently reverting a just-added rule. This reproduces the exact
+// interleaving finding 4 describes: a slow reader starts first, a fast writer
+// finishes first, and the slow reader must not then overwrite it.
+func TestConcurrentRebuildsDoNotLoseTheLatestSourceState(t *testing.T) {
+	var gen atomic.Int64
+	var slowDone atomic.Bool
+	h := testHolder(t, func() (store.BlacklistSettings, []store.BlacklistList, []store.BlacklistRule, error) {
+		n := gen.Load()
+		if n == 0 && !slowDone.Load() {
+			// The first (slow) rebuild reads gen=0, then stalls, simulating a
+			// build that takes longer than the next admin mutation.
+			time.Sleep(50 * time.Millisecond)
+			slowDone.Store(true)
+		}
+		name := "l" + strconv.FormatInt(n, 10)
+		return store.BlacklistSettings{Enabled: true, BlockTTL: 60},
+			[]store.BlacklistList{{Name: name, Enabled: true, Snapshot: []string{"ads.example"}}},
+			nil, nil
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := h.Rebuild(); err != nil {
+			t.Error(err)
+		}
+	}()
+	// Give the slow rebuild time to enter Rebuild before the fast one races it.
+	time.Sleep(10 * time.Millisecond)
+	gen.Store(1)
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+
+	if _, decision, _ := h.Decide("ads.example"); decision != "l1" {
+		t.Errorf("Decide() after a concurrent rebuild = %q, want the latest source state %q", decision, "l1")
 	}
 }
 

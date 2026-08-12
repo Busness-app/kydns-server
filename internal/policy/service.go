@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"log/slog"
 	"net/url"
 	"strings"
 
@@ -20,13 +21,17 @@ const (
 // Service is the blacklist application service both transports call.
 // Validation lives here so the JSON API, the CLI and the web UI cannot drift.
 type Service struct {
-	st *store.Store
-	h  *Holder
-	r  *Refresher
+	st     *store.Store
+	h      *Holder
+	r      *Refresher
+	logger *slog.Logger
 }
 
-func NewService(st *store.Store, h *Holder, r *Refresher) *Service {
-	return &Service{st: st, h: h, r: r}
+func NewService(st *store.Store, h *Holder, r *Refresher, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{st: st, h: h, r: r, logger: logger}
 }
 
 func (s *Service) Settings() (store.BlacklistSettings, error) { return s.st.BlacklistSettings() }
@@ -41,6 +46,7 @@ func (s *Service) SetSettings(enabled bool, blockTTL int) error {
 	if err := s.st.SetBlacklistSettings(store.BlacklistSettings{Enabled: enabled, BlockTTL: blockTTL}); err != nil {
 		return err
 	}
+	s.logger.Info("blacklist filtering setting changed", "enabled", enabled, "block_ttl", blockTTL)
 	return s.h.Rebuild()
 }
 
@@ -58,6 +64,10 @@ func (s *Service) validateList(l store.BlacklistList) (store.BlacklistList, erro
 
 	if l.Name == "" {
 		return l, registry.Invalid("name", "name_required", "a list needs a name")
+	}
+	if l.Name == PolicyAllow || l.Name == PolicyDeny || l.Name == PolicyForwarded {
+		return l, registry.Invalid("name", "name_reserved",
+			"%q is a reserved policy name and cannot be used for a list", l.Name)
 	}
 	if err := validListURL(l.URL); err != nil {
 		return l, err
@@ -106,6 +116,7 @@ func (s *Service) PutList(l store.BlacklistList) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	s.logger.Info("blacklist list saved", "list", l.Name, "enabled", l.Enabled)
 	return id, s.h.Rebuild()
 }
 
@@ -124,6 +135,10 @@ func validListURL(raw string) error {
 	if u.Host == "" {
 		return registry.Invalid("url", "url_invalid", "%q has no host", raw)
 	}
+	if u.User != nil {
+		return registry.Invalid("url", "url_has_credentials",
+			"a list URL may not embed credentials; they would be written to backups")
+	}
 	return nil
 }
 
@@ -139,6 +154,7 @@ func (s *Service) DeleteList(id int64) error {
 	if err := s.st.DeleteBlacklistList(id); err != nil {
 		return err
 	}
+	s.logger.Info("blacklist list removed", "list", cur.Name)
 	return s.h.Rebuild()
 }
 
@@ -159,6 +175,7 @@ func (s *Service) AddRule(kind, domain string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	s.logger.Info("blacklist rule added", "kind", kind, "domain", n)
 	return id, s.h.Rebuild()
 }
 
@@ -166,6 +183,7 @@ func (s *Service) DeleteRule(id int64) error {
 	if err := s.st.DeleteBlacklistRule(id); err != nil {
 		return err
 	}
+	s.logger.Info("blacklist rule removed", "id", id)
 	return s.h.Rebuild()
 }
 
@@ -199,12 +217,23 @@ func (s *Service) ReplacePolicy(set store.BlacklistSettings, lists []store.Black
 		return registry.Invalid("block_ttl", "block_ttl_range",
 			"the block TTL must be between 1 and %d seconds", maxBlockTTL)
 	}
+	manifest, err := BuiltinManifest()
+	if err != nil {
+		return err
+	}
+	builtinNames := make(map[string]bool, len(manifest.Lists))
+	for _, b := range manifest.Lists {
+		builtinNames[b.Name] = true
+	}
 	ls := make([]store.BlacklistList, 0, len(lists))
 	for _, l := range lists {
 		v, err := s.validateList(l)
 		if err != nil {
 			return err
 		}
+		// An imported document's own builtin flag is untrusted: only the
+		// shipped manifest may mint an undeletable, immutable list.
+		v.Builtin = builtinNames[v.Name]
 		ls = append(ls, v)
 	}
 	rs := make([]store.BlacklistRule, 0, len(rules))
@@ -220,6 +249,11 @@ func (s *Service) ReplacePolicy(set store.BlacklistSettings, lists []store.Black
 		rs = append(rs, store.BlacklistRule{Kind: kind, Domain: n})
 	}
 	if err := s.st.ReplaceBlacklist(set, ls, rs); err != nil {
+		return err
+	}
+	// A backup made before built-ins existed must not leave filtering with no
+	// shipped list: reseed anything the import didn't restore.
+	if err := SeedBuiltins(s.st); err != nil {
 		return err
 	}
 	return s.h.Rebuild()
