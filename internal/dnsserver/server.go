@@ -13,11 +13,24 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
+// PolicyDecider is the blacklist policy's slice of the DNS pipeline. Keeping
+// it an interface here means dnsserver never imports the policy package, and a
+// test can block a name with six lines.
+//
+// decision is the query log's policy field: "allow", "deny", a list name, or
+// "forwarded".
+type PolicyDecider interface {
+	Decide(name string) (blocked bool, decision string, ttl uint32)
+}
+
 type Options struct {
-	Holder      *zone.Holder
-	ACL         *ACL
-	Auth        *Authoritative
-	Forwarder   *Forwarder
+	Holder    *zone.Holder
+	ACL       *ACL
+	Auth      *Authoritative
+	Forwarder *Forwarder
+	// Policy is consulted only for names the authoritative lookup declines, so
+	// a public list can never blackhole a local service. Nil means no filtering.
+	Policy      PolicyDecider
 	LogQueries  bool
 	LogClientIP bool
 	Logger      *slog.Logger
@@ -40,7 +53,7 @@ func New(o Options) *Server {
 // resolution, authoritative lookup, then forwarding.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	start := time.Now()
-	reply := func(m *dns.Msg, source, view string) {
+	reply := func(m *dns.Msg, source, view, policy string) {
 		// Every reply passes through here, so no path can forget the datagram
 		// ceiling. Over-large answers are common now that DO=1 is forwarded.
 		if _, udp := w.RemoteAddr().(*net.UDPAddr); udp {
@@ -49,12 +62,12 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		if err := w.WriteMsg(m); err != nil {
 			s.o.Logger.Warn("write reply", "error", err)
 		}
-		s.logQuery(r, m, w, source, view, time.Since(start))
+		s.logQuery(r, m, w, source, view, policy, time.Since(start))
 	}
 	fail := func(rcode int, source string) {
 		m := new(dns.Msg)
 		m.SetRcode(r, rcode)
-		reply(m, source, "")
+		reply(m, source, "", "")
 	}
 
 	if r.Opcode != dns.OpcodeQuery {
@@ -87,8 +100,25 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		rcode := m.Rcode
 		m.SetRcode(r, rcode)
 		m.Authoritative = true
-		reply(m, "authoritative", view)
+		reply(m, "authoritative", view, "local")
 		return
+	}
+
+	// The name is not ours, so it would be forwarded. This is the only place
+	// filtering applies, and it decides before anything leaves the machine.
+	policy := ""
+	if s.o.Policy != nil {
+		blocked, decision, ttl := s.o.Policy.Decide(q.Name)
+		policy = decision
+		if blocked {
+			m := new(dns.Msg)
+			m.SetRcode(r, dns.RcodeNameError)
+			m.Authoritative = false // the block is local policy, not zone data
+			m.RecursionAvailable = true
+			m.Ns = []dns.RR{blockSOA(q.Name, ttl)}
+			reply(m, "blocked", view, decision)
+			return
+		}
 	}
 
 	if s.o.Forwarder == nil {
@@ -112,7 +142,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if edns == nil {
 		stripOPT(out)
 	}
-	reply(out, "forward", view)
+	reply(out, "forward", view, policy)
 }
 
 // sourceAddr extracts the client address, unmapped so v4-in-v6 peers match
@@ -151,9 +181,24 @@ func stripOPT(m *dns.Msg) {
 	m.Extra = extra
 }
 
+// blockSOA synthesizes the authority record that lets a client cache a block.
+// Its owner is the queried name, so the negative answer is cached for exactly
+// that name and nothing wider.
+func blockSOA(qname string, ttl uint32) *dns.SOA {
+	n := dns.Fqdn(qname)
+	return &dns.SOA{
+		Hdr:     dns.RR_Header{Name: n, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
+		Ns:      n,
+		Mbox:    n,
+		Serial:  1,
+		Refresh: 3600, Retry: 600, Expire: 604800, Minttl: ttl,
+	}
+}
+
 // logQuery honors the two-flag policy: query logging is off by default, and
-// the client IP needs its own separate flag.
-func (s *Server) logQuery(r, m *dns.Msg, w dns.ResponseWriter, source, view string, d time.Duration) {
+// the client IP needs its own separate flag. The policy field says which
+// decision produced the answer; it never says who asked.
+func (s *Server) logQuery(r, m *dns.Msg, w dns.ResponseWriter, source, view, policy string, d time.Duration) {
 	if !s.o.LogQueries || len(r.Question) == 0 {
 		return
 	}
@@ -164,6 +209,7 @@ func (s *Server) logQuery(r, m *dns.Msg, w dns.ResponseWriter, source, view stri
 		"rcode", dns.RcodeToString[m.Rcode],
 		"source", source,
 		"view", view,
+		"policy", policy,
 		"duration_ms", d.Milliseconds(),
 	}
 	if s.o.LogClientIP {
