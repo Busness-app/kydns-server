@@ -7,9 +7,15 @@ import (
 	"github.com/miekg/dns"
 )
 
-// pool keeps a few idle TLS connections alive. dns.Client dials a fresh
-// connection per Exchange, which costs a full TLS handshake — two extra round
-// trips to the upstream on every cache miss.
+// pool keeps a couple of idle TLS connections alive, so a query that arrives
+// while one is spare skips the handshake dns.Client would otherwise pay per
+// Exchange. It is not a burst buffer: measured, 50 concurrent exchanges dial
+// 50 connections and close all but the two the idle list holds. Household
+// query rates are sequential enough for that to be the common case.
+//
+// Upstreams are built exactly once at startup, with no reload path, which is
+// why the pool needs no Close. A config reload added without one would leak
+// these sockets on every reload.
 type pool struct {
 	idle chan *pooledConn
 	dial func(context.Context) (*dns.Conn, error)
