@@ -1,6 +1,9 @@
 /* App components layered on the Patina Ky tokens from styles.css.
    The marketing theme is not modified. */
 
+/* Dark form controls and scrollbars, including inside the license frame. */
+:root { color-scheme: dark; }
+
 .app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
 .app-nav { background: var(--panel); border-right: 1px solid var(--line); padding: 1.5rem 0;
            display: flex; flex-direction: column; }
@@ -9,17 +12,18 @@
              font-family: var(--font-mono); font-size: .85rem; }
 .app-nav a:hover { color: var(--ink-strong); background: rgba(255,255,255,.03); }
 .app-nav a[aria-current="page"] { color: var(--accent); border-left: 2px solid var(--accent); }
-.app-footer { margin-top: auto; padding: 1rem 1.25rem 0; }
+.app-footer { margin-top: auto; padding: 1.5rem 1.25rem 0; }
 .license-link { background: none; border: 0; padding: 0; text-align: left; cursor: pointer;
-                font-family: var(--font-mono); font-size: .7rem; color: var(--ink); }
+                font-family: var(--font-mono); font-size: .7rem; line-height: 1.5; color: var(--ink); }
 .license-link:hover { color: var(--accent); text-decoration: underline; }
 .license-window { width: min(44rem, 92vw); height: min(32rem, 82vh); margin: auto;
                   border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
-                  color: var(--ink-strong); padding: 0; overflow: hidden; }
+                  color: var(--ink-strong); padding: 0; overflow: hidden;
+                  box-shadow: 0 18px 48px rgba(0,0,0,.55); }
 /* Scoped to :popover-open: an unconditional display would beat the UA rule
    that keeps a closed popover hidden. */
 .license-window:popover-open { display: flex; flex-direction: column; }
-.license-window::backdrop { background: rgba(0,0,0,.65); }
+.license-window::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
 .license-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem;
                   padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--line); }
 .license-header p { margin: 0; font-family: var(--font-mono); font-size: .78rem; color: var(--ink); }
