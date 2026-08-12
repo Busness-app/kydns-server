@@ -38,9 +38,16 @@ func newDoT(s Spec, timeout time.Duration) *dot {
 func (d *dot) Secure() bool   { return true }
 func (d *dot) String() string { return d.spec.Raw }
 
-// Exchange retries once on a reused connection, because the server may have
-// closed it while it sat idle. A fresh connection that fails is a real failure.
+// Exchange retries once per pooled connection it finds already dead — up to
+// the pool's size — because the server may have closed it while it sat idle.
+// A fresh connection that fails is a real failure. Cancellation is honoured
+// at entry, and thereafter only via the deadline each connection is given:
+// a context cancelled mid-read is not itself watched, matching plain's
+// dns.Client.ExchangeContext, which behaves the same way.
 func (d *dot) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	for {
 		conn, reused, err := d.pool.get(ctx)
 		if err != nil {

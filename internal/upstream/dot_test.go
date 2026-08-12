@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -140,5 +141,80 @@ func TestPoolExpiresIdleConnections(t *testing.T) {
 	}
 	if got := handshakes.Load(); got != 3 {
 		t.Errorf("TLS handshakes = %d, want 3 with expiry forced on", got)
+	}
+}
+
+// ServerName lets a spec dial an IP while verifying a hostname — the
+// #servername feature parse.go's bootstrapHint points users at. tlsConfig
+// falls back to the dialled address only when ServerName is empty, so this
+// must be exercised with one set, or the fallback would mask a broken
+// ServerName plumb-through.
+func TestDoTVerifiesServerName(t *testing.T) {
+	cert, pool := testCert(t, "dns.example.test")
+	addr, _ := dotServer(t, cert, 0, func(w dns.ResponseWriter, r *dns.Msg) { w.WriteMsg(answer(r)) })
+
+	spec := dotSpec(addr, pool)
+	spec.ServerName = "dns.example.test"
+	u, err := New(spec, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := u.Exchange(context.Background(), query())
+	wantAnswer(t, resp, err)
+}
+
+// A ServerName that does not match the certificate must fail verification,
+// the same as any other untrusted peer.
+func TestDoTRejectsServerNameMismatch(t *testing.T) {
+	cert, pool := testCert(t, "dns.example.test")
+	addr, _ := dotServer(t, cert, 0, func(w dns.ResponseWriter, r *dns.Msg) { w.WriteMsg(answer(r)) })
+
+	spec := dotSpec(addr, pool)
+	spec.ServerName = "wrong.example.test"
+	u, _ := New(spec, 2*time.Second)
+	if _, err := u.Exchange(context.Background(), query()); err == nil {
+		t.Fatal("Exchange() error = nil with a ServerName that does not match the certificate")
+	}
+}
+
+// An already-cancelled context must fail fast without touching the pool.
+// Otherwise a client that times out costs the pool a live connection and a
+// redial on every subsequent query.
+func TestDoTExpiredContextDoesNotConsumePooledConnection(t *testing.T) {
+	cert, pool := testCert(t)
+	addr, handshakes := dotServer(t, cert, 0, func(w dns.ResponseWriter, r *dns.Msg) { w.WriteMsg(answer(r)) })
+
+	u, _ := New(dotSpec(addr, pool), 2*time.Second)
+	resp, err := u.Exchange(context.Background(), query())
+	wantAnswer(t, resp, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := u.Exchange(ctx, query()); !errors.Is(err, context.Canceled) {
+		t.Errorf("Exchange() error = %v, want context.Canceled", err)
+	}
+
+	resp, err = u.Exchange(context.Background(), query())
+	wantAnswer(t, resp, err)
+	if got := handshakes.Load(); got != 1 {
+		t.Errorf("TLS handshakes = %d, want 1 (the pooled connection must survive an expired-context Exchange)", got)
+	}
+}
+
+// A reply whose id does not match the query must be rejected, not returned
+// to the caller as if it answered the question asked.
+func TestDoTRejectsMismatchedReplyID(t *testing.T) {
+	cert, pool := testCert(t)
+	addr, _ := dotServer(t, cert, 0, func(w dns.ResponseWriter, r *dns.Msg) {
+		resp := answer(r)
+		resp.Id++
+		w.WriteMsg(resp)
+	})
+
+	u, _ := New(dotSpec(addr, pool), 2*time.Second)
+	if _, err := u.Exchange(context.Background(), query()); err == nil {
+		t.Fatal("Exchange() error = nil with a mismatched reply id")
+	} else if !strings.Contains(err.Error(), "id") {
+		t.Errorf("error = %v, want it to name the id mismatch", err)
 	}
 }
