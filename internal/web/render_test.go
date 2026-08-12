@@ -112,11 +112,23 @@ func TestNavFooterOpensLicense(t *testing.T) {
 		"Licensed under AGPL v3",
 		"KyDNS <span class=\"badge accent\">v" + Version,
 		"Developed by Busnes.app",
-		`src="/static/agpl-3.0.txt"`,
+		`src="/license"`,
 		"&copy; " + strconv.Itoa(time.Now().Year()),
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered page missing %q", want)
+		}
+	}
+
+	// The popover frames /license, which must carry the site chrome rather
+	// than a bare browser text frame, and must not need a session.
+	lic := get(t, h, "/license", nil)
+	if lic.Code != http.StatusOK {
+		t.Fatalf("GET /license = %d", lic.Code)
+	}
+	for _, want := range []string{"GNU AFFERO GENERAL PUBLIC LICENSE", "/static/app.css", `class="license-body"`} {
+		if !strings.Contains(lic.Body.String(), want) {
+			t.Errorf("/license missing %q", want)
 		}
 	}
 
@@ -128,7 +140,7 @@ func TestNavFooterOpensLicense(t *testing.T) {
 	// closed popover, which pins the panel over every page with no way to
 	// close it.
 	css := static(t, srv, "/static/app.css").Body.String()
-	if !strings.Contains(css, ".license-window:popover-open { display: flex; }") {
+	if !strings.Contains(css, ".license-window:popover-open { display: flex;") {
 		t.Error("the license popover is not shown via :popover-open")
 	}
 	_, rest, _ := strings.Cut(css, ".license-window {")

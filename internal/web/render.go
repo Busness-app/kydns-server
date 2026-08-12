@@ -81,6 +81,26 @@ func (s *Server) execute(w http.ResponseWriter, t *template.Template, data map[s
 	w.Write(buf.Bytes())
 }
 
+// licenseText is the same bytes StaticHandler serves at /static/agpl-3.0.txt,
+// read once so the About popover can show it on the app's own dark chrome
+// instead of a bare browser text frame.
+var licenseText = string(must(staticFS.ReadFile("static/agpl-3.0.txt")))
+
+func must(b []byte, err error) []byte {
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// getLicense renders the AGPL inside the site theme, for the About popover's
+// frame and for anyone who opens /license directly.
+func (s *Server) getLicense(w http.ResponseWriter, r *http.Request) {
+	s.renderBare(w, "license.html", map[string]any{
+		"Title": "License", "License": licenseText,
+	})
+}
+
 // StaticHandler serves the embedded stylesheet, app CSS, and fonts. Embedding
 // keeps the binary self-contained: there is no asset directory to deploy.
 func (s *Server) StaticHandler() http.Handler {

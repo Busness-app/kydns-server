@@ -1,6 +1,6 @@
 # KyDNS
 
-KyDNS is a planned self-hosted local DNS and service directory for homes,
+KyDNS is a self-hosted local DNS server and service directory for homes,
 homelabs, and small teams.
 
 Its primary job is to make private services easy to name and reach. It also
@@ -226,6 +226,18 @@ token, and choose a password. A bootstrap API token for the CLI is written to
 `<data_dir>/bootstrap-token`.
 
 The CLI reads `KYDNS_URL` (default `http://127.0.0.1:8053`) and `KYDNS_TOKEN`.
+Everything except `serve` and `admin` goes through the JSON API, so the CLI
+works from any machine that can reach the admin listener:
+
+| Command | Does |
+|---|---|
+| `kydns serve` | Run the DNS and admin servers. |
+| `kydns service add\|list\|rm` | Manage services, their addresses and aliases. |
+| `kydns record add\|list\|rm` | Manage manual A, AAAA and CNAME records. |
+| `kydns view add\|list\|rm` | Manage per-subnet views. |
+| `kydns token add\|list\|rm` | Manage API tokens. |
+| `kydns export` / `kydns import` | Read or write the registry as YAML or JSON. |
+| `kydns admin reset-password` | Local recovery. Opens the database directly. |
 
 ### Forgot the admin password
 
@@ -346,15 +358,15 @@ name, and an ipvlan network with `parent=wlan0` does.
 See [DESGINE.md](DESGINE.md) for the architecture, [LOGGING.md](LOGGING.md)
 for logging requirements, and [SECURITY.md](SECURITY.md) for security policy.
 
-## Initial scope
+## Scope
 
-The first version provides a small DNS server, a service registry, a simple web
-UI, and opt-out DNS blackhole filtering. It does not provide parental controls,
-device posture, or traffic inspection.
+KyDNS is a small DNS server, a service registry, a web UI, and opt-out DNS
+blackhole filtering. It does not provide parental controls, device posture, or
+traffic inspection.
 
 ## Repository status
 
-v1 is implemented. See
+v1 is implemented and single-node. See
 [the design spec](docs/superpowers/specs/2026-08-11-kydns-v1-design.md) for the
 architecture and the reasoning behind each decision.
 
@@ -362,3 +374,13 @@ architecture and the reasoning behind each decision.
 make test    # every package
 make build   # bin/kydns
 ```
+
+CI runs `gofmt`, `go vet`, `go mod tidy`, the race-enabled test suite, a
+cgo-free build, and a Docker job that resolves both a local service name and a
+public name over the default DoT upstream.
+
+## License
+
+KyDNS is licensed under the [GNU AGPL v3](LICENSE). The web UI carries the
+notice and serves the full license text from its About popover, so an operator
+running a modified copy over a network can always see what they are running.

@@ -6,32 +6,40 @@ KyDNS is a self-hosted DNS server and private service directory for homes,
 homelabs, and small teams. It provides stable names for local services without
 requiring clients to maintain hosts files.
 
-The first release prioritizes reliable local naming, a small administrative web
-UI, and linked servers that keep their configuration synchronized.
+The first release prioritizes reliable local naming, private upstream
+forwarding, and a small administrative web UI. It is single-node; linked-server
+replication is designed here but deferred to a later release.
 
 ## Design goals
 
 - Keep DNS data on the operator's network.
-- Make service and record changes available from every linked server.
+- Keep the path to an upstream resolver private, or fail loudly instead of
+  quietly downgrading.
 - Keep the runtime small and easy to back up.
 - Separate administrative data from query history.
-- Fail safely when a peer or discovery source is unavailable.
+- Fail safely when a discovery source, health target, or upstream is
+  unavailable.
 
 ## System shape
 
-Each KyDNS installation contains four logical parts:
+Each KyDNS installation contains six logical parts, one Go package each:
 
-1. **DNS server** — answers A, AAAA, CNAME, reverse, and service-name queries.
-2. **Service registry** — stores services, aliases, addresses, checks, and
-   metadata.
-3. **Administration API/UI** — authenticates operators and applies changes.
-4. **Replication agent** — exchanges authenticated configuration changes with
-   linked KyDNS peers.
-5. **Policy engine** — applies blacklist, allow, and deny decisions to forwarded
-   names.
+1. **DNS server** (`internal/dnsserver`, `internal/upstream`) — the query ACL,
+   the authoritative answer path, the cache, and the DoT/DoH forwarder.
+2. **Zone/registry** (`internal/zone`, `internal/registry`, `internal/store`) —
+   services, aliases, addresses, manual records, views, reverse zones, and the
+   SQLite store behind them.
+3. **Policy engine** (`internal/policy`) — blacklist list parsing, refresh, and
+   the deny/allow/list decision.
+4. **Administration API and UI** (`internal/adminapi`, `internal/web`,
+   `internal/auth`) — authenticates operators and applies changes.
+5. **Discovery and health** (`internal/discovery`, `internal/health`) — reads
+   DHCP leases and probes service check URLs.
+6. **Replication agent** — *deferred.* Would exchange authenticated
+   configuration changes with linked KyDNS peers.
 
-The DNS server reads from the local registry. DNS queries do not need to reach a
-peer, so a temporary network partition does not stop local name resolution.
+The DNS server reads from the local registry, so local name resolution does not
+depend on any network beyond the host.
 
 A query is resolved in a fixed order: the query ACL, then the authoritative
 lookup against the local registry (services, aliases, records, and reverse
@@ -41,18 +49,39 @@ falls through to the cache and forwarder. A local service or record can
 therefore never be blocked, because the policy engine never sees a name the
 authoritative lookup already answered.
 
+## Upstream forwarding
+
+Names KyDNS is not authoritative for go to the configured upstreams in order,
+over DNS-over-TLS or DNS-over-HTTPS, with certificate verification always on.
+An upstream host must be an IP address, because a hostname would need DNS to
+resolve it and KyDNS may be that DNS. Identical concurrent misses are collapsed
+by single-flight, and answers are cached with the TTL clamped to the configured
+bounds.
+
+If every encrypted upstream fails, clients get `SERVFAIL`. Falling back to
+plain DNS is exactly what an attacker who blocks port 853 wants, so it is not
+automatic: an operator opts in per upstream with a `udp://` entry, and anything
+that entry answers has its authenticated-data bit cleared.
+
+KyDNS does not validate DNSSEC itself. It makes the path to a resolver that
+does private and tamper-proof, and passes that resolver's verdict through.
+
 ## Local data
 
-The local store is the source of truth for the server's current view and must
-contain:
+The local store is a single SQLite file under `data_dir`. It is the source of
+truth for the server's current view and contains:
 
-- private-domain and DNS-view configuration;
-- services and aliases;
-- forward and reverse records;
-- replication cursor and change metadata;
+- views and their subnets;
+- services, their addresses, and aliases;
+- manual forward records;
+- the admin password hash and API tokens;
 - blacklist list definitions and refresh metadata (URL, format, interval, last
   status), one-off allow/deny rules, and the last known-good normalized
   snapshot of each list's entries.
+
+Reverse records are derived from service addresses and the configured reverse
+zones rather than stored. The private domain and reverse zones come from the
+config file, which is read once at startup: changing it requires a restart.
 
 List contents are data, not executable configuration: a downloaded list can
 only add or remove blocked names, never run code or change how the server
@@ -68,7 +97,11 @@ and other secrets. A blacklist list URL may never embed credentials, so a
 blacklist export, which carries list definitions and rules verbatim but never
 the downloaded list bodies, cannot leak any either.
 
-## Linked-server replication
+## Linked-server replication (deferred)
+
+None of this section is implemented. It is recorded so the shipped design does
+not foreclose it: the store keeps a single write chokepoint, so the change log
+can be added without restructuring.
 
 Servers form an explicitly configured replication group. A peer is identified
 by its node ID and endpoint, and must be authenticated before it can exchange
@@ -102,50 +135,45 @@ but do not make the local DNS server unavailable.
 
 ## Configuration flow
 
-1. An authenticated operator or discovery adapter submits a change.
+1. An authenticated operator, or an operator promoting a discovered lease,
+   submits a change through the web UI or the JSON API.
 2. The API validates the domain, record type, address, and permissions.
 3. The local store commits the change before acknowledging success.
-4. The replication agent sends the change to configured peers.
-5. Peers apply it, acknowledge it, and expose the updated local DNS view.
+4. The DNS server picks up a fresh zone snapshot, so the next query sees it.
 
-Health-check status may be replicated as operational metadata, but query logs
-remain local and configurable.
+Query logs remain local and configurable.
 
 ## Security and privacy
 
 - Administrative endpoints require authentication and authorization.
-- Peer enrollment requires an explicit operator action.
-- Peer traffic is encrypted and mutually authenticated.
-- Administrative and replication changes are logged locally.
+- Administrative changes are logged locally.
 - Query history is minimized by default and is not sent to KySecurity services.
 - Public DNS names and private service names use separate configuration paths.
 
 ## Availability and recovery
 
-Each server answers from its last successfully committed local state. When a
-server restarts, it loads that state, resumes replication from its cursor, and
-reconciles missed changes with peers.
+The server answers from its last committed local state. On restart it loads
+that state, re-reads the lease source, and re-probes health targets.
 
-Backups consist of the local registry plus replication metadata. Restoring a
-server requires assigning or confirming its node identity before it rejoins a
-replication group.
+A backup is the `data_dir` directory plus the config file. `kydns export`
+writes the registry as YAML or JSON for the same purpose, which is what makes
+Git-based configuration possible.
 
-## Initial implementation boundary
+## Implementation boundary
 
-The first implementation should include:
+Shipped in v1:
 
-- one local DNS process;
-- one service/record registry;
-- authenticated administration;
-- a simple web UI;
-- explicit peer configuration and reliable change replication;
+- one local DNS process with an ACL, cache, and encrypted forwarder;
+- one service/record registry with per-subnet views;
+- blacklist filtering;
+- DHCP lease discovery and health checks;
+- authenticated administration over a web UI, a JSON API, and a CLI;
 - structured privacy-safe logs.
 
-The approved v1 design narrows this boundary: replication is deferred to its own
-spec so the first release stays single-node. The store keeps a single write
-chokepoint so the change log can be added without restructuring. See
-`docs/superpowers/specs/2026-08-11-kydns-v1-design.md`.
+Replication is deferred to its own spec so the first release stays single-node.
+See `docs/superpowers/specs/2026-08-11-kydns-v1-design.md`.
 
-Parental controls, device posture, traffic inspection, and automatic peer
-discovery are outside the initial boundary. Blacklist filtering is specified in
+Parental controls, device posture, traffic inspection, local DNSSEC validation,
+local certificate issuance, and automatic peer discovery are outside the
+boundary. Blacklist filtering is specified in
 [`docs/superpowers/specs/2026-08-12-kydns-blacklists.md`](docs/superpowers/specs/2026-08-12-kydns-blacklists.md).

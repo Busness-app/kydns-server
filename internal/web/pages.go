@@ -14,6 +14,7 @@ func init() {
 // pageRoutes registers the application screens.
 func (s *Server) pageRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /static/", s.StaticHandler())
+	mux.HandleFunc("GET /license", s.getLicense)
 
 	mux.HandleFunc("GET /", s.requireSession(s.getDashboard))
 

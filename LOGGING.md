@@ -9,11 +9,15 @@ OpenSearch, Elasticsearch, Graylog, or another OpenTelemetry-compatible
 collector.
 
 Log service registration changes, record changes, blacklist policy and list
-refresh changes, DHCP and discovery failures,
-health-check results, policy changes, peer enrollment, replication failures,
-replication conflicts, and administrative actions. Query logs must be
-configurable, minimized by default, and retained by the operator's logging
+refresh changes, DHCP and discovery failures, health-check results, policy
+changes, and administrative actions. When replication ships, peer enrollment,
+replication failures, and replication conflicts join that list. Query logs must
+be configurable, minimized by default, and retained by the operator's logging
 platform rather than KyDNS.
+
+Query logging is off by default (`dns.log_queries`), and recording the client
+IP is a separate opt-in (`dns.log_client_ip`), so turning on query logging does
+not by itself record who asked.
 
 Blacklist lifecycle events are `blacklist list refreshed`, `blacklist list
 refresh failed` (with a reason, no response body), and `blacklist list

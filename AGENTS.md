@@ -37,10 +37,10 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 
 ## Child DOX Index
 
-This repository is currently documentation-only. Keep these documents aligned:
+Keep these aligned:
 
 - `README.md` — product scope and user-facing capabilities.
-- `DESGINE.md` — architecture and replication design.
+- `DESGINE.md` — architecture. Replication is designed but deferred.
 - `LOGGING.md` — logging and privacy requirements.
 - `SECURITY.md` — security policy and trust boundaries.
 - `CONTRIBUTING.md` — contribution and verification workflow.
@@ -48,6 +48,26 @@ This repository is currently documentation-only. Keep these documents aligned:
   Single-node with per-subnet views; replication deferred to a later spec.
 - `docs/superpowers/specs/2026-08-12-kydns-blacklists.md` — approved DNS
   blackhole filtering design.
+
+Code, one concern per package:
+
+- `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs.
+- `internal/app` — process wiring: config, store, servers, background loops.
+- `internal/config` — the YAML config and its defaults. `kydns.example.yaml`
+  is asserted against those defaults by `internal/config/example_test.go`.
+- `internal/store` — SQLite schema and migrations, the single write chokepoint.
+- `internal/registry`, `internal/zone` — services, records, views, validation,
+  and the immutable zone snapshot the DNS server reads.
+- `internal/dnsserver` — ACL, authoritative answers, cache, forwarding.
+- `internal/upstream` — DoT, DoH, and opt-in plain-UDP upstreams.
 - `internal/policy` — blacklist normalization, list parsing, fetch, refresh,
   and decision (deny/allow/list) for the DNS pipeline.
+- `internal/discovery`, `internal/health` — DHCP leases and check probes.
+  Runtime state only; never persisted unless an operator promotes it.
+- `internal/adminapi`, `internal/web`, `internal/auth` — JSON API, server-side
+  rendered UI, sessions and password hashing.
+- `internal/cli` — the API client behind the non-`serve` commands.
+
+The build must stay cgo-free: the image is distroless, so the pure-Go SQLite
+driver is not optional.
 
