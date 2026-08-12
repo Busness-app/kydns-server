@@ -8,7 +8,8 @@ Operators may route container logs to an existing platform such as Loki,
 OpenSearch, Elasticsearch, Graylog, or another OpenTelemetry-compatible
 collector.
 
-Log service registration changes, record changes, DHCP and discovery failures,
+Log service registration changes, record changes, blacklist policy and list
+refresh changes, DHCP and discovery failures,
 health-check results, policy changes, peer enrollment, replication failures,
 replication conflicts, and administrative actions. Query logs must be
 configurable, minimized by default, and retained by the operator's logging

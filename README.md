@@ -3,9 +3,9 @@
 KyDNS is a planned self-hosted local DNS and service directory for homes,
 homelabs, and small teams.
 
-Its primary job is to make private services easy to name and reach. Ad and
-tracker blocking is optional; local service discovery and DNS management are
-the product.
+Its primary job is to make private services easy to name and reach. It also
+provides opt-out DNS blackhole filtering with built-in and operator-managed
+lists.
 
 ## Example
 
@@ -37,12 +37,13 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 - Upstream forwarding over DNS-over-TLS and DNS-over-HTTPS, with a cache,
   sequential failover, and single-flight.
 - A web UI, a JSON API, and a CLI that talks to the API.
+- Built-in and custom DNS blacklists, one-off allow/deny rules, and a one-button
+  filtering toggle. Filtering is enabled by default and never overrides local
+  records.
 - YAML and JSON import/export for backup and Git-based configuration.
 
 ## Not yet
 
-- **Ad and tracker blocking, and filter lists.** There is no blocklist support
-  of any kind. Local naming came first, deliberately.
 - Linked-server replication between KyDNS peers. The store keeps a single write
   chokepoint so the change log can be added without restructuring.
 - **Local DNSSEC validation.** KyDNS trusts the upstream's verdict over an
@@ -275,9 +276,9 @@ for logging requirements, and [SECURITY.md](SECURITY.md) for security policy.
 
 ## Initial scope
 
-The first version provides a small DNS server, a service registry, and a simple
-web UI. It solves local naming well before adding ad blocking, parental
-controls, device posture, or traffic inspection.
+The first version provides a small DNS server, a service registry, a simple web
+UI, and opt-out DNS blackhole filtering. It does not provide parental controls,
+device posture, or traffic inspection.
 
 ## Repository status
 

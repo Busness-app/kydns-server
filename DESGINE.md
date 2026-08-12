@@ -27,6 +27,8 @@ Each KyDNS installation contains four logical parts:
 3. **Administration API/UI** — authenticates operators and applies changes.
 4. **Replication agent** — exchanges authenticated configuration changes with
    linked KyDNS peers.
+5. **Policy engine** — applies blacklist, allow, and deny decisions to forwarded
+   names.
 
 The DNS server reads from the local registry. DNS queries do not need to reach a
 peer, so a temporary network partition does not stop local name resolution.
@@ -127,5 +129,6 @@ spec so the first release stays single-node. The store keeps a single write
 chokepoint so the change log can be added without restructuring. See
 `docs/superpowers/specs/2026-08-11-kydns-v1-design.md`.
 
-Ad blocking, parental controls, device posture, traffic inspection, and
-automatic peer discovery are outside the initial boundary.
+Parental controls, device posture, traffic inspection, and automatic peer
+discovery are outside the initial boundary. Blacklist filtering is specified in
+[`docs/superpowers/specs/2026-08-12-kydns-blacklists.md`](docs/superpowers/specs/2026-08-12-kydns-blacklists.md).

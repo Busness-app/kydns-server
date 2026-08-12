@@ -22,11 +22,12 @@ Views (the `README.md` "separate views for home, VPN, guest, and lab networks")
 upstreams per client are deferred, because that variant would put the view into
 the forwarder cache key. See [Part 4](#part-4--views).
 
-Also out of scope, consistent with `DESGINE.md`: ad blocking, parental controls,
-device posture, traffic inspection, automatic peer discovery. Additionally
-deferred from the `README.md` capability list: Docker Compose discovery,
-optional local TLS certificate issuance, and Pi-hole/AdGuard filter-list
-integration.
+Also out of scope, consistent with `DESGINE.md`: parental controls, device
+posture, traffic inspection, and automatic peer discovery. Additionally
+deferred from the `README.md` capability list: Docker Compose discovery and
+optional local TLS certificate issuance. Built-in and custom DNS blacklist
+filtering is specified separately in
+`docs/superpowers/specs/2026-08-12-kydns-blacklists.md`.
 
 ### Decisions
 
