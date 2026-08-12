@@ -15,9 +15,19 @@ replication conflicts, and administrative actions. Query logs must be
 configurable, minimized by default, and retained by the operator's logging
 platform rather than KyDNS.
 
+Blacklist lifecycle events are `blacklist list refreshed`, `blacklist list
+refresh failed` (with a reason, no response body), and `blacklist list
+unchanged`, plus events for settings changes and rule additions/removals. When
+query logging is enabled, each entry gains a `policy` field: `local` (the
+authoritative lookup answered), `allow`, `deny`, the name of the list that
+matched, or `forwarded` (no policy match).
+
 Never log upstream credentials, private keys, full DNS answers when they reveal
 sensitive private services, or raw request bodies. Do not send query history to
-KySecurity services by default.
+KySecurity services by default. Downloaded list content, list URLs (which may
+carry credentials), client IPs, and query names are never logged by default.
+Blacklist counters (blocked-query totals and per-list match counts) never
+carry client identity.
 
 Do not add an embedded log database or product-specific log viewer. Operators
 should use their existing logging platform for search, alerting, retention, and

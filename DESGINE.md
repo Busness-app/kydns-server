@@ -33,6 +33,14 @@ Each KyDNS installation contains four logical parts:
 The DNS server reads from the local registry. DNS queries do not need to reach a
 peer, so a temporary network partition does not stop local name resolution.
 
+A query is resolved in a fixed order: the query ACL, then the authoritative
+lookup against the local registry (services, aliases, records, and reverse
+zones), then, only for names the authoritative lookup declines, the policy
+engine. A blocked name gets a synthesized local NXDOMAIN; everything else
+falls through to the cache and forwarder. A local service or record can
+therefore never be blocked, because the policy engine never sees a name the
+authoritative lookup already answered.
+
 ## Local data
 
 The local store is the source of truth for the server's current view and must
@@ -41,7 +49,14 @@ contain:
 - private-domain and DNS-view configuration;
 - services and aliases;
 - forward and reverse records;
-- replication cursor and change metadata.
+- replication cursor and change metadata;
+- blacklist list definitions and refresh metadata (URL, format, interval, last
+  status), one-off allow/deny rules, and the last known-good normalized
+  snapshot of each list's entries.
+
+List contents are data, not executable configuration: a downloaded list can
+only add or remove blocked names, never run code or change how the server
+behaves.
 
 Discovery results and health-check status are runtime state, not stored data.
 They are held in memory, re-derived from the lease source and health probes
@@ -49,7 +64,9 @@ after a restart, and kept out of backups. A discovered lease is persisted only
 when an operator promotes it to a service.
 
 Exports use YAML or JSON. Exports must omit upstream credentials, private keys,
-and other secrets.
+and other secrets, including any credentials embedded in a blacklist URL. A
+blacklist export carries list definitions and rules, not the downloaded list
+bodies.
 
 ## Linked-server replication
 
