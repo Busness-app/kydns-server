@@ -171,9 +171,16 @@ Routing is chosen when the service is created; neither the web UI nor the CLI
 can change it afterward — both only add services. To change it later, call
 `PATCH /api/v1/services/{id}` with the **complete** service object. That
 endpoint replaces the service rather than merging into it, so any field you
-leave out comes back cleared. A body of `{"route_via_proxy": false}` on its
-own does not just turn routing off — it also erases the stored
-`proxy_address`.
+leave out comes back cleared. A body of
+
+```json
+{"name": "grafana", "addresses": [{"address": "192.168.1.60"}]}
+```
+
+passes validation and returns 200, but silently drops `aliases`, `check_url`,
+`check_insecure`, `proxy_address`, and `route_via_proxy` — none of them were
+in the body. To edit safely, `GET /api/v1/services/{id}`, change the fields
+you want, and `PATCH` the whole object back.
 
 A service with both an IPv4 and an IPv6 address behind one proxy answers `A`
 only: `--proxy` takes one address, so the `AAAA` query gets `NODATA` instead of
