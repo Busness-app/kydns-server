@@ -242,3 +242,33 @@ func TestTCPListener(t *testing.T) {
 		t.Errorf("TCP answer = %v", resp.Answer)
 	}
 }
+
+// A client that did not offer EDNS0 must not be handed an OPT record back, even
+// though the forwarder always uses EDNS0 upstream.
+func TestForwardedReplyHasNoOPTForAPlainClient(t *testing.T) {
+	addr := newTestServer(t, allowLoopback(t))
+	resp := queryFrom(t, addr, "127.0.0.1", "example.com.", dns.TypeA)
+	if resp.IsEdns0() != nil {
+		t.Error("reply carries an OPT record the client never asked for")
+	}
+}
+
+// A client that did ask for DNSSEC records still gets an OPT record back.
+func TestForwardedReplyKeepsOPTForAnEDNSClient(t *testing.T) {
+	addr := newTestServer(t, allowLoopback(t))
+	c := &dns.Client{
+		Net:     "udp",
+		Timeout: 3 * time.Second,
+		Dialer:  &net.Dialer{LocalAddr: &net.UDPAddr{IP: net.ParseIP("127.0.0.1")}},
+	}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	m.SetEdns0(1232, true)
+	resp, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.IsEdns0() == nil {
+		t.Error("reply dropped the OPT record an EDNS0 client asked for")
+	}
+}

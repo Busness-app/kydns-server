@@ -92,7 +92,8 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	resp, err := s.o.Forwarder.Resolve(ctx, q)
+	edns := r.IsEdns0()
+	resp, err := s.o.Forwarder.Resolve(ctx, q, edns != nil && edns.Do())
 	if err != nil {
 		s.o.Logger.Warn("forward failed", "qname", q.Name, "error", err)
 		fail(dns.RcodeServerFailure, "forward")
@@ -103,6 +104,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	out.SetRcode(r, rcode)
 	out.Authoritative = false
 	out.RecursionAvailable = true
+	if edns == nil {
+		stripOPT(out)
+	}
 	reply(out, "forward", view)
 }
 
@@ -118,6 +122,19 @@ func sourceAddr(w dns.ResponseWriter) netip.Addr {
 		return netip.Addr{}
 	}
 	return a.Unmap()
+}
+
+// stripOPT removes the EDNS0 record from a response. The forwarder always
+// speaks EDNS0 upstream, but a client that did not offer an OPT record must
+// not be handed one back.
+func stripOPT(m *dns.Msg) {
+	extra := m.Extra[:0]
+	for _, rr := range m.Extra {
+		if rr.Header().Rrtype != dns.TypeOPT {
+			extra = append(extra, rr)
+		}
+	}
+	m.Extra = extra
 }
 
 // logQuery honors the two-flag policy: query logging is off by default, and

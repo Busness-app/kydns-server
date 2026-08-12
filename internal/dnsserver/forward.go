@@ -57,20 +57,20 @@ func (f *Forwarder) Upstreams() []string { return f.upstreams }
 // Resolve answers from cache, or collapses concurrent identical misses into a
 // single upstream query. That collapse is what survives the boot-time
 // stampede when every device on the LAN wakes at once.
-func (f *Forwarder) Resolve(ctx context.Context, q dns.Question) (*dns.Msg, error) {
-	if m, ok := f.cache.Get(q); ok {
+func (f *Forwarder) Resolve(ctx context.Context, q dns.Question, do bool) (*dns.Msg, error) {
+	if m, ok := f.cache.Get(q, do); ok {
 		return m, nil
 	}
-	key := fmt.Sprintf("%s|%d", strings.ToLower(dns.Fqdn(q.Name)), q.Qtype)
+	key := fmt.Sprintf("%s|%d|%t", strings.ToLower(dns.Fqdn(q.Name)), q.Qtype, do)
 	v, err, _ := f.group.Do(key, func() (any, error) {
-		if m, ok := f.cache.Get(q); ok {
+		if m, ok := f.cache.Get(q, do); ok {
 			return m, nil
 		}
-		m, err := f.exchange(ctx, q)
+		m, err := f.exchange(ctx, q, do)
 		if err != nil {
 			return nil, err
 		}
-		f.cache.Put(q, m)
+		f.cache.Put(q, do, m)
 		return m, nil
 	})
 	if err != nil {
@@ -79,10 +79,10 @@ func (f *Forwarder) Resolve(ctx context.Context, q dns.Question) (*dns.Msg, erro
 	return v.(*dns.Msg).Copy(), nil
 }
 
-func (f *Forwarder) exchange(ctx context.Context, q dns.Question) (*dns.Msg, error) {
+func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns.Msg, error) {
 	req := new(dns.Msg)
 	req.SetQuestion(dns.Fqdn(q.Name), q.Qtype)
-	req.SetEdns0(1232, false)
+	req.SetEdns0(1232, do)
 
 	if len(f.upstreams) == 0 {
 		return nil, errors.New("no upstreams configured")

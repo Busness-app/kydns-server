@@ -38,6 +38,11 @@ func (f *fakeExchanger) Exchange(_ context.Context, m *dns.Msg, addr string) (*d
 		if rcode == dns.RcodeSuccess {
 			resp.Answer = reply(m.Question[0].Name, 300).Answer
 		}
+		// SetReply drops Extra, but a real EDNS0-aware upstream echoes an OPT
+		// record on every reply to an EDNS0 query (RFC 6891).
+		if opt := m.IsEdns0(); opt != nil {
+			resp.SetEdns0(opt.UDPSize(), opt.Do())
+		}
 	}
 	return resp, err
 }
@@ -56,7 +61,7 @@ func TestForwarderUsesFirstWorkingUpstream(t *testing.T) {
 		"9.9.9.9:53": okReply,
 	}}
 	f := newForwarder(x, "1.1.1.1:53", "9.9.9.9:53")
-	m, err := f.Resolve(context.Background(), question("a.example.com."))
+	m, err := f.Resolve(context.Background(), question("a.example.com."), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,14 +79,14 @@ func TestForwarderAllUpstreamsDown(t *testing.T) {
 		"9.9.9.9:53": failReply,
 	}}
 	f := newForwarder(x, "1.1.1.1:53", "9.9.9.9:53")
-	if _, err := f.Resolve(context.Background(), question("a.example.com.")); err == nil {
+	if _, err := f.Resolve(context.Background(), question("a.example.com."), false); err == nil {
 		t.Fatal("Resolve() error = nil, want an error when every upstream fails")
 	}
 }
 
 func TestForwarderNoUpstreamsConfigured(t *testing.T) {
 	f := newForwarder(&fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){}})
-	if _, err := f.Resolve(context.Background(), question("a.example.com.")); err == nil {
+	if _, err := f.Resolve(context.Background(), question("a.example.com."), false); err == nil {
 		t.Error("Resolve() error = nil with no upstreams, want an error")
 	}
 }
@@ -90,7 +95,7 @@ func TestForwarderServesFromCache(t *testing.T) {
 	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": okReply}}
 	f := newForwarder(x, "1.1.1.1:53")
 	for i := 0; i < 3; i++ {
-		if _, err := f.Resolve(context.Background(), question("a.example.com.")); err != nil {
+		if _, err := f.Resolve(context.Background(), question("a.example.com."), false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,7 +118,7 @@ func TestForwarderSingleFlight(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := f.Resolve(context.Background(), question("a.example.com.")); err != nil {
+			if _, err := f.Resolve(context.Background(), question("a.example.com."), false); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -136,7 +141,7 @@ func TestForwarderFailsOverOnServfail(t *testing.T) {
 		"9.9.9.9:53": okReply,
 	}}
 	f := newForwarder(x, "1.1.1.1:53", "9.9.9.9:53")
-	if _, err := f.Resolve(context.Background(), question("a.example.com.")); err != nil {
+	if _, err := f.Resolve(context.Background(), question("a.example.com."), false); err != nil {
 		t.Fatalf("Resolve() = %v, want failover to the healthy upstream", err)
 	}
 	if got := x.calls.Load(); got != 2 {
@@ -148,5 +153,21 @@ func TestForwarderUpstreams(t *testing.T) {
 	f := newForwarder(&fakeExchanger{}, "1.1.1.1:53", "9.9.9.9:53")
 	if got := f.Upstreams(); len(got) != 2 {
 		t.Errorf("Upstreams() = %v", got)
+	}
+}
+
+// The same name asked for with and without DO is two upstream queries, not one
+// cache hit.
+func TestForwarderDoesNotShareCacheAcrossDO(t *testing.T) {
+	x := &fakeExchanger{perAddr: map[string]func() (*dns.Msg, error){"1.1.1.1:53": okReply}}
+	f := newForwarder(x, "1.1.1.1:53")
+	if _, err := f.Resolve(context.Background(), question("a.example.com."), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Resolve(context.Background(), question("a.example.com."), true); err != nil {
+		t.Fatal(err)
+	}
+	if got := x.calls.Load(); got != 2 {
+		t.Errorf("upstream calls = %d, want 2 (DO=0 and DO=1 are different questions)", got)
 	}
 }
