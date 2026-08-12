@@ -139,7 +139,7 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "add":
-		const addUsage = "usage: kydns service add <name> --address <ip> [--view v] [--alias a,b] [--check url]"
+		const addUsage = "usage: kydns service add <name> --address <ip> [--view v] [--alias a,b] [--check url] [--proxy ip] [--via-proxy]"
 		// The documented form puts the name before the flags, but flag.Parse
 		// stops at the first positional. Peel the name off first.
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
@@ -153,6 +153,8 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		view := fs.String("view", "", "view name; empty means all views")
 		alias := fs.String("alias", "", "comma-separated aliases")
 		check := fs.String("check", "", "health check URL")
+		proxy := fs.String("proxy", "", "send DNS for this service to this address instead")
+		viaProxy := fs.Bool("via-proxy", false, "answer with --proxy rather than the service's own address")
 		if err := fs.Parse(args[2:]); err != nil {
 			return 2
 		}
@@ -169,6 +171,12 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		}
 		if *alias != "" {
 			body["aliases"] = strings.Split(*alias, ",")
+		}
+		if *proxy != "" {
+			body["proxy_address"] = *proxy
+		}
+		if *viaProxy {
+			body["route_via_proxy"] = true
 		}
 		if err := c.Do("POST", "/api/v1/services", body, nil); err != nil {
 			return fail(stderr, err)

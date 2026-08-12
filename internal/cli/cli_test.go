@@ -90,6 +90,31 @@ func TestServiceAddPostsBody(t *testing.T) {
 	}
 }
 
+func TestServiceAddPostsProxyFields(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	code := serviceCmd(c, []string{
+		"add", "kypost", "--address", "192.168.1.30", "--proxy", "192.168.1.20", "--via-proxy",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got["proxy_address"] != "192.168.1.20" {
+		t.Errorf("proxy_address = %v", got["proxy_address"])
+	}
+	if got["route_via_proxy"] != true {
+		t.Errorf("route_via_proxy = %v", got["route_via_proxy"])
+	}
+}
+
 func TestServiceAddRequiresNameAndAddress(t *testing.T) {
 	c := &Client{BaseURL: "http://127.0.0.1:1", HTTP: http.DefaultClient}
 	var out, errOut bytes.Buffer
