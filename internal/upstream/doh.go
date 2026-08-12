@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strings"
@@ -28,6 +29,9 @@ func newDoH(s Spec, timeout time.Duration) *doh {
 		spec: s,
 		client: &http.Client{
 			Timeout: timeout,
+			// RFC 8484 clients have no need to follow redirects, and a
+			// redirect to plaintext http:// would resend the query unencrypted.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 			Transport: &http.Transport{
 				TLSClientConfig: tlsConfig(s),
 				// The URL carries the server name; the socket always goes to
@@ -67,8 +71,9 @@ func (d *doh) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("upstream %s: HTTP %s", d.spec.Raw, resp.Status)
 	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, dohMediaType) {
-		return nil, fmt.Errorf("upstream %s: content type %q, want %s", d.spec.Raw, ct, dohMediaType)
+	ct, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(ct, dohMediaType) {
+		return nil, fmt.Errorf("upstream %s: content type %q, want %s", d.spec.Raw, resp.Header.Get("Content-Type"), dohMediaType)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, dns.MaxMsgSize+1))
 	if err != nil {

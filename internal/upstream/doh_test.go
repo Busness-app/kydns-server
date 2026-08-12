@@ -5,9 +5,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,6 +46,54 @@ func dohEcho(t *testing.T, seen *dns.Msg) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/dns-message")
 		w.Write(wire)
 	}
+}
+
+// exactSizedWire is the standard answer padded with EDNS0 padding (RFC 7830)
+// to exactly size bytes on the wire, so the answer section stays intact.
+func exactSizedWire(t *testing.T, size int) []byte {
+	t.Helper()
+	m := answer(query())
+	base, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.SetEdns0(4096, false)
+	opt := m.IsEdns0()
+	pad := &dns.EDNS0_PADDING{}
+	opt.Option = append(opt.Option, pad)
+	withZeroPad, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	overhead := len(withZeroPad) - len(base)
+	need := size - len(base) - overhead
+	if need < 0 {
+		t.Fatalf("size %d too small for padding overhead %d", size, overhead)
+	}
+	pad.Padding = make([]byte, need)
+	out, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != size {
+		t.Fatalf("packed length = %d, want %d", len(out), size)
+	}
+	return out
+}
+
+// countingListener counts accepted connections, so a test can prove a second
+// request was never attempted.
+type countingListener struct {
+	net.Listener
+	n *int32
+}
+
+func (l countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		atomic.AddInt32(l.n, 1)
+	}
+	return c, err
 }
 
 func dohSpec(t *testing.T, srv *httptest.Server, pool *x509.CertPool) Spec {
@@ -132,10 +182,14 @@ func TestDoHRejectsBadResponses(t *testing.T) {
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte("<html>"))
 		}, "content type"},
+		"content type look-alike suffix": {func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/dns-message-evil")
+			w.Write([]byte("nope"))
+		}, "content type"},
 		"oversized body": {func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/dns-message")
 			w.Write(make([]byte, dns.MaxMsgSize+5000))
-		}, ""},
+		}, "exceeds"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := dohServer(t, cert, tc.handler)
@@ -191,5 +245,69 @@ func TestDoHDialsThePinnedAddress(t *testing.T) {
 	// the server actually saw proves the configured name was used.
 	if sni != "dns.example.test" {
 		t.Errorf("SNI = %q, want %q", sni, "dns.example.test")
+	}
+}
+
+func TestDoHAcceptsExactlyMaxMsgSize(t *testing.T) {
+	cert, pool := testCert(t)
+	wire := exactSizedWire(t, dns.MaxMsgSize)
+	srv := dohServer(t, cert, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/dns-message")
+		w.Write(wire)
+	})
+
+	u, _ := New(dohSpec(t, srv, pool), 2*time.Second)
+	resp, err := u.Exchange(context.Background(), query())
+	wantAnswer(t, resp, err)
+}
+
+func TestDoHAcceptsCaseInsensitiveContentType(t *testing.T) {
+	cert, pool := testCert(t)
+	// Not dohEcho: it sets its own lowercase Content-Type, which would mask
+	// the case variant this test needs on the wire.
+	srv := dohServer(t, cert, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		wire, err := answer(query()).Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "Application/DNS-Message")
+		w.Write(wire)
+	})
+
+	u, _ := New(dohSpec(t, srv, pool), 2*time.Second)
+	resp, err := u.Exchange(context.Background(), query())
+	wantAnswer(t, resp, err)
+}
+
+// A malicious or misconfigured upstream cannot use a redirect to make the
+// client resend the query body in cleartext.
+func TestDoHDoesNotFollowRedirects(t *testing.T) {
+	cert, pool := testCert(t)
+	var handlerCalls int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&handlerCalls, 1)
+		w.Header().Set("Location", "http://evil.invalid/elsewhere")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	var accepts int32
+	srv.Listener = countingListener{srv.Listener, &accepts}
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+
+	u, _ := New(dohSpec(t, srv, pool), 2*time.Second)
+	_, err := u.Exchange(context.Background(), query())
+	if err == nil {
+		t.Fatal("Exchange() error = nil for a redirect response")
+	}
+	if !strings.Contains(err.Error(), "307") {
+		t.Errorf("error = %v, want it to mention the redirect status", err)
+	}
+	if got := atomic.LoadInt32(&handlerCalls); got != 1 {
+		t.Errorf("handler calls = %d, want 1 (no redirect follow)", got)
+	}
+	if got := atomic.LoadInt32(&accepts); got != 1 {
+		t.Errorf("accepted connections = %d, want 1 (the redirect target was never contacted)", got)
 	}
 }
