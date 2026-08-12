@@ -418,15 +418,13 @@ func TestParseRejectsAnUnknownFormat(t *testing.T) {
 	}
 }
 
-func TestParseRefusesAnAbsurdlyLongList(t *testing.T) {
-	var b strings.Builder
-	for i := 0; i < maxEntries+1; i++ {
-		b.WriteString("d")
-		b.WriteString(strings.Repeat("x", i%40+1))
-		b.WriteString(".example\n")
-	}
-	if _, err := Parse(strings.NewReader(b.String()), FormatDomains); err == nil {
-		t.Error("Parse() accepted a list past the entry ceiling")
+// The ceiling is exercised through parseLimit rather than by building a
+// two-million-line fixture, which would cost seconds and a gigabyte to prove
+// one comparison.
+func TestParseRefusesAListPastTheEntryCeiling(t *testing.T) {
+	in := "a.example\nb.example\nc.example\nd.example\n"
+	if _, err := parseLimit(strings.NewReader(in), FormatDomains, 2); err == nil {
+		t.Error("parseLimit() accepted a list past the entry ceiling")
 	}
 }
 
@@ -499,6 +497,12 @@ type ParseResult struct {
 // Parse reads a list body. It never returns a partial result: a caller that
 // gets an error keeps its previous snapshot.
 func Parse(r io.Reader, format string) (ParseResult, error) {
+	return parseLimit(r, format, maxEntries)
+}
+
+// parseLimit is Parse with an injectable ceiling, so the ceiling can be tested
+// without building a two-million-line fixture.
+func parseLimit(r io.Reader, format string, max int) (ParseResult, error) {
 	if !ValidFormat(format) {
 		return ParseResult{}, fmt.Errorf("unknown list format %q", format)
 	}
@@ -527,7 +531,7 @@ func Parse(r io.Reader, format string) (ParseResult, error) {
 				continue
 			}
 			seen[n] = struct{}{}
-			if len(seen) > maxEntries {
+			if len(seen) > max {
 				return ParseResult{}, errors.New("list exceeds the entry ceiling")
 			}
 		}
@@ -3386,6 +3390,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
@@ -3500,17 +3505,17 @@ func TestListCRUD(t *testing.T) {
 		t.Error("the list response carries the downloaded body")
 	}
 
-	if rec := do(t, h, "PATCH", "/api/v1/blacklists/lists/1", tok, `{"enabled":false}`); rec.Code != http.StatusOK {
+	path := "/api/v1/blacklists/lists/" + strconv.FormatInt(id, 10)
+	if rec := do(t, h, "PATCH", path, tok, `{"enabled":false}`); rec.Code != http.StatusOK {
 		t.Errorf("PATCH = %d: %s", rec.Code, rec.Body)
 	}
 	if rec := do(t, h, "POST", "/api/v1/blacklists/lists", tok, `{"name":"bad","url":"http://x/y"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("POST with a plain-http URL = %d, want 400", rec.Code)
 	}
-	if rec := do(t, h, "DELETE", "/api/v1/blacklists/lists/1", tok, ""); rec.Code != http.StatusNoContent {
+	if rec := do(t, h, "DELETE", path, tok, ""); rec.Code != http.StatusNoContent {
 		t.Errorf("DELETE = %d, want 204", rec.Code)
 	}
-	_ = id
-	if rec := do(t, h, "DELETE", "/api/v1/blacklists/lists/1", tok, ""); rec.Code != http.StatusNotFound {
+	if rec := do(t, h, "DELETE", path, tok, ""); rec.Code != http.StatusNotFound {
 		t.Errorf("second DELETE = %d, want 404", rec.Code)
 	}
 }
