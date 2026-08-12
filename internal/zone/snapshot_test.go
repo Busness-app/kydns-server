@@ -316,6 +316,48 @@ func TestProxyDoesNotCreateAServiceInAViewItIsAbsentFrom(t *testing.T) {
 	}
 }
 
+// The property the feature exists for: a proxied service answers identically
+// in every view, while its reverse record still tracks the view-selected
+// real address (spec Part 5 bullet 4).
+func TestProxyAnswersIdenticallyAcrossViewsWithPerViewReverse(t *testing.T) {
+	s := build(t, Input{
+		Views: []store.View{
+			{Name: "lan", Subnets: []string{"192.168.1.0/24"}},
+			{Name: "vpn", Subnets: []string{"100.64.0.0/10"}},
+		},
+		Services: []store.Service{{
+			ID: 1, Name: "kypost",
+			Addresses: []store.Address{
+				{Address: "192.168.1.30", View: "lan"},
+				{Address: "100.101.102.103", View: "vpn"},
+			},
+			ProxyAddress:  "192.168.1.20",
+			RouteViaProxy: true,
+		}},
+	})
+
+	for _, view := range []string{"lan", "vpn"} {
+		got := values(s.Lookup(view, "kypost.home.arpa."))
+		if len(got) != 1 || got[0] != "192.168.1.20" {
+			t.Errorf("%s view forward = %v, want only the proxy address", view, got)
+		}
+	}
+	if got := s.LookupPTR("lan", "30.1.168.192.in-addr.arpa."); got != "kypost.home.arpa." {
+		t.Errorf("lan PTR = %q, want kypost.home.arpa.", got)
+	}
+	if got := s.LookupPTR("vpn", "103.102.101.100.in-addr.arpa."); got != "kypost.home.arpa." {
+		t.Errorf("vpn PTR = %q, want kypost.home.arpa.", got)
+	}
+	// Each view's reverse must know only its own real address, not the
+	// other view's.
+	if got := s.LookupPTR("lan", "103.102.101.100.in-addr.arpa."); got != "" {
+		t.Errorf("lan PTR for the vpn address = %q, want empty", got)
+	}
+	if got := s.LookupPTR("vpn", "30.1.168.192.in-addr.arpa."); got != "" {
+		t.Errorf("vpn PTR for the lan address = %q, want empty", got)
+	}
+}
+
 // The bug this fixes: two services on one address silently lose a reverse
 // record. Resolution stays last-writer-wins, but it must be visible.
 func TestSharedAddressLogsAReverseConflict(t *testing.T) {
