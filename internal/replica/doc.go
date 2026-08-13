@@ -18,8 +18,9 @@ type VersionReply struct {
 }
 
 // Snapshot is the whole replicated configuration plus the version it was read
-// at. Both are read in one transaction, so the version can never describe a
-// configuration other than the one shipped with it.
+// at. The version is read first, so a write landing mid-read ships a body
+// newer than its version and the replica pulls again; the other order would
+// have it record a version for a configuration it never received.
 type Snapshot struct {
 	SchemaVersion int             `json:"schema_version"`
 	ConfigVersion int64           `json:"config_version"`

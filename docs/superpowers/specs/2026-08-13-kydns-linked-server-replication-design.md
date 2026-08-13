@@ -168,13 +168,19 @@ Two read-only endpoints on the replication listener:
 | `GET /replica/version` | `{node_id, config_version, schema_version}` |
 | `GET /replica/snapshot` | The `snapshotDoc()` document plus the version it was taken at |
 
-The snapshot's body and its version are read inside one transaction, so a
-version can never describe a configuration other than the one shipped with
-it.
+The version is read *before* the body. A write landing between the two ships a
+body newer than the version stamped on it, and the replica pulls again on the
+next tick; the other order would have it record a version for a configuration
+it never received and stop asking. Newer-than-stamped is self-correcting;
+older-than-stamped is silent divergence.
+
+The replica reports the version it holds on `/replica/version`, and that is
+what the primary records as the peer's version. The primary's own version says
+nothing about how far behind a replica is.
 
 `GET /replica/health-status` serves health separately, outside the config
 version, because health changes constantly and must not invalidate
-configuration.
+configuration. **Part 2, not yet implemented.**
 
 ### Replica
 
@@ -192,6 +198,10 @@ Blacklist bodies never cross the wire. The replica receives list definitions
 in the snapshot and runs its own downloader, exactly as a standalone node
 does, so filtering keeps working through a primary outage with no special
 case.
+
+Lists are matched by name on apply, so renaming one on the primary costs every
+replica a re-download of that list. That is the price of not shipping bodies,
+and renaming a list is rare.
 
 ### Failure handling
 
@@ -283,8 +293,11 @@ shown to fail against the unfixed code before it is trusted.
 **Version discipline**
 
 - A service write bumps `config_version`; a token write does not.
-- A snapshot's reported version always matches its body, under concurrent
-  writes, so a torn read would surface.
+- A snapshot's body is never *older* than the version stamped on it, under
+  concurrent writes. A newer body is allowed and self-corrects on the next
+  tick; an older one would strand the replica at a version it never received.
+- The version a peer is recorded at is the one the replica reported, not the
+  one the primary read out of its own store.
 
 **Apply safety**
 

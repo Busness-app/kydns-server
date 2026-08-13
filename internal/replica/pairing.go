@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// codeAlphabet is Crockford-ish base32 without padding: an operator reads this
+// codeEncoding is Crockford-ish base32 without padding: an operator reads this
 // off one screen and types it into another, so I and O and their digit
 // lookalikes stay out.
 var codeEncoding = base32.NewEncoding("ABCDEFGHJKMNPQRSTVWXYZ0123456789").WithPadding(base32.NoPadding)
