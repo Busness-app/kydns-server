@@ -65,6 +65,13 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, page string, dat
 	}
 	data["Version"] = Version
 	data["Year"] = time.Now().Year()
+	// Every screen carries the replica chrome: the edit controls explain
+	// themselves wherever the operator landed, not only on the dashboard.
+	if st, isReplica := s.replica(); isReplica {
+		data["ReadOnly"] = true
+		data["ManagedBy"] = st.managedBy()
+		data["ReplicaBanner"] = ReplicaStaleBanner(st, time.Now())
+	}
 	s.execute(w, t, data)
 }
 

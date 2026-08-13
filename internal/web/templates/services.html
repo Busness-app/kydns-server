@@ -19,13 +19,13 @@
             <input type="hidden" name="id" value="{{$svc.ID}}">
             <input name="proxy_address" type="text" placeholder="192.168.1.20" value="{{$svc.ProxyAddress}}">
             <label><input name="route_via_proxy" type="checkbox" {{if $svc.RouteViaProxy}}checked{{end}}> Route</label>
-            <button type="submit">Save</button>
+            <button type="submit"{{template "ro" $}}>Save</button>
           </form>{{end}}</td>
         <td>{{if eq $i 0}}
           <form method="post" action="/services/delete">
             <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
             <input type="hidden" name="id" value="{{$svc.ID}}">
-            <button class="danger" type="submit">Remove</button>
+            <button class="danger" type="submit"{{template "ro" $}}>Remove</button>
           </form>{{end}}</td>
       </tr>
       {{end}}
@@ -61,7 +61,7 @@
        still targets the service itself. Check the service directly, not the
        proxy — a proxy returning 502 for a dead backend still looks healthy.</p>
     <label><input name="check_insecure" type="checkbox"> Accept a self-signed certificate on the check</label>
-    <button type="submit">Add service</button>
+    <button type="submit"{{template "ro" $}}>Add service</button>
   </form>
 </div>
 
@@ -84,7 +84,7 @@
         {{range .Views}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
       </select>
     </div>
-    <button type="submit">Add address</button>
+    <button type="submit"{{template "ro" $}}>Add address</button>
   </form>
 </div>
 {{end}}

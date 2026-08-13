@@ -244,9 +244,10 @@ func (a *API) routes(mux registrar) {
 // because app already imports adminapi.
 const roleReplica = "replica"
 
-// apiPrefix is the surface WriteGate covers. The web transport's own writes
-// are gated separately: a browser gets a page, not a JSON error.
-const apiPrefix = "/api/v1/"
+// PathPrefix is the surface WriteGate covers. The web transport's own writes
+// are gated separately: a browser gets a page, not a JSON error, so its gate
+// reads this to leave the API alone.
+const PathPrefix = "/api/v1/"
 
 // WriteGate refuses writes on a replica. A write that lands here is not just
 // unauthorized, it is discarded: the primary overwrites this node's config on
@@ -255,7 +256,7 @@ const apiPrefix = "/api/v1/"
 // somewhere else entirely, is refused too.
 func (a *API) WriteGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, apiPrefix) ||
+		if !strings.HasPrefix(r.URL.Path, PathPrefix) ||
 			r.Method == http.MethodGet || r.Method == http.MethodHead ||
 			writeExempt[r.URL.Path] || a.replicaStatus == nil {
 			next.ServeHTTP(w, r)

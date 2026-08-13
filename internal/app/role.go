@@ -6,6 +6,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/replica"
+	"github.com/yoshiofthewire/kydns-server/internal/web"
 )
 
 // Role is what this node is.
@@ -101,6 +102,14 @@ func replicaStatus(role Role, primaryAddr string, p puller) ReplicaStatus {
 	rs.LastError = st.LastError
 	rs.Stale = st.Stale
 	return rs
+}
+
+// toWeb converts to web's own copy of this shape, for the same reason as
+// toAdminAPI: web cannot import this package.
+func (s ReplicaStatus) toWeb() web.ReplicaStatus {
+	return web.ReplicaStatus{
+		Role: string(s.Role), PrimaryAddr: s.PrimaryAddr, LastSyncUnix: s.LastSyncUnix,
+	}
 }
 
 // toAdminAPI converts to adminapi's own copy of this shape: adminapi cannot

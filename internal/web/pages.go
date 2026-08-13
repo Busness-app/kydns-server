@@ -1,7 +1,5 @@
 package web
 
-import "net/http"
-
 func init() {
 	registerPage("dashboard.html")
 	registerPage("services.html")
@@ -12,7 +10,7 @@ func init() {
 }
 
 // pageRoutes registers the application screens.
-func (s *Server) pageRoutes(mux *http.ServeMux) {
+func (s *Server) pageRoutes(mux registrar) {
 	mux.Handle("GET /static/", s.StaticHandler())
 	mux.HandleFunc("GET /license", s.getLicense)
 

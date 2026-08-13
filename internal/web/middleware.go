@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
@@ -50,6 +51,76 @@ type Options struct {
 	// Policy is nil when filtering is not wired, which the screen renders as
 	// "not enabled" rather than as an empty tab.
 	Policy *policy.Service
+
+	// Replication reports what this node is, read per request so promotion
+	// takes effect without a restart. Nil means nothing is replicating, which
+	// is a standalone node and edits freely.
+	Replication func() ReplicaStatus
+}
+
+// ReplicaStatus is the slice of app.ReplicaStatus this transport renders. web
+// cannot import internal/app, because app already imports web to wire it.
+type ReplicaStatus struct {
+	Role         string
+	PrimaryAddr  string
+	LastSyncUnix int64
+}
+
+// roleReplica mirrors app.Role's replica value, for the same reason.
+const roleReplica = "replica"
+
+// webWriteExempt are the POSTs a replica must still answer. Signing in is how
+// an operator reaches the promote button, and being unable to sign out of a
+// replica would be its own trap.
+var webWriteExempt = map[string]bool{"/setup": true, "/login": true, "/logout": true}
+
+// managedBy names the box to make the change on.
+func (s ReplicaStatus) managedBy() string {
+	if s.PrimaryAddr == "" {
+		return "its primary"
+	}
+	return s.PrimaryAddr
+}
+
+// replica reports the current status when this node is a replica.
+func (s *Server) replica() (ReplicaStatus, bool) {
+	if s.o.Replication == nil {
+		return ReplicaStatus{}, false
+	}
+	st := s.o.Replication()
+	return st, st.Role == roleReplica
+}
+
+// WriteGate refuses form posts on a replica: the primary overwrites this
+// node's config on the next pull, so an accepted edit is a silently discarded
+// one. It wraps the handler rather than the routes, so a POST added later is
+// refused without anyone remembering to gate it.
+//
+// The admin API keeps its own gate: a browser needs a page, not JSON.
+func (s *Server) WriteGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead ||
+			strings.HasPrefix(r.URL.Path, adminapi.PathPrefix) || webWriteExempt[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+		st, isReplica := s.replica()
+		if !isReplica {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// An anonymous poster gets the login redirect it always got: this gate
+		// sits outside the session check and must not tell a stranger where
+		// the primary is.
+		if _, ok := s.session(r); !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		s.renderBare(w, "readonly.html", map[string]any{
+			"Title": "Read-only replica", "ManagedBy": st.managedBy(),
+		})
+	})
 }
 
 type Server struct{ o Options }
