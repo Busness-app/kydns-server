@@ -4,7 +4,6 @@
 package settings
 
 import (
-	"errors"
 	"fmt"
 	"net/netip"
 	"path/filepath"
@@ -14,10 +13,6 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 )
-
-// ErrPublicNotConfirmed is returned when allow_query would expose the
-// resolver to the public internet and the caller did not confirm it.
-var ErrPublicNotConfirmed = errors.New("allow_query includes a public range and was not confirmed")
 
 // FieldError names the input that was wrong, so the API and the form both
 // report the same field rather than a wall of prose.
@@ -106,8 +101,51 @@ func validDomainName(s string) bool {
 	return true
 }
 
-// Replaced in the next commit by the public-range guardrail.
-func validateAllowQuery(list []string, _ string) error {
+// privateRanges are the prefixes a homelab resolver is expected to serve:
+// loopback, RFC1918, link-local, ULA, and the CGNAT range Tailscale uses.
+var privateRanges = []netip.Prefix{
+	netip.MustParsePrefix("127.0.0.0/8"),
+	netip.MustParsePrefix("::1/128"),
+	netip.MustParsePrefix("10.0.0.0/8"),
+	netip.MustParsePrefix("172.16.0.0/12"),
+	netip.MustParsePrefix("192.168.0.0/16"),
+	netip.MustParsePrefix("169.254.0.0/16"),
+	netip.MustParsePrefix("fe80::/10"),
+	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+}
+
+// IsPrivatePrefix reports whether p is wholly inside a range a homelab
+// resolver is expected to serve. Containment, not overlap: 0.0.0.0/0 overlaps
+// every private range without being one.
+func IsPrivatePrefix(p netip.Prefix) bool {
+	p = p.Masked()
+	for _, r := range privateRanges {
+		if r.Bits() <= p.Bits() && r.Contains(p.Addr()) {
+			return true
+		}
+	}
+	return false
+}
+
+// PublicPrefixes returns the entries of an allow list that reach beyond the
+// private ranges. Unparseable entries are skipped: Validate rejects those with
+// a better message. Callers use this for the standing exposure warning.
+func PublicPrefixes(list []string) []string {
+	var out []string
+	for _, c := range list {
+		p, err := netip.ParsePrefix(c)
+		if err != nil || IsPrivatePrefix(p) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// validateAllowQuery enforces the guardrail: a prefix outside the private
+// ranges is refused unless the same request retypes it in confirmPublic.
+func validateAllowQuery(list []string, confirmPublic string) error {
 	if len(list) == 0 {
 		return bad("allow_query", "must list at least one range, or every query is refused")
 	}
@@ -115,6 +153,14 @@ func validateAllowQuery(list []string, _ string) error {
 		if _, err := netip.ParsePrefix(c); err != nil {
 			return bad("allow_query", "%q is not a CIDR prefix", c)
 		}
+	}
+	for _, c := range PublicPrefixes(list) {
+		if c == confirmPublic {
+			continue
+		}
+		return bad("allow_query",
+			"%s reaches beyond your LAN and would make KyDNS an open resolver. "+
+				"Retype it in the confirmation field to allow it anyway.", c)
 	}
 	return nil
 }

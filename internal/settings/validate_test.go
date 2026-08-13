@@ -96,3 +96,77 @@ func TestValidateAllowsDiscoveryOff(t *testing.T) {
 		t.Fatalf("discovery off must validate: %v", err)
 	}
 }
+
+// allow_query is what stops KyDNS being an open resolver, so widening it must
+// be impossible to do by accident.
+func TestValidateRejectsPublicPrefixWithoutConfirmation(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"192.168.0.0/16", "0.0.0.0/0"}
+
+	err := Validate(v, "")
+	if err == nil {
+		t.Fatal("a public range was accepted with no confirmation")
+	}
+	var fe FieldError
+	if !errors.As(err, &fe) || fe.Field != "allow_query" {
+		t.Fatalf("wrong field blamed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "0.0.0.0/0") {
+		t.Errorf("the message does not name the offending prefix: %v", err)
+	}
+}
+
+// The confirmation is the prefix itself, so muscle memory cannot supply it and
+// a copy-pasted API body cannot carry a blanket override.
+func TestValidateAcceptsPublicPrefixWithMatchingConfirmation(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"192.168.0.0/16", "0.0.0.0/0"}
+	if err := Validate(v, "0.0.0.0/0"); err != nil {
+		t.Fatalf("a confirmed public range must be accepted: %v", err)
+	}
+}
+
+func TestValidateRejectsMismatchedConfirmation(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"8.8.8.0/24"}
+	if err := Validate(v, "0.0.0.0/0"); err == nil {
+		t.Fatal("a confirmation for a different prefix was accepted")
+	}
+}
+
+// Confirming one public prefix must not smuggle a second one through.
+func TestValidateRejectsSecondUnconfirmedPublicPrefix(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"0.0.0.0/0", "8.8.8.0/24"}
+	err := Validate(v, "0.0.0.0/0")
+	if err == nil || !strings.Contains(err.Error(), "8.8.8.0/24") {
+		t.Fatalf("the unconfirmed second prefix passed: %v", err)
+	}
+}
+
+func TestPrivatePrefixesNeedNoConfirmation(t *testing.T) {
+	for _, c := range []string{
+		"127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12",
+		"192.168.0.0/16", "169.254.0.0/16", "fe80::/10", "fc00::/7",
+		"100.64.0.0/10", "192.168.1.128/25",
+	} {
+		v := valid()
+		v.AllowQuery = []string{c}
+		if err := Validate(v, ""); err != nil {
+			t.Errorf("%s is a private range and must need no confirmation: %v", c, err)
+		}
+	}
+}
+
+func TestPublicPrefixes(t *testing.T) {
+	got := PublicPrefixes([]string{"192.168.0.0/16", "0.0.0.0/0", "junk", "8.8.8.8/32"})
+	want := []string{"0.0.0.0/0", "8.8.8.8/32"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
