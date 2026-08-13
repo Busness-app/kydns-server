@@ -26,6 +26,9 @@ type PeerStore interface {
 type Source interface {
 	Version() (VersionReply, error)
 	Snapshot() (Snapshot, error)
+	// HealthStatus reads current service health, keyed by service name. It is
+	// runtime state, never persisted, and read fresh on every call.
+	HealthStatus() (map[string]string, error)
 }
 
 // Server serves /replica/version and /replica/snapshot over TLS to peers whose
@@ -49,6 +52,7 @@ func NewServer(id *Identity, peers PeerStore, src Source, book *InviteBook) *Ser
 	// Replication is read-only; the mux answers any other method with 405.
 	s.mux.HandleFunc("GET /replica/version", s.handleVersion)
 	s.mux.HandleFunc("GET /replica/snapshot", s.handleSnapshot)
+	s.mux.HandleFunc("GET /replica/health-status", s.handleHealthStatus)
 	s.mux.HandleFunc("POST /replica/pair", s.handlePair)
 	s.http = &http.Server{
 		Handler:           s.pinnedExcept(s.mux),
@@ -125,6 +129,17 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.write(w, r, snap)
+}
+
+// handleHealthStatus is pinned like every other route here; only pairing is
+// exempt. Health is not added to unpinnedPaths.
+func (s *Server) handleHealthStatus(w http.ResponseWriter, r *http.Request) {
+	statuses, err := s.src.HealthStatus()
+	if err != nil {
+		http.Error(w, "health unavailable", http.StatusInternalServerError)
+		return
+	}
+	s.write(w, r, HealthReply{Statuses: statuses})
 }
 
 func (s *Server) write(w http.ResponseWriter, r *http.Request, body any) {

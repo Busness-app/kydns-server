@@ -202,7 +202,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	roleHolder := NewRoleHolder(RoleFrom(cfg.Replication))
 	replSrv, repPuller, err := startReplication(ctx, cfg, st,
 		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
-		errs, logger)
+		checker.Statuses, errs, logger)
 	if err != nil {
 		return err
 	}

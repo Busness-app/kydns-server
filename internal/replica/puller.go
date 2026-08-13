@@ -22,8 +22,15 @@ type Primary interface {
 	// replica holds, which is what the primary records as this peer's lag.
 	Version(ctx context.Context, held int64) (VersionReply, error)
 	Snapshot(ctx context.Context) (Snapshot, error)
+	// HealthStatus reports current service health, keyed by service name.
+	HealthStatus(ctx context.Context) (map[string]string, error)
 	Close() error
 }
+
+// healthUnknownState is what an unreachable or rejecting primary answers with
+// for every service this replica last held health for. A stale value would
+// tell an operator a dead service is alive during the one moment that matters.
+const healthUnknownState = "unknown"
 
 // Applier writes a pulled configuration.
 type Applier interface {
@@ -90,6 +97,11 @@ type Puller struct {
 	lastSyncAt  time.Time
 	lastErr     string
 	backoff     time.Duration
+	// health is the last health reply received. healthKnown false means the
+	// primary is unreachable or rejected the last poll, so Health() answers
+	// unknown for every key here rather than the last value seen.
+	health      map[string]string
+	healthKnown bool
 }
 
 func NewPuller(cfg PullerConfig) *Puller {
@@ -131,6 +143,7 @@ func (p *Puller) poll(ctx context.Context) {
 	c, err := p.connect(ctx)
 	if err != nil {
 		p.unreachable(err)
+		p.healthUnknown()
 		return
 	}
 
@@ -138,20 +151,33 @@ func (p *Puller) poll(ctx context.Context) {
 	if err != nil {
 		p.drop()
 		p.unreachable(err)
+		p.healthUnknown()
+		return
+	}
+
+	// The transition to reachable waits for the node ID check: a peer that
+	// answers with the wrong key has rejected the pin, and resetting the
+	// backoff for that reply would hold the loop at the plain interval
+	// instead of backing off from a peer that keeps failing identity.
+	if err := p.checkNodeID(v.NodeID); err != nil {
+		p.drop()
+		p.reject(err)
+		p.healthUnknown()
 		return
 	}
 	p.reachable()
 
-	if err := p.checkNodeID(v.NodeID); err != nil {
-		p.drop()
-		p.fail(err)
-		return
-	}
 	if v.SchemaVersion != SchemaVersion {
 		p.fail(fmt.Errorf("primary %s speaks replication schema %d, this node speaks %d: upgrade the older node",
 			v.NodeID, v.SchemaVersion, SchemaVersion))
+		p.healthUnknown()
 		return
 	}
+
+	// Health rides this same tick but is its own request: it must never move
+	// config_version or trigger a snapshot pull.
+	p.pollHealth(ctx, c)
+
 	if v.ConfigVersion == p.held() {
 		p.synced(v.ConfigVersion)
 		return
@@ -246,6 +272,45 @@ func (p *Puller) held() int64 {
 	return p.lastVersion
 }
 
+// pollHealth fetches health and replaces what is held. A fetch error marks
+// health unknown without touching the sync state: the config side of the poll
+// already succeeded and must not be undone by a health-only failure.
+func (p *Puller) pollHealth(ctx context.Context, c Primary) {
+	statuses, err := c.HealthStatus(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err != nil {
+		p.healthKnown = false
+		return
+	}
+	p.health, p.healthKnown = statuses, true
+}
+
+// healthUnknown marks health stale without discarding the key set, so Health()
+// still answers unknown for every service this replica last heard about
+// rather than an empty map an operator could misread as "nothing configured".
+func (p *Puller) healthUnknown() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.healthKnown = false
+}
+
+// Health is what the operator surface renders for service status. An
+// unreachable or rejecting primary answers unknown for every key, never the
+// last value seen: stale-but-green health is worse than no answer at all.
+func (p *Puller) Health() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]string, len(p.health))
+	for k, v := range p.health {
+		if !p.healthKnown {
+			v = healthUnknownState
+		}
+		out[k] = v
+	}
+	return out
+}
+
 func (p *Puller) unreachable(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -268,6 +333,19 @@ func (p *Puller) fail(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.record(err, slog.LevelError)
+}
+
+// reject is fail plus a backoff: the network answered, so this is not the
+// ordinary unreachable case, but the reply itself was refused, and retrying
+// at the plain interval would just get rejected again.
+func (p *Puller) reject(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.record(err, slog.LevelError)
+	p.backoff *= 2
+	if p.backoff > p.cfg.Ceiling {
+		p.backoff = p.cfg.Ceiling
+	}
 }
 
 // record logs only when the reason changes, so a primary that is down all

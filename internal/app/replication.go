@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/config"
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/replica"
 	"github.com/yoshiofthewire/kydns-server/internal/settings"
@@ -33,6 +34,32 @@ const (
 type storeSource struct {
 	st     *store.Store
 	nodeID string
+	// health reads the checker's live results. It is a func, not a stored
+	// snapshot, because health changes constantly and must be read fresh on
+	// every request, never cached alongside config_version.
+	health func() []health.Status
+}
+
+// HealthStatus translates the checker's up/down/unknown into the replication
+// wire vocabulary, keyed by service name since a replica has no service IDs
+// to match against. A nil health func (no checker wired) answers empty.
+func (s *storeSource) HealthStatus() (map[string]string, error) {
+	if s.health == nil {
+		return map[string]string{}, nil
+	}
+	statuses := s.health()
+	out := make(map[string]string, len(statuses))
+	for _, st := range statuses {
+		switch st.State {
+		case health.StateUp:
+			out[st.Name] = "healthy"
+		case health.StateDown:
+			out[st.Name] = "unhealthy"
+		default:
+			out[st.Name] = "unknown"
+		}
+	}
+	return out, nil
 }
 
 func (s *storeSource) Version() (replica.VersionReply, error) {
@@ -133,7 +160,7 @@ func primaryFingerprint(st *store.Store) (string, error) {
 // this node is a primary, and the returned puller is nil unless it is a
 // replica.
 func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
-	ap replica.Applier, errs chan<- error, logger *slog.Logger) (*replica.Server, *replica.Puller, error) {
+	ap replica.Applier, healthFn func() []health.Status, errs chan<- error, logger *slog.Logger) (*replica.Server, *replica.Puller, error) {
 	if cfg.Replication.Listen == "" && cfg.Replication.Primary == "" {
 		return nil, nil, nil
 	}
@@ -176,7 +203,7 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 	if err != nil {
 		return nil, nil, fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
 	}
-	srv := replica.NewServer(id, st, &storeSource{st: st, nodeID: id.NodeID},
+	srv := replica.NewServer(id, st, &storeSource{st: st, nodeID: id.NodeID, health: healthFn},
 		replica.NewInviteBook(inviteTTL, time.Now))
 	go func() {
 		// ponytail: errs is the process's fatal channel, so a replication

@@ -117,6 +117,8 @@ func (hugeSource) Version() (VersionReply, error) {
 	return VersionReply{SchemaVersion: SchemaVersion, ConfigVersion: 1}, nil
 }
 
+func (hugeSource) HealthStatus() (map[string]string, error) { return nil, nil }
+
 func (hugeSource) Snapshot() (Snapshot, error) {
 	big := make([]byte, maxReplyBytes+1024)
 	for i := range big {

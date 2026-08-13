@@ -133,6 +133,17 @@ func (c *Client) Snapshot(ctx context.Context) (Snapshot, error) {
 	return s, err
 }
 
+// HealthStatus fetches the primary's current service health. It is its own
+// request, not a field on Version, so a health flap never invalidates the
+// config version a replica is holding.
+func (c *Client) HealthStatus(ctx context.Context) (map[string]string, error) {
+	var h HealthReply
+	if err := c.get(ctx, "/replica/health-status", &h); err != nil {
+		return nil, err
+	}
+	return h.Statuses, nil
+}
+
 func (c *Client) Close() error {
 	c.http.CloseIdleConnections()
 	return nil

@@ -14,15 +14,18 @@ import (
 // fakePrimary counts what the loop asked for, so a test can prove a poll did
 // not fetch rather than merely that nothing changed.
 type fakePrimary struct {
-	version       int64
-	schemaVersion int
-	nodeID        string
-	versionErr    error
-	snapshotErr   error
-	versionCalls  int
-	snapshotCalls int
-	closes        int
-	heldReported  []int64
+	version        int64
+	schemaVersion  int
+	nodeID         string
+	versionErr     error
+	snapshotErr    error
+	versionCalls   int
+	snapshotCalls  int
+	closes         int
+	heldReported   []int64
+	healthStatuses map[string]string
+	healthErr      error
+	healthCalls    int
 }
 
 func (f *fakePrimary) Version(_ context.Context, held int64) (VersionReply, error) {
@@ -45,6 +48,14 @@ func (f *fakePrimary) Snapshot(context.Context) (Snapshot, error) {
 		NodeID:        f.id(),
 		Config:        json.RawMessage(`{}`),
 	}, nil
+}
+
+func (f *fakePrimary) HealthStatus(context.Context) (map[string]string, error) {
+	f.healthCalls++
+	if f.healthErr != nil {
+		return nil, f.healthErr
+	}
+	return f.healthStatuses, nil
 }
 
 func (f *fakePrimary) Close() error { f.closes++; return nil }

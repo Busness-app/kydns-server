@@ -27,3 +27,10 @@ type Snapshot struct {
 	NodeID        string          `json:"node_id"`
 	Config        json.RawMessage `json:"config"`
 }
+
+// HealthReply answers /replica/health-status. It is its own request rather
+// than a field on VersionReply: health changes constantly and must never look
+// like a configuration change to a replica watching config_version.
+type HealthReply struct {
+	Statuses map[string]string `json:"statuses"`
+}

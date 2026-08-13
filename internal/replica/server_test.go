@@ -107,6 +107,8 @@ func (f *fakePeers) touches() int {
 type fakeSource struct {
 	mu      sync.Mutex
 	version int64
+	health  map[string]string
+	nodeID  string
 }
 
 func (f *fakeSource) next() int64 {
@@ -116,8 +118,22 @@ func (f *fakeSource) next() int64 {
 	return f.version
 }
 
+// id defaults to "primary": most tests here never check it against a pin.
+func (f *fakeSource) id() string {
+	if f.nodeID == "" {
+		return "primary"
+	}
+	return f.nodeID
+}
+
 func (f *fakeSource) Version() (VersionReply, error) {
-	return VersionReply{SchemaVersion: SchemaVersion, ConfigVersion: f.next(), NodeID: "primary"}, nil
+	return VersionReply{SchemaVersion: SchemaVersion, ConfigVersion: f.next(), NodeID: f.id()}, nil
+}
+
+func (f *fakeSource) HealthStatus() (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.health, nil
 }
 
 func (f *fakeSource) Snapshot() (Snapshot, error) {
