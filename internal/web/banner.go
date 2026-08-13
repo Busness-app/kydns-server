@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -19,10 +19,11 @@ type Banner struct {
 	Fix   string
 }
 
-var cgnatPrefix = netip.MustParsePrefix(config.TailscaleCGNAT)
+var cgnatPrefix = netip.MustParsePrefix(settings.TailscaleCGNAT)
 
-// bannerFix is the one actionable instruction, shared by both conditions.
-const bannerFix = "If you use Tailscale, set allow_tailscale: true in the config file and restart KyDNS."
+// bannerFix is the one actionable instruction, shared by both conditions. The
+// setting applies as soon as it is saved, so there is no restart to mention.
+const bannerFix = "If you use Tailscale, turn on allow_tailscale under Settings, Server settings."
 
 // TailscaleBanner returns a notice when Tailscale clients cannot reach KyDNS,
 // or nil when there is nothing to report.
@@ -44,7 +45,7 @@ func TailscaleBanner(acl *dnsserver.ACL, views []store.View, allowTailscale bool
 			Title: "Tailscale clients are being refused.",
 			Body: fmt.Sprintf(
 				"%d queries from %s were refused. Those clients cannot resolve any name from KyDNS.",
-				s.CGNAT, config.TailscaleCGNAT),
+				s.CGNAT, settings.TailscaleCGNAT),
 			Fix: bannerFix,
 		}
 	}

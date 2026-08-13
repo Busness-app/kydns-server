@@ -13,13 +13,52 @@ import (
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
+	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 const testPassword = "a-good-password"
+
+// testSettings is a valid, LAN-only starting point for the settings service.
+func testSettings() store.Settings {
+	return store.Settings{
+		PrivateDomain: "home.arpa",
+		Upstreams:     []string{"tls://1.1.1.1:853"},
+		AllowQuery:    []string{"192.168.0.0/16"},
+		TTL:           60, CacheMinTTL: 5, CacheMaxTTL: 3600,
+		NegativeMaxTTL: 300, CacheEntries: 10000,
+		DiscoveryInterval: 30, HealthInterval: 30, HealthTimeout: 5, HealthWorkers: 8,
+	}
+}
+
+// testConfig is the file-owned half: the keys that are read once at startup.
+func testConfig() *config.Config {
+	return &config.Config{
+		DataDir: "/var/lib/kydns",
+		DNS:     config.DNSConfig{Listen: ":53"},
+		Admin:   config.AdminConfig{Listen: "127.0.0.1:8053"},
+	}
+}
+
+// newSettings wires a settings service over st, seeded with testSettings.
+func newSettings(t *testing.T, st *store.Store) *settings.Service {
+	t.Helper()
+	if err := st.PutSettings(testSettings()); err != nil {
+		t.Fatal(err)
+	}
+	h := settings.NewHolder(func() (store.Settings, error) {
+		v, _, err := st.Settings()
+		return v, err
+	})
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	return settings.NewService(st, h, nil)
+}
 
 func newWeb(t *testing.T) (http.Handler, *Server) {
 	t.Helper()
@@ -59,11 +98,25 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 		ACL:        acl,
 		Cache:      cache,
 		Policy:     pol,
+		Settings:   newSettings(t, st),
 		SetupToken: "setup-me",
 	})
 	mux := http.NewServeMux()
 	srv.Routes(mux)
 	return mux, srv
+}
+
+// setAllowTailscale flips the live setting through the one write path.
+func setAllowTailscale(t *testing.T, srv *Server, on bool) {
+	t.Helper()
+	v, err := srv.o.Settings.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.AllowTailscale = on
+	if err := srv.o.Settings.Set(v, ""); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func get(t *testing.T, h http.Handler, path string, cookie *http.Cookie) *httptest.ResponseRecorder {

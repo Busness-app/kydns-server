@@ -216,13 +216,25 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Backoff:        auth.NewBackoff(),
 		ACL:            acl,
 		Cache:          cache,
-		Policy:         policySvc,
-		AllowTailscale: boot.AllowTailscale,
-		Settings:       settingsSvc,
-		Upstreams:      fwd.Status,
-		SetupToken:     setupToken,
-		Logger:         logger,
-		Health:         checker.Statuses,
+		Policy:     policySvc,
+		Settings:   settingsSvc,
+		Upstreams:  fwd.Status,
+		SetupToken: setupToken,
+		Logger:     logger,
+		Health:     checker.Statuses,
+		// Compared against the boot values on every page load: there is no
+		// dirty flag to drift, and the banner clears itself on restart.
+		RestartPending: func() []web.RestartItem {
+			cur, err := settingsSvc.Get()
+			if err != nil {
+				return nil
+			}
+			var out []web.RestartItem
+			for _, it := range restartPending(boot, cur) {
+				out = append(out, web.RestartItem(it))
+			}
+			return out
+		},
 		Leases: func() func() []dhcp.Lease {
 			if poller == nil {
 				return nil // the screen renders "discovery is off" rather than empty

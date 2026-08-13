@@ -9,7 +9,11 @@ import (
 const bannerWindow = time.Hour
 
 func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
-	data := map[string]any{"Title": "Dashboard", "Nav": "dashboard"}
+	data := map[string]any{
+		"Title": "Dashboard", "Nav": "dashboard",
+		// Exposure is standing state, not an event: it shows on every load.
+		"PublicRanges": s.publicRanges(),
+	}
 
 	var banners []*Banner
 	if s.o.Upstreams != nil {
@@ -39,7 +43,7 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 		data["Error"] = err.Error()
 	}
 
-	if b := TailscaleBanner(s.o.ACL, views, s.o.AllowTailscale, bannerWindow); b != nil {
+	if b := TailscaleBanner(s.o.ACL, views, s.allowTailscale(), bannerWindow); b != nil {
 		banners = append(banners, b)
 	}
 	data["Banners"] = banners

@@ -32,7 +32,7 @@ func TestDashboardWithoutBanner(t *testing.T) {
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
 	c := loginCookie(t, h)
-	srv.o.AllowTailscale = true
+	setAllowTailscale(t, srv, true)
 
 	if strings.Contains(get(t, h, "/", c).Body.String(), `class="banner"`) {
 		t.Error("banner rendered when there was nothing to report")
@@ -65,7 +65,7 @@ func TestDashboardBannerWhenEveryUpstreamIsDown(t *testing.T) {
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
 	c := loginCookie(t, h)
-	srv.o.AllowTailscale = true // keep the Tailscale banner out of the picture
+	setAllowTailscale(t, srv, true) // keep the Tailscale banner out of the picture
 	srv.o.Upstreams = func() []dnsserver.UpstreamStatus {
 		return []dnsserver.UpstreamStatus{
 			{Spec: "tls://1.1.1.1:853", Secure: true, LastError: "dial tcp 1.1.1.1:853: i/o timeout"},
@@ -89,7 +89,7 @@ func TestDashboardQuietWhenUpstreamsAreHealthy(t *testing.T) {
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
 	c := loginCookie(t, h)
-	srv.o.AllowTailscale = true
+	setAllowTailscale(t, srv, true)
 	srv.o.Upstreams = func() []dnsserver.UpstreamStatus {
 		return []dnsserver.UpstreamStatus{{Spec: "tls://1.1.1.1:853", Secure: true}}
 	}

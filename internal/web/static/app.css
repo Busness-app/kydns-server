@@ -66,11 +66,16 @@ table.grid tr:last-child td { border-bottom: 0; }
 
 form.stack { display: flex; flex-direction: column; gap: .75rem; max-width: 32rem; margin-top: 1rem; }
 form.stack label { font-family: var(--font-mono); font-size: .75rem; color: var(--ink); text-transform: uppercase; }
-input[type=text], input[type=password], select {
+input[type=text], input[type=password], input[type=number], textarea, select {
   background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: .5rem .65rem;
   color: var(--ink-strong); font-family: var(--font-mono); font-size: .85rem; width: 100%;
   box-sizing: border-box; }
-input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
+textarea { resize: vertical; line-height: 1.5; }
+/* A checkbox is a switch, not a full-width text box. */
+form.stack label:has(input[type=checkbox]) { display: flex; gap: .5rem; align-items: center;
+                                             text-transform: none; color: var(--ink-strong); }
+form.stack input[type=checkbox] { width: auto; accent-color: var(--accent); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
 button { background: var(--accent); color: #04211f; border: 0; border-radius: 5px; padding: .55rem 1.1rem;
          font-family: var(--font-mono); font-size: .82rem; cursor: pointer; }
 button:hover { filter: brightness(1.1); }

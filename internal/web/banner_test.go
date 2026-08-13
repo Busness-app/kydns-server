@@ -37,8 +37,8 @@ func TestBannerOnRecentCGNATRefusal(t *testing.T) {
 	if !strings.Contains(b.Fix, "allow_tailscale") {
 		t.Errorf("Fix = %q, want the config key named", b.Fix)
 	}
-	if !strings.Contains(strings.ToLower(b.Fix), "restart") {
-		t.Errorf("Fix = %q, want the restart requirement stated", b.Fix)
+	if !strings.Contains(strings.ToLower(b.Fix), "settings") {
+		t.Errorf("Fix = %q, want the screen that holds the switch named", b.Fix)
 	}
 	if !strings.Contains(b.Body, "1") {
 		t.Errorf("Body = %q, want the refusal count", b.Body)

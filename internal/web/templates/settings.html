@@ -7,6 +7,80 @@
 </div>
 {{end}}
 
+{{with .Restart}}
+<div class="banner">
+  <strong>Restart to apply.</strong>
+  <p>These were saved but cannot change while KyDNS is running:</p>
+  <ul>
+    {{range .}}<li><code>{{.Key}}</code>: running <code>{{.Running}}</code>, saved <code>{{.Stored}}</code></li>{{end}}
+  </ul>
+</div>
+{{end}}
+
+{{template "exposure" .}}
+
+{{with .Server}}
+<div class="card">
+  <h3>Server settings</h3>
+  <p class="muted">Saved to the database and applied at once, except where a
+     restart is noted.</p>
+  {{with $.ServerError}}
+  <p class="error">{{.}}</p>
+  {{end}}
+  <form class="stack" method="post" action="/settings/server">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+
+    <label for="private_domain">Private domain <span class="muted">(restart required)</span></label>
+    <input id="private_domain" name="private_domain" type="text" value="{{.PrivateDomain}}">
+
+    <label for="upstreams">Upstreams, one per line, tried in order</label>
+    <textarea id="upstreams" name="upstreams" rows="4">{{range .Upstreams}}{{.}}
+{{end}}</textarea>
+
+    <label for="allow_query">Allow queries from, one CIDR per line</label>
+    <textarea id="allow_query" name="allow_query" rows="6">{{range .AllowQuery}}{{.}}
+{{end}}</textarea>
+
+    <label for="confirm_public">To allow a range beyond your LAN, retype it here</label>
+    <input id="confirm_public" name="confirm_public" type="text" placeholder="0.0.0.0/0">
+
+    <label><input type="checkbox" name="allow_tailscale" {{if .AllowTailscale}}checked{{end}}> Allow Tailscale addresses (100.64.0.0/10)</label>
+
+    <label for="reverse_zones">Reverse zones, one CIDR per line</label>
+    <textarea id="reverse_zones" name="reverse_zones" rows="3">{{range .ReverseZones}}{{.}}
+{{end}}</textarea>
+
+    <label for="ttl">TTL on authoritative answers (seconds)</label>
+    <input id="ttl" name="ttl" type="number" min="1" value="{{.TTL}}">
+    <label for="cache_min_ttl">Cache minimum TTL</label>
+    <input id="cache_min_ttl" name="cache_min_ttl" type="number" min="1" value="{{.CacheMinTTL}}">
+    <label for="cache_max_ttl">Cache maximum TTL</label>
+    <input id="cache_max_ttl" name="cache_max_ttl" type="number" min="1" value="{{.CacheMaxTTL}}">
+    <label for="negative_max_ttl">Negative answer maximum TTL</label>
+    <input id="negative_max_ttl" name="negative_max_ttl" type="number" min="1" value="{{.NegativeMaxTTL}}">
+    <label for="cache_entries">Cache entries</label>
+    <input id="cache_entries" name="cache_entries" type="number" min="1" value="{{.CacheEntries}}">
+
+    <label><input type="checkbox" name="log_queries" {{if .LogQueries}}checked{{end}}> Log queries</label>
+    <label><input type="checkbox" name="log_client_ip" {{if .LogClientIP}}checked{{end}}> Also log who asked</label>
+
+    <label for="dhcp_lease_file">DHCP lease file <span class="muted">(restart required, empty is off)</span></label>
+    <input id="dhcp_lease_file" name="dhcp_lease_file" type="text" value="{{.DHCPLeaseFile}}">
+    <label for="discovery_interval">Lease poll interval (seconds)</label>
+    <input id="discovery_interval" name="discovery_interval" type="number" min="1" value="{{.DiscoveryInterval}}">
+
+    <label for="health_interval">Health check interval (seconds)</label>
+    <input id="health_interval" name="health_interval" type="number" min="1" value="{{.HealthInterval}}">
+    <label for="health_timeout">Health check timeout (seconds)</label>
+    <input id="health_timeout" name="health_timeout" type="number" min="1" value="{{.HealthTimeout}}">
+    <label for="health_workers">Concurrent probes</label>
+    <input id="health_workers" name="health_workers" type="number" min="1" value="{{.HealthWorkers}}">
+
+    <button type="submit">Save settings</button>
+  </form>
+</div>
+{{end}}
+
 <div class="card">
   <h3>Views</h3>
   <table class="grid">
@@ -31,7 +105,8 @@
   {{range .Views}}{{if .Unreachable}}
   <p class="error">The view {{.Name}} covers Tailscale addresses, but the query ACL
      refuses that range, so those clients are rejected before the view is considered.
-     Set <code>allow_tailscale: true</code> in the config file and restart KyDNS.</p>
+     Tick <code>allow_tailscale</code> under Server settings above and save; it
+     applies at once.</p>
   {{end}}{{end}}
   <form class="stack" method="post" action="/settings/views/new">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
@@ -86,7 +161,7 @@
 {{if .Upstreams}}
 <div class="card">
   <h3>Upstreams</h3>
-  <p class="muted">Tried in order. {{.RestartNote}}</p>
+  <p class="muted">Tried in order. Edit the list under Server settings above.</p>
   <table class="grid">
     <tr><th>Upstream</th><th>Channel</th><th>Last result</th></tr>
     {{range .Upstreams}}

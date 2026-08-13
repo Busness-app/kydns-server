@@ -13,9 +13,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TailscaleCGNAT is the range added to the ACL by DNSConfig.AllowTailscale.
-const TailscaleCGNAT = "100.64.0.0/10"
-
 // defaultAllowQuery is loopback plus RFC1918 and ULA. CGNAT is deliberately
 // absent: it is gated behind AllowTailscale.
 var defaultAllowQuery = []string{

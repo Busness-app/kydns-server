@@ -43,6 +43,7 @@ func (s *Server) pageRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /settings", s.requireSession(s.getSettings))
 	mux.HandleFunc("GET /settings/export", s.requireSession(s.getExport))
+	mux.HandleFunc("POST /settings/server", s.requireCSRF(s.postServerSettings))
 	mux.HandleFunc("POST /settings/views/new", s.requireCSRF(s.postViewNew))
 	mux.HandleFunc("POST /settings/views/delete", s.requireCSRF(s.postViewDelete))
 	mux.HandleFunc("POST /settings/tokens/new", s.requireCSRF(s.postTokenNew))
