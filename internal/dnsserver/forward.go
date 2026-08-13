@@ -83,9 +83,11 @@ func NewForwarder(ups []upstream.Upstream, timeout time.Duration, c *Cache) *For
 // problem that no longer exists.
 //
 // Replace takes ownership of every upstream it retires: once it returns, the
-// caller must not use or close them itself. An upstream instance that
-// appears in both the old and the new list (a reload that reuses an
-// unchanged Upstream) is treated as still live and is never closed.
+// caller must not use or close them itself. An upstream instance that is
+// still live when its retirement actually runs (present in whichever list is
+// current at that moment, not necessarily the list this call installed) is
+// never closed — a rapid Replace(a)->Replace(b)->Replace(a) must not let the
+// first retirement close the second Replace's a out from under it.
 //
 // A query already in flight holds the retiring state and may still be
 // mid-exchange on one of its connections. acquireState/wg tracks exactly
@@ -103,7 +105,10 @@ func (f *Forwarder) Replace(ups []upstream.Upstream) {
 	if old != nil {
 		go func() {
 			old.wg.Wait()
-			old.close(ups)
+			// Re-read whichever list is live now, not the one captured when
+			// this retirement was scheduled: a later Replace may have
+			// brought one of old's upstreams back before this goroutine woke.
+			old.close(f.currentState().ups)
 		}()
 	}
 }

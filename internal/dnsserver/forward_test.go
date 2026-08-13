@@ -497,6 +497,54 @@ func TestForwarderReplaceKeepsCarriedOverUpstream(t *testing.T) {
 	}
 }
 
+// Reproduces round-2 review finding 1: Replace(b) retires the state holding
+// a and parks its retirement goroutine on that state's wg while a query is
+// still in flight against a. Before that query finishes, Replace(a) brings a
+// back as the live upstream. When the parked retirement goroutine finally
+// wakes, it must check what is live *then*, not what it captured when it was
+// scheduled — otherwise it closes an upstream that is live again.
+func TestForwarderReplaceSkipsUpstreamMadeLiveAgainWhileRetiring(t *testing.T) {
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	var startOnce sync.Once
+	a := &fakeUpstream{name: "udp://10.0.0.1:53", reply: func(m *dns.Msg) (*dns.Msg, error) {
+		startOnce.Do(func() { close(started) })
+		<-proceed // closed proceed just falls through on any later call
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		resp.Answer = reply(m.Question[0].Name, 300).Answer
+		return resp, nil
+	}}
+	b := okUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a)
+
+	resolveDone := make(chan struct{})
+	go func() {
+		defer close(resolveDone)
+		_, _ = f.Resolve(context.Background(), question("a.example.com."), false)
+	}()
+	<-started // the exchange against a is in flight, holding the state it lives in
+
+	f.Replace([]upstream.Upstream{b}) // retires the state holding a; its retirement goroutine parks on wg.Wait
+	f.Replace([]upstream.Upstream{a}) // a is live again, in a new state
+
+	close(proceed) // let the in-flight exchange finish, releasing the parked wg
+	<-resolveDone
+
+	// b's retirement (scheduled by the second Replace, with nothing to wait
+	// on) completing gives a's earlier-scheduled retirement goroutine ample
+	// time to run too.
+	waitFor(t, 3*time.Second, func() bool { return b.closed.Load() })
+	time.Sleep(50 * time.Millisecond) // settle window: proving an absence needs one
+
+	if a.closed.Load() {
+		t.Error("a pending retirement closed an upstream that was live again by the time it ran")
+	}
+	if _, err := f.Resolve(context.Background(), question("b.example.com."), false); err != nil {
+		t.Fatalf("Resolve() after the sequence = %v, want the still-live upstream to answer", err)
+	}
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
