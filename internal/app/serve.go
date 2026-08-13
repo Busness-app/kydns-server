@@ -13,7 +13,11 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
@@ -24,8 +28,8 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
-	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"github.com/yoshiofthewire/kydns-server/internal/web"
 	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
@@ -48,14 +52,28 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	defer st.Close()
 
-	reverse := make([]netip.Prefix, 0, len(cfg.DNS.ReverseZones))
-	for _, z := range cfg.DNS.ReverseZones {
-		p, err := netip.ParsePrefix(z)
-		if err != nil {
-			return err
-		}
-		reverse = append(reverse, p.Masked())
+	boot, err := ensureSettings(st, cfg, logger)
+	if err != nil {
+		return err
 	}
+	settingsHolder := settings.NewHolder(func() (store.Settings, error) {
+		v, ok, err := st.Settings()
+		if err != nil {
+			return v, err
+		}
+		if !ok {
+			return v, errors.New("settings row vanished")
+		}
+		return v, nil
+	})
+	if err := settingsHolder.Rebuild(); err != nil {
+		return fmt.Errorf("initial settings: %w", err)
+	}
+	snap := settingsHolder.Current()
+
+	// private_domain is restart-required, so the boot value is the zone for the
+	// whole process lifetime.
+	privateFQDN := dns.Fqdn(strings.ToLower(boot.PrivateDomain))
 
 	// Declared before the holder so the source closure captures the variable;
 	// it is assigned below, once the holder exists to rebuild.
@@ -82,14 +100,14 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		}
 		return zone.Input{
 			Views: views, Services: svcs, Records: recs, Leases: leases,
-			Zone: cfg.PrivateFQDN(), ReverseZones: reverse,
+			Zone: privateFQDN, ReverseZones: settingsHolder.Current().ReverseZones,
 		}, nil
 	}, logger)
 	if err := holder.Rebuild(); err != nil {
 		return fmt.Errorf("initial snapshot: %w", err)
 	}
 
-	reg := registry.New(st, cfg.PrivateFQDN(), func() error {
+	reg := registry.New(st, privateFQDN, func() error {
 		if err := holder.Rebuild(); err != nil {
 			// The write is already committed; the old snapshot keeps serving.
 			logger.Error("snapshot rebuild failed, still serving the previous snapshot", "error", err)
@@ -121,10 +139,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	refresher := policy.NewRefresher(st, policy.NewFetcher(30*time.Second), policyHolder, logger)
 	policySvc := policy.NewService(st, policyHolder, refresher, logger)
 
-	if cfg.Discovery.DHCPLeaseFile != "" {
+	if boot.DHCPLeaseFile != "" {
 		poller = discovery.NewPoller(
-			&dhcp.DnsmasqSource{Path: cfg.Discovery.DHCPLeaseFile},
-			time.Duration(cfg.Discovery.Interval)*time.Second,
+			&dhcp.DnsmasqSource{Path: boot.DHCPLeaseFile},
+			time.Duration(boot.DiscoveryInterval)*time.Second,
 			func() {
 				if err := holder.Rebuild(); err != nil {
 					logger.Error("rebuild after lease change failed", "error", err)
@@ -136,44 +154,44 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return err
 	}
 
-	allowed, err := cfg.EffectiveAllowQuery()
-	if err != nil {
-		return err
-	}
-	acl := dnsserver.NewACL(allowed)
-	logger.Info("query acl", "ranges", cfg.DNS.AllowQuery, "allow_tailscale", cfg.DNS.AllowTailscale)
-	warnUnreachableViews(st, cfg, logger)
+	acl := dnsserver.NewACL(snap.AllowQuery)
+	// Logged from the snapshot, not the raw list: that is what the ACL enforces,
+	// masked and with the CGNAT range already added.
+	logger.Info("query acl", "ranges", snap.AllowQuery, "allow_tailscale", boot.AllowTailscale)
+	warnUnreachableViews(st, boot.AllowTailscale, logger)
 
-	cache := dnsserver.NewCache(cfg.DNS.CacheEntries, cfg.DNS.CacheMinTTL, cfg.DNS.CacheMaxTTL, cfg.DNS.NegativeMaxTTL)
-	ups, err := upstream.NewAll(cfg.DNS.Upstreams, 2*time.Second)
-	if err != nil {
-		return err
-	}
-	for _, u := range ups {
+	cache := dnsserver.NewCache(boot.CacheEntries, boot.CacheMinTTL, boot.CacheMaxTTL, boot.NegativeMaxTTL)
+	for _, u := range snap.Upstreams {
 		if !u.Secure() {
 			logger.Warn("upstream is unencrypted; answers from it cannot be authenticated",
 				"upstream", u.String(),
-				"fix", "use a tls:// or https:// upstream in dns.upstreams")
+				"fix", "use a tls:// or https:// upstream under Settings")
 		}
 	}
-	fwd := dnsserver.NewForwarder(ups, 2*time.Second, cache)
+	fwd := dnsserver.NewForwarder(snap.Upstreams, 2*time.Second, cache)
 
+	authoritative := dnsserver.NewAuthoritative(privateFQDN, uint32(boot.TTL), snap.ReverseZones)
 	dnsSrv := dnsserver.New(dnsserver.Options{
 		Holder: holder, ACL: acl,
-		Auth: &dnsserver.Authoritative{
-			Zone: cfg.PrivateFQDN(), TTL: uint32(cfg.DNS.TTL), ReverseZones: reverse,
-		},
+		Auth:        authoritative,
 		Forwarder:   fwd,
 		Policy:      policyHolder,
-		LogQueries:  cfg.DNS.LogQueries,
-		LogClientIP: cfg.DNS.LogClientIP,
+		LogQueries:  boot.LogQueries,
+		LogClientIP: boot.LogClientIP,
 		Logger:      logger,
 	})
 
 	checker := health.NewChecker(reg,
-		time.Duration(cfg.Health.Interval)*time.Second,
-		time.Duration(cfg.Health.Timeout)*time.Second,
-		cfg.Health.Workers, logger)
+		time.Duration(boot.HealthInterval)*time.Second,
+		time.Duration(boot.HealthTimeout)*time.Second,
+		boot.HealthWorkers, logger)
+
+	live := &liveComponents{
+		acl: acl, forwarder: fwd, cache: cache, dnsSrv: dnsSrv,
+		authoritative: authoritative, checker: checker, poller: poller,
+		zoneHolder: holder, logger: logger, prevUpstreams: boot.Upstreams,
+	}
+	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
 
 	leaseFn := func() []dhcp.Lease {
 		if poller == nil {
@@ -184,7 +202,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc)
+	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc).WithSettings(settingsSvc)
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
@@ -194,16 +212,29 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	web.New(web.Options{
 		Store: st, Registry: reg, API: api, Config: cfg,
-		Sessions:       auth.NewSessions(time.Hour, 12*time.Hour),
-		Backoff:        auth.NewBackoff(),
-		ACL:            acl,
-		Cache:          cache,
-		Policy:         policySvc,
-		AllowTailscale: cfg.DNS.AllowTailscale,
-		Upstreams:      fwd.Status,
-		SetupToken:     setupToken,
-		Logger:         logger,
-		Health:         checker.Statuses,
+		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
+		Backoff:    auth.NewBackoff(),
+		ACL:        acl,
+		Cache:      cache,
+		Policy:     policySvc,
+		Settings:   settingsSvc,
+		Upstreams:  fwd.Status,
+		SetupToken: setupToken,
+		Logger:     logger,
+		Health:     checker.Statuses,
+		// Compared against the boot values on every page load: there is no
+		// dirty flag to drift, and the banner clears itself on restart.
+		RestartPending: func() []web.RestartItem {
+			cur, err := settingsSvc.Get()
+			if err != nil {
+				return nil
+			}
+			var out []web.RestartItem
+			for _, it := range restartPending(boot, cur) {
+				out = append(out, web.RestartItem(it))
+			}
+			return out
+		},
 		Leases: func() func() []dhcp.Lease {
 			if poller == nil {
 				return nil // the screen renders "discovery is off" rather than empty
@@ -235,7 +266,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return err
 	}
 	logger.Info("kydns started",
-		"dns", cfg.DNS.Listen, "admin", cfg.Admin.Listen, "zone", cfg.PrivateFQDN(),
+		"dns", cfg.DNS.Listen, "admin", cfg.Admin.Listen, "zone", privateFQDN,
 		"filtering", onOffLabel(set.Enabled))
 
 	select {
@@ -246,6 +277,99 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return errors.Join(dnsSrv.Shutdown(shutdown), adminSrv.Shutdown(shutdown))
+}
+
+// ensureSettings returns the settings the process will boot with. On a fresh
+// database the config file seeds them; after that the database owns them and
+// the file's moved keys are ignored.
+func ensureSettings(st *store.Store, cfg *config.Config, logger *slog.Logger) (store.Settings, error) {
+	cur, ok, err := st.Settings()
+	if err != nil {
+		return store.Settings{}, err
+	}
+	if ok {
+		// Validate what we load: a database edited by hand, or written by an
+		// older version, must not start a half-configured server.
+		if err := settings.ValidateStored(cur); err != nil {
+			return store.Settings{}, fmt.Errorf("stored settings: %w", err)
+		}
+		warnPublicACL(cur, logger)
+		return cur, nil
+	}
+	seed := cfg.SeedSettings()
+	if err := settings.ValidateStored(seed); err != nil {
+		return store.Settings{}, fmt.Errorf("seed from config file: %w", err)
+	}
+	// Same masking the write path applies: a seeded "192.168.1.99/0" enforces
+	// 0.0.0.0/0, and every surface must read back what the ACL actually does.
+	seed = settings.Canonicalize(seed)
+	if err := st.PutSettings(seed); err != nil {
+		return store.Settings{}, err
+	}
+	logger.Info("seeded settings from the config file",
+		"note", "later edits to those keys are ignored; use the web UI")
+	warnPublicACL(seed, logger)
+	return seed, nil
+}
+
+// warnPublicACL is the standing signal for an ACL that reaches past the LAN.
+// Startup honours what is already configured rather than refusing to run, so
+// this warning is the only thing that keeps a grandfathered open resolver
+// visible to the operator. It reports the canonical, masked prefix: an entry of
+// 192.168.1.99/0 matches everything while reading as a LAN address.
+func warnPublicACL(v store.Settings, logger *slog.Logger) {
+	for _, p := range settings.PublicPrefixes(v.AllowQuery) {
+		logger.Warn("query ACL reaches beyond your LAN; KyDNS is an open resolver for this range",
+			"prefix", p,
+			"fix", "remove "+p+" from allow_query under Settings, Server settings")
+	}
+}
+
+// flushOnUpstreamChange empties the cache when the upstream list changed:
+// answers minted by a resolver the operator has just walked away from must not
+// keep being served for up to cache_max_ttl. An unrelated save leaves the cache
+// alone, because emptying it makes every client re-resolve.
+func flushOnUpstreamChange(c *dnsserver.Cache, prev, next []string, logger *slog.Logger) bool {
+	if slices.Equal(prev, next) {
+		return false
+	}
+	c.Flush()
+	logger.Info("upstreams changed, cache flushed", "upstreams", next)
+	return true
+}
+
+// RestartItem is one setting whose stored value differs from the one the
+// process is running.
+type RestartItem struct {
+	Key     string
+	Running string
+	Stored  string
+}
+
+// restartPending compares the boot values of the two settings that cannot be
+// applied live. There is no dirty flag to drift out of sync: the comparison
+// becomes equal on the next restart and the banner clears itself.
+func restartPending(boot, cur store.Settings) []RestartItem {
+	var out []RestartItem
+	add := func(key, running, stored string) {
+		if running != stored {
+			out = append(out, RestartItem{Key: key, Running: running, Stored: stored})
+		}
+	}
+	// The zone is lowercased before use, so a change of case serves the same
+	// names and must not raise the banner. Lease paths stay case-sensitive.
+	if !strings.EqualFold(boot.PrivateDomain, cur.PrivateDomain) {
+		add("private_domain", boot.PrivateDomain, cur.PrivateDomain)
+	}
+	add("dhcp_lease_file", orOff(boot.DHCPLeaseFile), orOff(cur.DHCPLeaseFile))
+	return out
+}
+
+func orOff(s string) string {
+	if s == "" {
+		return "off"
+	}
+	return s
 }
 
 func onOffLabel(b bool) string {
@@ -280,11 +404,11 @@ func bootstrapToken(reg *registry.Registry, dataDir string, logger *slog.Logger)
 
 // warnUnreachableViews implements banner condition 2: a view whose CIDRs the
 // ACL rejects can never match.
-func warnUnreachableViews(st *store.Store, cfg *config.Config, logger *slog.Logger) {
-	if cfg.DNS.AllowTailscale {
+func warnUnreachableViews(st *store.Store, allowTailscale bool, logger *slog.Logger) {
+	if allowTailscale {
 		return
 	}
-	cgnat := netip.MustParsePrefix(config.TailscaleCGNAT)
+	cgnat := netip.MustParsePrefix(settings.TailscaleCGNAT)
 	views, err := st.Views()
 	if err != nil {
 		return
@@ -297,7 +421,7 @@ func warnUnreachableViews(st *store.Store, cfg *config.Config, logger *slog.Logg
 			}
 			logger.Warn("view can never match: its subnet is refused by the query ACL",
 				"view", v.Name, "subnet", c,
-				"fix", "set allow_tailscale: true in the config file and restart")
+				"fix", "turn on allow_tailscale under Settings")
 		}
 	}
 }

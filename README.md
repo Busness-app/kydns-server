@@ -39,6 +39,9 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 - Upstream forwarding over DNS-over-TLS and DNS-over-HTTPS, with a cache,
   sequential failover, and single-flight.
 - A web UI, a JSON API, and a CLI that talks to the API.
+- Server settings — upstreams, the query ACL, TTLs, cache bounds, logging,
+  discovery and health — edited from any of the three and applied without a
+  restart. Only three keys are still in a config file.
 - Built-in and custom DNS blacklists, one-off allow/deny rules, and a one-button
   filtering toggle. Filtering is enabled by default and never overrides local
   records.
@@ -77,49 +80,104 @@ malware guarantee.
 
 ## Configuration
 
-Copy [`kydns.example.yaml`](kydns.example.yaml) to `/etc/kydns/kydns.yaml`, or
-point somewhere else with `--config`. Every setting has a default, so a file
-containing only `data_dir` is valid.
+**Three keys live in a file. Everything else lives in the database and is
+edited in the UI.**
 
-The config file is read once at startup: **changing it requires a restart.**
-Services, records, views, and API tokens are not in it — they live in the
-database and are edited through the web UI or the CLI. The Settings screen
-shows the loaded config read-only, so you can see what the running server
-actually has.
+Copy [`kydns.example.yaml`](kydns.example.yaml) to `/etc/kydns/kydns.yaml`, or
+point somewhere else with `--config`. Only these three are read from it at
+every start, because KyDNS needs them before it has a database or a web UI:
 
 | Setting | Default | Notes |
 |---|---|---|
 | `data_dir` | *required* | Holds the database and the bootstrap/setup tokens. Back it up. |
 | `dns.listen` | `:53` | UDP and TCP. Port 53 needs root or `CAP_NET_BIND_SERVICE`. |
-| `dns.private_domain` | `home.arpa` | Reserved for this purpose by RFC 8375. |
-| `dns.reverse_zones` | none | CIDRs to derive PTR records for. |
-| `dns.upstreams` | `tls://1.1.1.1:853`, `tls://9.9.9.9:853` | Tried in order. `tls://`, `https://`, or `udp://` before an **IP address**. See below. |
-| `dns.allow_query` | loopback, RFC1918, ULA | Default-closed; everything else gets `REFUSED`. |
-| `dns.allow_tailscale` | `false` | Adds `100.64.0.0/10`. See below. |
-| `dns.ttl` | `60` | TTL on authoritative answers. |
-| `dns.cache_min_ttl` | `5` | Lower clamp on upstream TTLs. |
-| `dns.cache_max_ttl` | `3600` | Upper clamp on upstream TTLs. |
-| `dns.negative_max_ttl` | `300` | Clamp on RFC 2308 negative caching. |
-| `dns.cache_entries` | `10000` | LRU size. Authoritative answers are never cached. |
-| `dns.log_queries` | `false` | Logs name, type, rcode, view, duration. |
-| `dns.log_client_ip` | `false` | Separate opt-in; query logging alone does not record who asked. |
 | `admin.listen` | `127.0.0.1:8053` | Web UI and JSON API. Plain HTTP — proxy it for TLS. |
-| `discovery.dhcp_lease_file` | none | Off until set. dnsmasq format. |
-| `discovery.interval` | `30` | Seconds between lease re-reads. |
-| `health.interval` | `30` | Seconds between probes. |
-| `health.timeout` | `5` | Per-probe timeout. |
-| `health.workers` | `8` | Concurrent probes. |
+
+Changing one of those means restarting KyDNS. The Settings screen shows all
+three read-only, so you can see what the running server actually has.
+
+Every other setting — the private domain, reverse zones, upstreams,
+`allow_query`, Tailscale, TTLs, the cache bounds, the two logging opt-ins,
+lease discovery, and the health-check intervals — lives in the database.
+`kydns.example.yaml` still lists them, but only as **first-run seed values**:
+they populate a fresh database and are ignored on every start after that.
+Editing them in the file later does nothing.
+
+Edit them in one of three places, all of which go through the same validation
+and the same write path:
+
+```sh
+kydns settings get                       # what the server is running
+kydns settings set ttl=120 log_queries=true
+kydns settings set allow_query=192.168.1.0/24,10.0.0.0/8
+```
+
+```sh
+curl -H "Authorization: Bearer $KYDNS_TOKEN" $KYDNS_URL/api/v1/settings
+curl -X PATCH -H "Authorization: Bearer $KYDNS_TOKEN" \
+  -d '{"ttl":120}' $KYDNS_URL/api/v1/settings
+```
+
+`PATCH` merges: keys you leave out keep their value, so two people editing
+different settings do not clobber each other. Settings are part of
+`kydns export` and are applied by `kydns import`.
+
+Almost everything applies the moment it is saved, with no restart and no
+dropped queries: upstreams (which also flushes the cache), reverse zones,
+`allow_query`, `allow_tailscale`, the TTL, all four cache settings, both log
+flags, the three health settings, and the discovery interval. Two cannot
+change in a running process — `private_domain` and
+`dhcp_lease_file`. Those are saved anyway, and a banner names the
+running value and the saved one until you restart.
+
+### Opening `allow_query` beyond your LAN
+
+Adding a range outside loopback, RFC1918, ULA, link-local and CGNAT would make
+KyDNS an open resolver, so it takes a deliberate second step: retype the
+prefix in its canonical masked form to confirm it. In the settings form that
+is the confirmation box, over the API it is `confirm_public`, and on the CLI
+it is `--confirm-public`:
+
+```sh
+kydns settings set allow_query=192.168.0.0/16,203.0.113.0/24 \
+  --confirm-public 203.0.113.0/24
+```
+
+You are asked once, when the prefix is new. A prefix already stored counts as
+confirmed, so later saves of unrelated settings never ask again. While any
+public range is configured, the dashboard and the Settings screen carry a
+standing banner and KyDNS logs a warning naming the prefix at every start.
+See [SECURITY.md](SECURITY.md) for the full rule.
+
+### Upgrading from a config-file deployment
+
+- **An existing `kydns.yaml` keeps working.** On the first start after the
+  upgrade its values seed the database, and from then on the database owns
+  them. That includes a `dns.allow_query` that reaches past your LAN: it is
+  grandfathered rather than refused, because refusing to start would take a
+  working household's DNS offline over a file that was legal when it was
+  written. It does log a warning naming the prefix at every start, and shows a
+  standing banner, until you remove it.
+- **Confirmation is asked once.** Adding a public prefix through the UI, the
+  API or the CLI asks you to retype it that one time. It does not re-ask on
+  every later save.
+- **A backup containing a public prefix cannot be restored.** There is no
+  confirmation path through import, so a document whose `allow_query` carries
+  a public prefix the server is not already serving is refused. In replace
+  mode that check runs *before* the destructive part, so the existing registry
+  and settings are left exactly as they were rather than half-replaced. Edit
+  the prefix out of the document, import it, then add the prefix back with
+  `kydns settings set ... --confirm-public`.
 
 ### Upstream encryption
 
-The scheme decides how much you trust the answer:
+The upstream list is edited under Settings, one entry per line, and applies as
+soon as it is saved. The scheme decides how much you trust the answer:
 
-```yaml
-dns:
-  upstreams:
-    - tls://1.1.1.1:853              # DNS-over-TLS
-    - https://9.9.9.9/dns-query      # DNS-over-HTTPS
-    - udp://192.168.1.1:53           # plain DNS, opted into per upstream
+```text
+tls://1.1.1.1:853              # DNS-over-TLS
+https://9.9.9.9/dns-query      # DNS-over-HTTPS
+udp://192.168.1.1:53           # plain DNS, opted into per upstream
 ```
 
 The host must be an **IP address**. A hostname would need DNS to resolve it,
@@ -128,8 +186,8 @@ is a loop. Cloudflare, Quad9 and Google all present certificates valid for
 their IPs, so nothing further is needed. When a provider's certificate needs a
 hostname, put it after a `#`:
 
-```yaml
-    - tls://45.90.28.0:853#abc123.dns.nextdns.io
+```text
+tls://45.90.28.0:853#abc123.dns.nextdns.io
 ```
 
 That sets the TLS server name while still dialling the address you gave.
@@ -153,9 +211,11 @@ of that private and tamper-proof, and passes that resolver's verdict through.
 ### Tailscale
 
 Tailscale addresses are CGNAT (`100.64.0.0/10`), not RFC1918, so they are **not**
-covered by the default `allow_query`. Leave `allow_tailscale: false` unless you
-use Tailscale — some ISPs also assign CGNAT addresses, which would make the
-range a standing exposure on a WAN-facing interface.
+covered by the default `allow_query`. Leave "Allow Tailscale addresses" off
+unless you use Tailscale — some ISPs also assign CGNAT addresses, which would
+make the range a standing exposure on a WAN-facing interface. It is a checkbox
+under Settings, or `kydns settings set allow_tailscale=true`, and it takes
+effect at once.
 
 While it is off, tailnet clients get `REFUSED`. KyDNS says so rather than
 failing silently: the dashboard shows a banner, the Settings screen flags any
@@ -236,7 +296,9 @@ works from any machine that can reach the admin listener:
 | `kydns record add\|list\|rm` | Manage manual A, AAAA and CNAME records. |
 | `kydns view add\|list\|rm` | Manage per-subnet views. |
 | `kydns token add\|list\|rm` | Manage API tokens. |
-| `kydns export` / `kydns import` | Read or write the registry as YAML or JSON. |
+| `kydns settings get` | Print the settings the server is running. |
+| `kydns settings set k=v ...` | Change them. `--confirm-public <cidr>` for a public `allow_query` range. |
+| `kydns export` / `kydns import` | Read or write the registry and settings as YAML or JSON. |
 | `kydns admin reset-password` | Local recovery. Opens the database directly. |
 
 ### Forgot the admin password
@@ -286,21 +348,34 @@ are on? Set `KYDNS_NETWORK` to its name. Compose adopts it, prints a warning
 saying it did not create it, and leaves it in place on `docker compose down`.
 Only a network compose created itself gets removed.
 
-In `kydns.yaml` change two settings from their defaults: `data_dir:
-/var/lib/kydns`, and `admin.listen: "0.0.0.0:8053"`. Leaving admin on
-`127.0.0.1` would bind the *container's* loopback, reachable from nowhere.
+In `kydns.yaml` change two of the three file-owned settings from their
+defaults: `data_dir: /var/lib/kydns`, and `admin.listen: "0.0.0.0:8053"`.
+Leaving admin on `127.0.0.1` would bind the *container's* loopback, reachable
+from nowhere. `dns.listen` is already right at `:53`.
 
 The image already has both set, in `kydns.docker.yaml` baked in at
 `/etc/kydns/kydns.yaml`, so a `docker run` with no config mounted at all
 starts and serves. The compose file mounts your `kydns.yaml` over it, which is
-what makes the two settings above yours to get right. Everything else takes
-the same defaults `kydns.example.yaml` documents.
+what makes the two settings above yours to get right. Nothing else needs to be
+in that file: every other setting seeds the database on the first run and is
+edited under Settings from then on.
 
 Pick a `KYDNS_IP` inside that network's subnet, **outside the router's DHCP
 pool**, and different from any address AdGuard Home or Pi-hole already holds.
 Two DNS servers can each own port 53 at once when each has its own LAN
 address, which is how you move one client at a time instead of the whole
 house.
+
+#### Unraid
+
+On Unraid there is no YAML to edit at all. All three file-owned keys are the
+container template's job: one volume mapping for `data_dir`, and two port
+mappings for `dns.listen` and `admin.listen`. The baked-in
+`kydns.docker.yaml` already sets the two that need it, and the template's
+mappings decide where they land on the host. Set the container on your `br0`
+network so it gets its own LAN address, start it, read the setup token from
+the log, and do everything else — upstreams, the private domain, filtering,
+`allow_query` — from the web UI.
 
 #### Pre-creating it
 

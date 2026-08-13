@@ -3,8 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 func write(t *testing.T, body string) string {
@@ -41,27 +44,33 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 }
 
-func TestPrivateFQDN(t *testing.T) {
-	c, err := Load(write(t, "data_dir: /tmp/x\ndns:\n  private_domain: lab.internal\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := c.PrivateFQDN(); got != "lab.internal." {
-		t.Errorf("PrivateFQDN() = %q, want lab.internal.", got)
-	}
-}
-
 func TestLoadRejects(t *testing.T) {
 	for name, body := range map[string]string{
 		"no data dir":      "dns:\n  listen: \":53\"\n",
-		"bad allow_query":  "data_dir: /tmp/x\ndns:\n  allow_query: [\"not-a-cidr\"]\n",
-		"bad reverse zone": "data_dir: /tmp/x\ndns:\n  reverse_zones: [\"192.168.1.0\"]\n",
-		"bad upstream":     "data_dir: /tmp/x\ndns:\n  upstreams: [\"1.1.1.1:no\"]\n",
-		"empty domain":     "data_dir: /tmp/x\ndns:\n  private_domain: \"\"\n",
+		"bad dns listen":   "data_dir: /tmp/x\ndns:\n  listen: \"53\"\n",
+		"bad admin listen": "data_dir: /tmp/x\nadmin:\n  listen: \"localhost\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(write(t, body)); err == nil {
 				t.Fatal("Load() error = nil, want error")
+			}
+		})
+	}
+}
+
+// The database owns these keys after the first run, so the file must not be
+// able to refuse a start over them. An operator tidying their YAML on an
+// installed server must not lose DNS.
+func TestLoadIgnoresMovedKeys(t *testing.T) {
+	for name, body := range map[string]string{
+		"bad allow_query":  "data_dir: /tmp/x\ndns:\n  allow_query: [\"totally bogus\"]\n",
+		"bad reverse zone": "data_dir: /tmp/x\ndns:\n  reverse_zones: [\"192.168.1.0\"]\n",
+		"bad upstream":     "data_dir: /tmp/x\ndns:\n  upstreams: [\"1.1.1.1:no\"]\n",
+		"inverted ttls":    "data_dir: /tmp/x\ndns:\n  cache_min_ttl: 900\n  cache_max_ttl: 60\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(write(t, body)); err != nil {
+				t.Fatalf("Load() error = %v, want the moved key to be ignored", err)
 			}
 		})
 	}
@@ -94,54 +103,74 @@ func TestDefaultUpstreamsAreEncrypted(t *testing.T) {
 	}
 }
 
-func TestUpstreamValidation(t *testing.T) {
-	body := func(u string) string {
-		return "data_dir: /tmp/x\ndns:\n  upstreams: [\"" + u + "\"]\n"
+// The file seeds the database on first run, so every moved key has to survive
+// the trip. A key missing here is a setting that silently reverts to its
+// default the first time an operator upgrades.
+func TestSeedSettingsCarriesEveryMovedKey(t *testing.T) {
+	path := write(t, `
+data_dir: /tmp/kydns
+dns:
+  private_domain: lab.example
+  reverse_zones: ["192.168.1.0/24"]
+  upstreams: ["tls://9.9.9.9:853"]
+  allow_query: ["192.168.0.0/16"]
+  allow_tailscale: true
+  ttl: 90
+  cache_min_ttl: 10
+  cache_max_ttl: 1800
+  negative_max_ttl: 120
+  cache_entries: 500
+  log_queries: true
+  log_client_ip: true
+discovery:
+  dhcp_lease_file: /var/lib/misc/dnsmasq.leases
+  interval: 15
+health:
+  interval: 45
+  timeout: 3
+  workers: 4
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	for _, good := range []string{
-		"tls://1.1.1.1:853", "https://9.9.9.9/dns-query", "udp://192.168.1.1:53", "1.1.1.1:53",
-	} {
-		if _, err := Load(write(t, body(good))); err != nil {
-			t.Errorf("upstreams [%q] rejected: %v", good, err)
-		}
+	got := c.SeedSettings()
+	want := store.Settings{
+		PrivateDomain:     "lab.example",
+		ReverseZones:      []string{"192.168.1.0/24"},
+		Upstreams:         []string{"tls://9.9.9.9:853"},
+		AllowQuery:        []string{"192.168.0.0/16"},
+		AllowTailscale:    true,
+		TTL:               90,
+		CacheMinTTL:       10,
+		CacheMaxTTL:       1800,
+		NegativeMaxTTL:    120,
+		CacheEntries:      500,
+		LogQueries:        true,
+		LogClientIP:       true,
+		DHCPLeaseFile:     "/var/lib/misc/dnsmasq.leases",
+		DiscoveryInterval: 15,
+		HealthInterval:    45,
+		HealthTimeout:     3,
+		HealthWorkers:     4,
 	}
-	for _, bad := range []string{"tls://dns.quad9.net:853", "quic://1.1.1.1:853", "1.1.1.1:no"} {
-		if _, err := Load(write(t, body(bad))); err == nil {
-			t.Errorf("upstreams [%q] accepted, want a rejection", bad)
-		}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("seed differs\n got %+v\nwant %+v", got, want)
 	}
 }
 
-func TestEffectiveAllowQueryAddsCGNATOnlyWhenEnabled(t *testing.T) {
-	off, err := Load(write(t, "data_dir: /tmp/x\n"))
+// A file with nothing but data_dir must seed the same defaults the code
+// applies, so a bare install and a documented install agree.
+func TestSeedSettingsUsesDefaults(t *testing.T) {
+	c, err := Load(write(t, "data_dir: /tmp/kydns\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := off.EffectiveAllowQuery()
-	if err != nil {
-		t.Fatal(err)
+	got := c.SeedSettings()
+	if got.PrivateDomain != "home.arpa" || got.TTL != 60 || got.HealthWorkers != 8 {
+		t.Errorf("defaults did not reach the seed: %+v", got)
 	}
-	for _, p := range list {
-		if p.String() == TailscaleCGNAT {
-			t.Error("CGNAT range present with allow_tailscale off")
-		}
-	}
-
-	on, err := Load(write(t, "data_dir: /tmp/x\ndns:\n  allow_tailscale: true\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err = on.EffectiveAllowQuery()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, p := range list {
-		if p.String() == TailscaleCGNAT {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("CGNAT range missing with allow_tailscale on")
+	if len(got.Upstreams) == 0 || len(got.AllowQuery) == 0 {
+		t.Error("the seeded upstreams or ACL are empty, which would refuse every query")
 	}
 }

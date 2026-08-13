@@ -149,6 +149,22 @@ func clamp(v, lo, hi uint32) uint32 {
 	return v
 }
 
+// Retune changes the bounds and the size limit. Shrinking evicts immediately:
+// an operator lowering the entry count is reclaiming memory now, not next time
+// something is cached.
+func (c *Cache) Retune(maxEntries, minTTL, maxTTL, negMaxTTL int) {
+	if maxEntries < 1 { // the loop below assumes a positive ceiling; a non-positive one spins forever
+		maxEntries = 1
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxEntries = maxEntries
+	c.minTTL, c.maxTTL, c.negMaxTTL = uint32(minTTL), uint32(maxTTL), uint32(negMaxTTL)
+	for c.order.Len() > c.maxEntries {
+		c.removeLocked(c.order.Back())
+	}
+}
+
 func (c *Cache) removeLocked(el *list.Element) {
 	if el == nil {
 		return

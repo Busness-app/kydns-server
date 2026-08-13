@@ -37,3 +37,17 @@
   </main>
 </div>
 {{end}}
+
+{{/* The standing exposure warning, shown wherever the operator lands. The
+     prefixes are already masked, so they read as what the ACL matches. */}}
+{{define "exposure"}}
+{{with .PublicRanges}}
+<div class="banner">
+  <strong>KyDNS is an open resolver for {{range .}}<code>{{.}}</code> {{end}}</strong>
+  <p>Anyone who can reach this server on port 53 can use it, and open resolvers
+     are used to amplify attacks.</p>
+  <p>Remove the range from <code>allow_query</code> under Settings, Server
+     settings, unless you meant to do this.</p>
+</div>
+{{end}}
+{{end}}

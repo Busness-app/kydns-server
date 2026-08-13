@@ -15,21 +15,30 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 type Options struct {
-	Store          *store.Store
-	Registry       *registry.Registry
-	API            *adminapi.API
-	Config         *config.Config
-	Sessions       *auth.Sessions
-	Backoff        *auth.Backoff
-	ACL            *dnsserver.ACL
-	Cache          *dnsserver.Cache
-	AllowTailscale bool
-	SetupToken     string
-	Logger         *slog.Logger
+	Store      *store.Store
+	Registry   *registry.Registry
+	API        *adminapi.API
+	Config     *config.Config
+	Sessions   *auth.Sessions
+	Backoff    *auth.Backoff
+	ACL        *dnsserver.ACL
+	Cache      *dnsserver.Cache
+	SetupToken string
+	Logger     *slog.Logger
+
+	// Settings is the single write path for the settings the database owns. It
+	// is nil when the service is not wired, which the screen renders as the
+	// read-only table rather than as a broken form.
+	Settings *settings.Service
+
+	// RestartPending names the settings whose stored value differs from the one
+	// the process is running. Empty is the normal case.
+	RestartPending func() []RestartItem
 
 	// Leases, Health and Upstreams are nil when the corresponding subsystem is
 	// off, which the screens render as "not enabled" rather than as empty.

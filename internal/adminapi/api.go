@@ -19,16 +19,18 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 type API struct {
-	reg    *registry.Registry
-	acl    *dnsserver.ACL
-	cache  *dnsserver.Cache
-	leases func() []dhcp.Lease
-	health func() []health.Status
-	policy *policy.Service
+	reg      *registry.Registry
+	acl      *dnsserver.ACL
+	cache    *dnsserver.Cache
+	leases   func() []dhcp.Lease
+	health   func() []health.Status
+	policy   *policy.Service
+	settings *settings.Service
 }
 
 func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) *API {
@@ -46,6 +48,13 @@ func (a *API) WithProviders(leases func() []dhcp.Lease, statuses func() []health
 // constructs where filtering is not running.
 func (a *API) WithPolicy(p *policy.Service) *API {
 	a.policy = p
+	return a
+}
+
+// WithSettings attaches the settings service. It is optional, so the API
+// still constructs where settings are not wired.
+func (a *API) WithSettings(s *settings.Service) *API {
+	a.settings = s
 	return a
 }
 
@@ -95,6 +104,7 @@ type transfer struct {
 	Services  []serviceDTO  `json:"services" yaml:"services"`
 	Records   []recordDTO   `json:"records" yaml:"records"`
 	Blacklist *blacklistDoc `json:"blacklist,omitempty" yaml:"blacklist,omitempty"`
+	Settings  *settingsDTO  `json:"settings,omitempty" yaml:"settings,omitempty"`
 }
 
 func (a *API) Handler() http.Handler {
@@ -155,6 +165,9 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/blacklists/rules/{kind}", auth(a.createBlacklistRule))
 	mux.HandleFunc("DELETE /api/v1/blacklists/rules/{kind}/{id}", auth(a.deleteBlacklistRule))
 	mux.HandleFunc("GET /api/v1/blacklists/test", auth(a.testBlacklist))
+
+	mux.HandleFunc("GET /api/v1/settings", auth(a.getSettings))
+	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
 }
 
 type errBody struct {
@@ -524,6 +537,14 @@ func (a *API) snapshotDoc() (transfer, error) {
 		}
 		doc.Blacklist = bl
 	}
+	if a.settings != nil {
+		cur, err := a.settings.Get()
+		if err != nil {
+			return doc, err
+		}
+		d := toSettingsDTO(cur)
+		doc.Settings = &d
+	}
 	return doc, nil
 }
 
@@ -561,6 +582,17 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check the settings block before touching the registry in either mode: a
+	// document that cannot be applied must be rejected with the registry
+	// untouched, not discovered after rows are already written or gone. This
+	// only checks; nothing is written or applied until applySettingsDoc below.
+	if doc.Settings != nil && a.settings != nil {
+		if err := a.settings.CheckWrite(fromSettingsDTO(*doc.Settings), ""); err != nil {
+			writeSettingsErr(w, err)
+			return
+		}
+	}
+
 	if r.URL.Query().Get("mode") == "replace" {
 		views := make([]store.View, 0, len(doc.Views))
 		for _, v := range doc.Views {
@@ -580,6 +612,10 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := a.applyBlacklistDoc(doc.Blacklist, true); err != nil {
 			writeRegistryErr(w, err)
+			return
+		}
+		if err := a.applySettingsDoc(doc.Settings); err != nil {
+			writeSettingsErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "replace"})
@@ -608,7 +644,24 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		writeRegistryErr(w, err)
 		return
 	}
+	if err := a.applySettingsDoc(doc.Settings); err != nil {
+		writeSettingsErr(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"mode": "merge"})
+}
+
+// applySettingsDoc writes imported settings through the single write path. A
+// document with no settings block changes nothing, so an older backup imports
+// cleanly. The confirmation is always empty: only a public allow_query prefix
+// already running is honoured, so restoring an export that carries one the
+// server does not currently serve fails and must be confirmed by hand, the
+// same guardrail a live edit goes through.
+func (a *API) applySettingsDoc(doc *settingsDTO) error {
+	if doc == nil || a.settings == nil {
+		return nil
+	}
+	return a.settings.Set(fromSettingsDTO(*doc), "")
 }
 
 func (a *API) listLeases(w http.ResponseWriter, _ *http.Request) {

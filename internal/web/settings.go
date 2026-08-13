@@ -9,10 +9,11 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
-// restartNote is shown wherever a config value is displayed, because the
-// config file is read once at startup.
-const restartNote = "These come from the config file and are read at startup. " +
-	"Editing them requires restarting KyDNS."
+// restartNote covers exactly the keys the config file still owns. Everything
+// else is edited above and stored in the database.
+const restartNote = "These three come from the config file and are read at startup. " +
+	"Everything else is edited above and stored in the database, where the config " +
+	"file no longer has any effect."
 
 type viewRow struct {
 	Name        string
@@ -27,22 +28,6 @@ type configRow struct {
 	Value string
 }
 
-func joinOr(list []string, empty string) string {
-	if len(list) == 0 {
-		return empty
-	}
-	return strings.Join(list, ", ")
-}
-
-func onOff(b bool) string {
-	if b {
-		return "on"
-	}
-	return "off"
-}
-
-func secs(n int) string { return strconv.Itoa(n) + "s" }
-
 // upstreams is nil when the forwarder is not wired, which the template renders
 // as "not enabled" rather than as an empty table.
 func (s *Server) upstreams() []dnsserver.UpstreamStatus {
@@ -52,39 +37,18 @@ func (s *Server) upstreams() []dnsserver.UpstreamStatus {
 	return s.o.Upstreams()
 }
 
-// configRows renders the loaded config for display. Config holds no secrets
-// today; if a credentialed upstream is ever added, it must be excluded here
-// rather than relying on this list happening to omit it.
+// configRows renders the three keys the config file still owns: they are all
+// needed before the database is open. Every other key moved into the database,
+// and showing the file's copy of one would show a value nothing reads.
 func (s *Server) configRows() []configRow {
 	c := s.o.Config
 	if c == nil {
 		return nil
 	}
-	discovery := c.Discovery.DHCPLeaseFile
-	if discovery == "" {
-		discovery = "off"
-	}
 	return []configRow{
 		{"data_dir", c.DataDir},
 		{"dns.listen", c.DNS.Listen},
-		{"dns.private_domain", c.DNS.PrivateDomain},
-		{"dns.reverse_zones", joinOr(c.DNS.ReverseZones, "none")},
-		{"dns.upstreams", joinOr(c.DNS.Upstreams, "none")},
-		{"dns.allow_query", joinOr(c.DNS.AllowQuery, "none")},
-		{"dns.allow_tailscale", onOff(c.DNS.AllowTailscale)},
-		{"dns.ttl", secs(c.DNS.TTL)},
-		{"dns.cache_min_ttl", secs(c.DNS.CacheMinTTL)},
-		{"dns.cache_max_ttl", secs(c.DNS.CacheMaxTTL)},
-		{"dns.negative_max_ttl", secs(c.DNS.NegativeMaxTTL)},
-		{"dns.cache_entries", strconv.Itoa(c.DNS.CacheEntries)},
-		{"dns.log_queries", onOff(c.DNS.LogQueries)},
-		{"dns.log_client_ip", onOff(c.DNS.LogClientIP)},
 		{"admin.listen", c.Admin.Listen},
-		{"discovery.dhcp_lease_file", discovery},
-		{"discovery.interval", secs(c.Discovery.Interval)},
-		{"health.interval", secs(c.Health.Interval)},
-		{"health.timeout", secs(c.Health.Timeout)},
-		{"health.workers", strconv.Itoa(c.Health.Workers)},
 	}
 }
 
@@ -98,7 +62,7 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 
 	// Banner condition 2, shown per row where the operator is already standing.
 	unreachable := map[string]bool{}
-	for _, n := range unreachableViews(views, s.o.AllowTailscale) {
+	for _, n := range unreachableViews(views, s.allowTailscale()) {
 		unreachable[n] = true
 	}
 
@@ -125,12 +89,20 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 	}
 
 	toks, _ := s.o.Registry.Tokens()
-	return map[string]any{
+	data := map[string]any{
 		"Title": "Settings", "Nav": "settings",
 		"Views": rows, "Tokens": toks, "NewToken": newToken,
 		"Config": s.configRows(), "RestartNote": restartNote, "Error": errMsg,
-		"Upstreams": s.upstreams(),
+		"Upstreams":    s.upstreams(),
+		"Restart":      s.restartPending(),
+		"PublicRanges": s.publicRanges(),
 	}
+	// Absent rather than zero when the service is not wired: the template then
+	// renders the read-only view instead of a form full of empty boxes.
+	if v, ok := s.liveSettings(); ok {
+		data["Server"] = v
+	}
+	return data
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {

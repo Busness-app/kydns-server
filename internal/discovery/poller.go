@@ -17,9 +17,12 @@ import (
 // every cycle.
 type Poller struct {
 	src      dhcp.Source
-	interval time.Duration
 	onChange func()
 	logger   *slog.Logger
+
+	cfgMu    sync.RWMutex
+	interval time.Duration
+	changed  chan struct{} // buffered 1; wakes a Run blocked on the old interval
 
 	mu     sync.RWMutex
 	leases []dhcp.Lease
@@ -33,23 +36,67 @@ func NewPoller(src dhcp.Source, interval time.Duration, onChange func(), logger 
 	if onChange == nil {
 		onChange = func() {}
 	}
-	return &Poller{src: src, interval: interval, onChange: onChange, logger: logger}
+	p := &Poller{src: src, onChange: onChange, logger: logger, changed: make(chan struct{}, 1)}
+	p.SetInterval(interval)
+	// SetInterval queues a wake token, but a brand-new Poller has no Run in
+	// flight to wake. Drain it so the first Run doesn't see a stale token and
+	// double its startup cycle.
+	select {
+	case <-p.changed:
+	default:
+	}
+	return p
+}
+
+// minInterval is the floor for the poll schedule. Zero or negative would turn
+// Run's timer into a hot spin. It only guards against that failure mode —
+// sane production minimums are the settings validator's job.
+const minInterval = time.Millisecond
+
+// SetInterval changes the poll cadence. A change takes effect immediately: a
+// Run already in flight picks up the new interval and polls right away
+// rather than waiting out the old interval or the next restart.
+func (p *Poller) SetInterval(d time.Duration) {
+	if d < minInterval {
+		d = minInterval
+	}
+	p.cfgMu.Lock()
+	p.interval = d
+	p.cfgMu.Unlock()
+	select {
+	case p.changed <- struct{}{}:
+	default:
+	}
+}
+
+func (p *Poller) Interval() time.Duration {
+	p.cfgMu.RLock()
+	defer p.cfgMu.RUnlock()
+	return p.interval
 }
 
 // Run polls until ctx is cancelled, starting with an immediate cycle so the
 // first snapshot does not wait a full interval.
 func (p *Poller) Run(ctx context.Context) {
-	t := time.NewTicker(p.interval)
+	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
 		if err := p.Poll(ctx); err != nil {
 			p.logger.Warn("lease poll failed, keeping the last known leases",
 				"source", p.src.Name(), "error", err)
 		}
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+		t.Reset(p.Interval())
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-p.changed:
 		}
 	}
 }

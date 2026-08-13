@@ -48,13 +48,23 @@ Keep these aligned:
   Single-node with per-subnet views; replication deferred to a later spec.
 - `docs/superpowers/specs/2026-08-12-kydns-blacklists.md` — approved DNS
   blackhole filtering design.
+- `docs/superpowers/specs/2026-08-13-kydns-settings-in-the-ui-design.md` —
+  approved design for settings in the database: what stays in the config file,
+  what moves, what applies live, and the `allow_query` guardrail.
+- `docs/superpowers/plans/2026-08-13-kydns-settings-in-the-ui.md` — the
+  implementation plan for that spec.
 
 Code, one concern per package:
 
 - `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs.
 - `internal/app` — process wiring: config, store, servers, background loops.
-- `internal/config` — the YAML config and its defaults. `kydns.example.yaml`
-  is asserted against those defaults by `internal/config/example_test.go`.
+- `internal/config` — the YAML config and its defaults. The file owns three
+  keys (`data_dir`, `dns.listen`, `admin.listen`); every other key it carries
+  is a first-run seed for the database. `internal/config/example_test.go`
+  asserts `kydns.example.yaml` against the defaults and against that split, so
+  a key the file no longer controls cannot be documented as if it did.
+- `internal/settings` — the settings snapshot the runtime reads, and the single
+  path by which it changes: validate, persist, rebuild, apply, all or nothing.
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.

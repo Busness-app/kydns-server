@@ -44,7 +44,7 @@ func newPolicyServer(t *testing.T, blocked map[string]string) (string, *fakeUpst
 	addr := startUDP(t, New(Options{
 		Holder:    h,
 		ACL:       NewACL([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}),
-		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:      NewAuthoritative("home.arpa.", 60, nil),
 		Forwarder: newForwarder(up),
 		Policy:    pol,
 	}))
@@ -122,7 +122,7 @@ func TestNilPolicyForwardsEverything(t *testing.T) {
 	addr := startUDP(t, New(Options{
 		Holder:    h,
 		ACL:       NewACL([]netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}),
-		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:      NewAuthoritative("home.arpa.", 60, nil),
 		Forwarder: newForwarder(up),
 	}))
 	if m := queryFrom(t, addr, "127.0.0.1", "example.org.", dns.TypeA); m.Rcode != dns.RcodeSuccess {

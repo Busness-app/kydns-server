@@ -17,6 +17,10 @@ type plain struct {
 func (p *plain) Secure() bool   { return false }
 func (p *plain) String() string { return p.spec.Raw }
 
+// Close is a no-op: each Exchange dials its own client, so plain holds no
+// connection between calls.
+func (p *plain) Close() error { return nil }
+
 func (p *plain) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 	udp := &dns.Client{Net: "udp", Timeout: p.timeout}
 	resp, _, err := udp.ExchangeContext(ctx, m, p.spec.Addr)

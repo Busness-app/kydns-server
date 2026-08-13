@@ -1,9 +1,13 @@
 package dnsserver
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,12 +54,9 @@ func newTestServer(t *testing.T, allow []netip.Prefix) string {
 		t.Fatal(err)
 	}
 	return startUDP(t, New(Options{
-		Holder: h,
-		ACL:    NewACL(allow),
-		Auth: &Authoritative{
-			Zone: "home.arpa.", TTL: 60,
-			ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
-		},
+		Holder:    h,
+		ACL:       NewACL(allow),
+		Auth:      NewAuthoritative("home.arpa.", 60, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")}),
 		Forwarder: newForwarder(okUpstream("tls://1.1.1.1:853", true)),
 	}))
 }
@@ -157,7 +158,7 @@ func TestServfailWhenSnapshotMissingAndUpstreamsDown(t *testing.T) {
 	addr := startUDP(t, New(Options{
 		Holder:    h, // never rebuilt: Current() is nil
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
-		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:      NewAuthoritative("home.arpa.", 60, nil),
 		Forwarder: newForwarder(deadUpstream("tls://1.1.1.1:853", true)),
 	}))
 	resp := queryFrom(t, addr, "127.0.0.1", "example.com.", dns.TypeA)
@@ -181,7 +182,7 @@ func TestAuthoritativeUnaffectedByUpstreamFailure(t *testing.T) {
 	addr := startUDP(t, New(Options{
 		Holder:    h,
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
-		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:      NewAuthoritative("home.arpa.", 60, nil),
 		Forwarder: newForwarder(deadUpstream("tls://1.1.1.1:853", true)),
 	}))
 	resp := queryFrom(t, addr, "127.0.0.1", "nas.home.arpa.", dns.TypeA)
@@ -195,7 +196,7 @@ func TestShutdownIsClean(t *testing.T) {
 	srv := New(Options{
 		Holder: zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil),
 		ACL:    NewACL(nil),
-		Auth:   &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:   NewAuthoritative("home.arpa.", 60, nil),
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -218,7 +219,7 @@ func TestTCPListener(t *testing.T) {
 	srv := New(Options{
 		Holder: h,
 		ACL:    NewACL(prefixes(t, "127.0.0.0/8")),
-		Auth:   &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:   NewAuthoritative("home.arpa.", 60, nil),
 	})
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -312,7 +313,7 @@ func forwardOnlyServer(t *testing.T, u *fakeUpstream) string {
 	return startUDP(t, New(Options{
 		Holder:    h,
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
-		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:      NewAuthoritative("home.arpa.", 60, nil),
 		Forwarder: newForwarder(u),
 	}))
 }
@@ -411,7 +412,7 @@ func TestTCPReplyIsNotTruncated(t *testing.T) {
 	srv := New(Options{
 		Holder:    h,
 		ACL:       NewACL(prefixes(t, "127.0.0.0/8")),
-		Auth:      &Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:      NewAuthoritative("home.arpa.", 60, nil),
 		Forwarder: newForwarder(bigUpstream("tls://1.1.1.1:853", true)),
 	})
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -448,5 +449,138 @@ func TestAuthoritativeAnswerNeverCarriesAD(t *testing.T) {
 		if resp.AuthenticatedData {
 			t.Errorf("%s: AD = true on an unsigned local answer", name)
 		}
+	}
+}
+
+// fakeResponseWriter drives ServeDNS synchronously with a fixed client
+// address, so the caller can inspect logger output right after the call
+// returns without racing the goroutine a real listener would use.
+type fakeResponseWriter struct {
+	remote   net.Addr
+	msg      *dns.Msg
+	writeErr error // returned from WriteMsg instead of storing msg, to simulate a write failure
+}
+
+func (f *fakeResponseWriter) LocalAddr() net.Addr  { return &net.UDPAddr{IP: net.ParseIP("127.0.0.1")} }
+func (f *fakeResponseWriter) RemoteAddr() net.Addr { return f.remote }
+func (f *fakeResponseWriter) WriteMsg(m *dns.Msg) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	f.msg = m
+	return nil
+}
+func (f *fakeResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (f *fakeResponseWriter) Close() error                { return nil }
+func (f *fakeResponseWriter) TsigStatus() error           { return nil }
+func (f *fakeResponseWriter) TsigTimersOnly(bool)         {}
+func (f *fakeResponseWriter) Hijack()                     {}
+
+// query drives one A query through ServeDNS from source, synchronously.
+func (s *Server) query(t *testing.T, name, source string) {
+	t.Helper()
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
+	w := &fakeResponseWriter{remote: &net.UDPAddr{IP: net.ParseIP(source), Port: 12345}}
+	s.ServeDNS(w, m)
+}
+
+// The two logging opt-ins must stay independent: turning on query logging
+// must never start recording client IPs on its own.
+func TestSetLogging(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	h := zone.NewHolder(func() (zone.Input, error) {
+		return zone.Input{
+			Zone:     "home.arpa.",
+			Services: []store.Service{{ID: 1, Name: "nas", Addresses: []store.Address{{Address: "192.168.1.30"}}}},
+		}, nil
+	}, nil)
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(Options{
+		Holder: h,
+		ACL:    NewACL(prefixes(t, "0.0.0.0/0")),
+		Auth:   NewAuthoritative("home.arpa.", 60, nil),
+		Logger: logger,
+	})
+
+	s.query(t, "nas.home.arpa.", "192.168.1.5")
+	if buf.Len() != 0 {
+		t.Fatal("a query was logged while query logging is off")
+	}
+
+	s.SetLogging(true, false)
+	s.query(t, "nas.home.arpa.", "192.168.1.5")
+	out := buf.String()
+	if out == "" {
+		t.Fatal("query logging was turned on but nothing was logged")
+	}
+	if strings.Contains(out, "192.168.1.5") {
+		t.Error("the client IP was logged with log_client_ip off")
+	}
+
+	buf.Reset()
+	s.SetLogging(true, true)
+	s.query(t, "nas.home.arpa.", "192.168.1.5")
+	if !strings.Contains(buf.String(), "192.168.1.5") {
+		t.Error("the client IP was not logged with log_client_ip on")
+	}
+}
+
+// A WriteMsg failure (EMSGSIZE, an ICMP-induced connection error, a
+// mid-reply TCP hangup) is logged unconditionally, unlike the query log
+// line — that path is not gated by log_queries or log_client_ip. A
+// *net.OpError's Error() embeds the peer address, so this path must not be
+// allowed to leak the client IP when log_client_ip is off; LOGGING.md
+// promises no client IP is logged by default.
+func TestWriteErrorNeverLeaksClientIPWhenOff(t *testing.T) {
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil)
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	newSrv := func(buf *bytes.Buffer) *Server {
+		return New(Options{
+			Holder: h,
+			ACL:    NewACL(prefixes(t, "0.0.0.0/0")),
+			Auth:   NewAuthoritative("home.arpa.", 60, nil),
+			Logger: slog.New(slog.NewTextHandler(buf, nil)),
+		})
+	}
+	writeErr := &net.OpError{
+		Op:   "write",
+		Net:  "udp4",
+		Addr: &net.UDPAddr{IP: net.ParseIP("192.168.1.5"), Port: 12345},
+		Err:  errors.New("sendmsg: message too long"),
+	}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+
+	var buf bytes.Buffer
+	srv := newSrv(&buf)
+	w := &fakeResponseWriter{remote: &net.UDPAddr{IP: net.ParseIP("192.168.1.5"), Port: 12345}, writeErr: writeErr}
+	srv.ServeDNS(w, m)
+
+	out := buf.String()
+	if out == "" {
+		t.Fatal("a write failure was not logged at all")
+	}
+	if strings.Contains(out, "192.168.1.5") {
+		t.Error("the write-error log line leaked the client IP with log_client_ip off")
+	}
+	if !strings.Contains(out, "sendmsg: message too long") {
+		t.Errorf("write-error log line = %q, want it to still describe the failure", out)
+	}
+
+	// With log_client_ip on, the address is expected: that flag means the
+	// operator opted in to seeing it.
+	buf.Reset()
+	srv2 := newSrv(&buf)
+	srv2.SetLogging(false, true)
+	w2 := &fakeResponseWriter{remote: &net.UDPAddr{IP: net.ParseIP("192.168.1.5"), Port: 12345}, writeErr: writeErr}
+	srv2.ServeDNS(w2, m)
+	if !strings.Contains(buf.String(), "192.168.1.5") {
+		t.Error("the write-error log line dropped the client IP with log_client_ip on")
 	}
 }

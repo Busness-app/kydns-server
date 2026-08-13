@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -190,4 +191,72 @@ func TestPollerConcurrentReads(t *testing.T) {
 		p.Poll(context.Background())
 	}
 	wg.Wait()
+}
+
+func TestPollerSetInterval(t *testing.T) {
+	src := &countingSource{}
+	p := NewPoller(src, time.Hour, nil, slog.Default())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	waitForPolls(t, src, 1) // the immediate first cycle
+	p.SetInterval(5 * time.Millisecond)
+	waitForPolls(t, src, 3)
+}
+
+// A zero or negative interval must not turn Run's timer into a hot spin.
+func TestPollerSetIntervalFloorsInterval(t *testing.T) {
+	p := NewPoller(&countingSource{}, time.Hour, nil, slog.Default())
+	p.SetInterval(0)
+	if got := p.Interval(); got <= 0 {
+		t.Errorf("interval floored to %v, want a positive duration", got)
+	}
+}
+
+// NewPoller must not leave a wake token queued: SetInterval queues one, but
+// a brand-new Poller has no Run in flight yet, so the first Run must not
+// see it as a second startup cycle.
+func TestNewPollerRunsExactlyOneStartupCycle(t *testing.T) {
+	src := &countingSource{}
+	p := NewPoller(src, time.Hour, nil, slog.Default())
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	p.Run(ctx)
+
+	if calls := src.Calls(); calls != 1 {
+		t.Errorf("Run() did %d cycles at startup, want exactly 1", calls)
+	}
+}
+
+type countingSource struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingSource) Name() string { return "counting" }
+
+func (c *countingSource) Leases(context.Context) ([]dhcp.Lease, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return nil, nil
+}
+
+func (c *countingSource) Calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+func waitForPolls(t *testing.T, src *countingSource, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if src.Calls() >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition not met within two seconds")
 }

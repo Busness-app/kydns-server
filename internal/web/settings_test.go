@@ -28,7 +28,7 @@ func TestViewCreateAndList(t *testing.T) {
 // Condition 2 of the banner, rendered inline where the operator is standing.
 func TestUnreachableViewFlaggedInline(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
-	srv.o.AllowTailscale = false
+	setAllowTailscale(t, srv, false)
 	postForm(t, h, "/settings/views/new", url.Values{
 		"name": {"tailnet"}, "subnets": {"100.64.0.0/10"}, "csrf_token": {csrf},
 	}, c)
@@ -43,7 +43,7 @@ func TestUnreachableViewFlaggedInline(t *testing.T) {
 
 func TestReachableViewNotFlagged(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
-	srv.o.AllowTailscale = true
+	setAllowTailscale(t, srv, true)
 	postForm(t, h, "/settings/views/new", url.Values{
 		"name": {"tailnet"}, "subnets": {"100.64.0.0/10"}, "csrf_token": {csrf},
 	}, c)
@@ -172,40 +172,17 @@ func TestCacheFlushButton(t *testing.T) {
 
 func TestSettingsShowsReadOnlyConfig(t *testing.T) {
 	h, srv, c, _ := loggedIn(t)
-	srv.o.Config = &config.Config{
-		DataDir: "/var/lib/kydns",
-		DNS: config.DNSConfig{
-			Listen: ":53", PrivateDomain: "home.arpa",
-			Upstreams: []string{"1.1.1.1:53"}, AllowQuery: []string{"192.168.0.0/16"},
-			TTL: 60, CacheEntries: 10000,
-		},
-		Admin: config.AdminConfig{Listen: "127.0.0.1:8053"},
-	}
+	srv.o.Config = testConfig()
 	body := page(t, h, "/settings", c)
 	for _, want := range []string{
-		"dns.upstreams", "1.1.1.1:53", "dns.private_domain", "home.arpa",
-		"admin.listen", "data_dir", "/var/lib/kydns",
+		"data_dir", "/var/lib/kydns", "dns.listen", "admin.listen", "127.0.0.1:8053",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("config view missing %q", want)
 		}
 	}
-	if !strings.Contains(strings.ToLower(body), "restarting kydns") {
-		t.Error("config view does not say a restart is required")
-	}
-}
-
-// allow_tailscale must read as on/off, not Go's true/false, and must be
-// visible so the operator can see why tailnet clients are refused.
-func TestConfigViewShowsAllowTailscale(t *testing.T) {
-	h, srv, c, _ := loggedIn(t)
-	srv.o.Config = &config.Config{DataDir: "/tmp", DNS: config.DNSConfig{AllowTailscale: false}}
-	body := page(t, h, "/settings", c)
-	if !strings.Contains(body, "dns.allow_tailscale") {
-		t.Fatal("config view omits allow_tailscale")
-	}
-	if strings.Contains(body, ">false<") {
-		t.Error("allow_tailscale rendered as Go's false, want off")
+	if !strings.Contains(strings.ToLower(body), "read at startup") {
+		t.Error("config view does not say these are read once at startup")
 	}
 }
 
@@ -214,7 +191,7 @@ func TestConfigViewShowsAllowTailscale(t *testing.T) {
 func TestConfigViewAbsentWithoutConfig(t *testing.T) {
 	h, srv, c, _ := loggedIn(t)
 	srv.o.Config = nil
-	if strings.Contains(page(t, h, "/settings", c), "dns.upstreams") {
+	if strings.Contains(page(t, h, "/settings", c), "dns.listen") {
 		t.Error("config section rendered with no config loaded")
 	}
 }

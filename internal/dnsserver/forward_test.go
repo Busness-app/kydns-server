@@ -3,6 +3,7 @@ package dnsserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ type fakeUpstream struct {
 	calls  atomic.Int64
 	delay  time.Duration
 	reply  func(*dns.Msg) (*dns.Msg, error)
+	closed atomic.Bool
 
 	mu   sync.Mutex
 	sent []*dns.Msg // queries as they went out
@@ -28,6 +30,11 @@ type fakeUpstream struct {
 
 func (f *fakeUpstream) Secure() bool   { return f.secure }
 func (f *fakeUpstream) String() string { return f.name }
+
+func (f *fakeUpstream) Close() error {
+	f.closed.Store(true)
+	return nil
+}
 
 func (f *fakeUpstream) Exchange(_ context.Context, m *dns.Msg) (*dns.Msg, error) {
 	f.calls.Add(1)
@@ -402,5 +409,149 @@ func TestForwarderStatus(t *testing.T) {
 	}
 	if rst.LastOKAt.IsZero() {
 		t.Error("recovered upstream LastOKAt is zero after success")
+	}
+}
+
+func TestForwarderReplace(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := okUpstream("udp://10.0.0.2:53", false)
+
+	f := newForwarder(a)
+	if got := f.Status(); len(got) != 1 || got[0].Spec != "udp://10.0.0.1:53" {
+		t.Fatalf("status before the swap: %+v", got)
+	}
+
+	f.Replace([]upstream.Upstream{b})
+
+	got := f.Status()
+	if len(got) != 1 || got[0].Spec != "udp://10.0.0.2:53" {
+		t.Fatalf("status after the swap: %+v", got)
+	}
+	// A fresh list has never been tried, so it must not inherit the old list's
+	// errors: a stale red mark sends the operator debugging a fixed problem.
+	if got[0].LastError != "" {
+		t.Errorf("new upstream inherited an error: %q", got[0].LastError)
+	}
+}
+
+// Queries in flight during a swap must not panic or write to the wrong status
+// entry. Each query targets a unique name so it actually reaches an upstream
+// instead of being absorbed by the cache. The two-upstream list fails at
+// index 0 and succeeds at index 1, so a record against index 1 lands out of
+// range on the one-upstream list — a stale index does not just land on a
+// different-but-valid entry, it panics. Meaningful only with -race.
+func TestForwarderReplaceUnderLoad(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	bad := deadUpstream("udp://10.0.0.2:53", false)
+	good := okUpstream("udp://10.0.0.3:53", false)
+	f := newForwarder(a)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			q := question(fmt.Sprintf("q%d.example.com.", i))
+			_, _ = f.Resolve(context.Background(), q, false)
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		if i%2 == 0 {
+			f.Replace([]upstream.Upstream{bad, good})
+		} else {
+			f.Replace([]upstream.Upstream{a})
+		}
+		_ = f.Status()
+	}
+	<-done
+}
+
+// Replace must close only the upstreams it retires: an in-flight query still
+// using the live ones must not have its connections pulled out from under it.
+func TestForwarderReplaceClosesRetiredUpstreams(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := okUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a)
+
+	f.Replace([]upstream.Upstream{b})
+	// The retired upstream's sockets must be released, not held until the
+	// process exits. With no query in flight, wg is already zero, so this
+	// resolves almost immediately rather than waiting out a timer.
+	waitFor(t, 3*time.Second, func() bool { return a.closed.Load() })
+	if b.closed.Load() {
+		t.Error("Replace closed the live upstream, not just the retired one")
+	}
+}
+
+// An upstream instance carried over unchanged into the new list (the shape a
+// settings reload that only touches other fields would produce) must not be
+// closed: its DoT pool is still live and in use.
+func TestForwarderReplaceKeepsCarriedOverUpstream(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := okUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a, b)
+
+	f.Replace([]upstream.Upstream{b}) // a retired, b carried over unchanged
+	waitFor(t, 3*time.Second, func() bool { return a.closed.Load() })
+	if b.closed.Load() {
+		t.Error("Replace closed an upstream instance still present in the new list")
+	}
+}
+
+// Reproduces round-2 review finding 1: Replace(b) retires the state holding
+// a and parks its retirement goroutine on that state's wg while a query is
+// still in flight against a. Before that query finishes, Replace(a) brings a
+// back as the live upstream. When the parked retirement goroutine finally
+// wakes, it must check what is live *then*, not what it captured when it was
+// scheduled — otherwise it closes an upstream that is live again.
+func TestForwarderReplaceSkipsUpstreamMadeLiveAgainWhileRetiring(t *testing.T) {
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	var startOnce sync.Once
+	a := &fakeUpstream{name: "udp://10.0.0.1:53", reply: func(m *dns.Msg) (*dns.Msg, error) {
+		startOnce.Do(func() { close(started) })
+		<-proceed // closed proceed just falls through on any later call
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		resp.Answer = reply(m.Question[0].Name, 300).Answer
+		return resp, nil
+	}}
+	b := okUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a)
+
+	resolveDone := make(chan struct{})
+	go func() {
+		defer close(resolveDone)
+		_, _ = f.Resolve(context.Background(), question("a.example.com."), false)
+	}()
+	<-started // the exchange against a is in flight, holding the state it lives in
+
+	f.Replace([]upstream.Upstream{b}) // retires the state holding a; its retirement goroutine parks on wg.Wait
+	f.Replace([]upstream.Upstream{a}) // a is live again, in a new state
+
+	close(proceed) // let the in-flight exchange finish, releasing the parked wg
+	<-resolveDone
+
+	// b's retirement (scheduled by the second Replace, with nothing to wait
+	// on) completing gives a's earlier-scheduled retirement goroutine ample
+	// time to run too.
+	waitFor(t, 3*time.Second, func() bool { return b.closed.Load() })
+	time.Sleep(50 * time.Millisecond) // settle window: proving an absence needs one
+
+	if a.closed.Load() {
+		t.Error("a pending retirement closed an upstream that was live again by the time it ran")
+	}
+	if _, err := f.Resolve(context.Background(), question("b.example.com."), false); err != nil {
+		t.Fatalf("Resolve() after the sequence = %v, want the still-live upstream to answer", err)
+	}
+}
+
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition never became true")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

@@ -2,6 +2,7 @@ package dnsserver
 
 import (
 	"net/netip"
+	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -36,10 +37,7 @@ func testSnap(t *testing.T) *zone.Snapshot {
 }
 
 func authority() *Authoritative {
-	return &Authoritative{
-		Zone: "home.arpa.", TTL: 60,
-		ReverseZones: []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")},
-	}
+	return NewAuthoritative("home.arpa.", 60, []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")})
 }
 
 func ask(t *testing.T, view, name string, qtype uint16) *dns.Msg {
@@ -217,5 +215,60 @@ func TestAnswerNilSnapshot(t *testing.T) {
 	})
 	if m != nil {
 		t.Errorf("Answer() = %v with a nil snapshot, want nil", m)
+	}
+}
+
+// SetTTL and SetReverseZones must be safe to call while queries are in
+// flight: the query path only loads, so a concurrent writer must never make
+// -race complain, and no reader may ever observe a half-built value.
+func TestAuthoritativeConcurrentSetAndAnswer(t *testing.T) {
+	a := authority()
+	snap := testSnap(t)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	stop := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		for i := uint32(0); ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				a.SetTTL(i % 100)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		zones := []netip.Prefix{netip.MustParsePrefix("192.168.1.0/24")}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				a.SetReverseZones(zones)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			a.Answer(snap, "", dns.Question{Name: "kypost.home.arpa.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+			a.Owns("20.1.168.192.in-addr.arpa.")
+		}
+		close(stop)
+	}()
+	wg.Wait()
+}
+
+// Zone stays exported (private_domain is restart-required), so
+// &Authoritative{Zone: "..."} still compiles from any package and skips
+// NewAuthoritative entirely. Owns must not panic on the resulting
+// zero-value reverseZones — a nil-pointer deref here takes the whole
+// process down, since the dns package does not recover handler panics.
+func TestOwnsOnZeroValueAuthoritative(t *testing.T) {
+	a := &Authoritative{Zone: "home.arpa."}
+	if got := a.Owns("20.1.168.192.in-addr.arpa."); got {
+		t.Errorf("Owns(%q) = true on a zero-value Authoritative, want false", "20.1.168.192.in-addr.arpa.")
 	}
 }

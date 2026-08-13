@@ -101,6 +101,70 @@ func TestExampleMatchesDefaults(t *testing.T) {
 	}
 }
 
+// Every key the example still documents as live must be one the file actually
+// owns. A key left in the file that the database now owns is documentation
+// that lies, so the example has to say out loud that the rest are seed values.
+func TestExampleDocumentsOnlySeedAndBootstrapKeys(t *testing.T) {
+	raw, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "seeds the database on the first run") {
+		t.Error("the example does not say the moved keys are seed values only")
+	}
+	// The three the file still owns, by the names the Settings screen shows.
+	for _, key := range []string{"data_dir", "listen"} {
+		if !strings.Contains(text, key) {
+			t.Errorf("the example no longer documents %s, which the file still owns", key)
+		}
+	}
+	// Every seeded key needs the marker near it. Reading one key's comment has
+	// to be enough to know whether editing it does anything; an operator does
+	// not scroll back to the header to find out.
+	lines := strings.Split(text, "\n")
+	for _, key := range seededKeys {
+		if !markedAsSeed(lines, key) {
+			t.Errorf("%s is not marked as a first-run seed value", key)
+		}
+	}
+}
+
+// seededKeys are the keys the file hands to the database on a fresh install and
+// which the database owns from then on.
+var seededKeys = []string{
+	"private_domain", "reverse_zones", "upstreams", "allow_query",
+	"allow_tailscale", "ttl", "cache_min_ttl", "cache_max_ttl",
+	"negative_max_ttl", "cache_entries", "log_queries", "log_client_ip",
+	"dhcp_lease_file", "interval", "timeout", "workers",
+}
+
+// markedAsSeed reports whether key's comment block says it is a seed value.
+// The marker is looked for in the comment lines directly above the key, so a
+// group of keys under one comment counts for all of them.
+func markedAsSeed(lines []string, key string) bool {
+	for i, l := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(l), key+":") {
+			continue
+		}
+		// A trailing comment on the key's own line counts: that is how a key
+		// inside a group marks itself without repeating the group's prose.
+		if strings.Contains(l, "first-run seed") {
+			return true
+		}
+		for j := i - 1; j >= 0 && j > i-16; j-- {
+			t := strings.TrimSpace(lines[j])
+			if t != "" && !strings.HasPrefix(t, "#") {
+				break // a previous setting: we have left this comment block
+			}
+			if strings.Contains(t, "first-run seed") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Every field the loader understands should appear in the example, so the
 // example stays a complete reference as settings are added.
 func TestExampleDocumentsEverySetting(t *testing.T) {

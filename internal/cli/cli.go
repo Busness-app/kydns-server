@@ -89,6 +89,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return recordCmd(c, args[1:], stdout, stderr)
 	case "blacklist":
 		return blacklistCmd(c, args[1:], stdout, stderr)
+	case "settings":
+		return settingsCmd(c, args[1:], stdout, stderr)
 	case "view":
 		return viewCmd(c, args[1:], stdout, stderr)
 	case "token":

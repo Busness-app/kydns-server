@@ -1,0 +1,59 @@
+package app
+
+import (
+	"log/slog"
+	"time"
+
+	"github.com/yoshiofthewire/kydns-server/internal/discovery"
+	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
+	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
+	"github.com/yoshiofthewire/kydns-server/internal/zone"
+)
+
+// liveComponents is every running piece a settings change fans out to. It
+// exists as a named type, rather than a closure inside Serve, so a test can
+// build one against real components and call Apply directly — proving the
+// fan-out actually reaches them, not just that Service.Set returned nil.
+type liveComponents struct {
+	acl           *dnsserver.ACL
+	forwarder     *dnsserver.Forwarder
+	cache         *dnsserver.Cache
+	dnsSrv        *dnsserver.Server
+	authoritative *dnsserver.Authoritative
+	checker       *health.Checker
+	poller        *discovery.Poller // nil when DHCP discovery is off
+	zoneHolder    *zone.Holder
+	logger        *slog.Logger
+
+	// prevUpstreams tracks what the forwarder was last told, so a change
+	// against the previous upstream list flushes stale cached answers.
+	// Apply is the only writer, and Service.Set serializes calls to it.
+	prevUpstreams []string
+}
+
+// Apply fans a validated, already-built settings snapshot out to every live
+// component. Every value here is already validated and built, so no swap
+// below can fail.
+func (l *liveComponents) Apply(s *settings.Snapshot) {
+	l.acl.Replace(s.AllowQuery)
+	l.forwarder.Replace(s.Upstreams)
+	flushOnUpstreamChange(l.cache, l.prevUpstreams, s.Raw.Upstreams, l.logger)
+	l.prevUpstreams = s.Raw.Upstreams
+	l.cache.Retune(s.Raw.CacheEntries, s.Raw.CacheMinTTL, s.Raw.CacheMaxTTL, s.Raw.NegativeMaxTTL)
+	l.dnsSrv.SetLogging(s.Raw.LogQueries, s.Raw.LogClientIP)
+	l.authoritative.SetTTL(uint32(s.Raw.TTL))
+	l.authoritative.SetReverseZones(s.ReverseZones)
+	l.checker.Reconfigure(
+		time.Duration(s.Raw.HealthInterval)*time.Second,
+		time.Duration(s.Raw.HealthTimeout)*time.Second,
+		s.Raw.HealthWorkers)
+	if l.poller != nil {
+		l.poller.SetInterval(time.Duration(s.Raw.DiscoveryInterval) * time.Second)
+	}
+	// Reverse zones are an input to the zone snapshot, so it has to be rebuilt.
+	if err := l.zoneHolder.Rebuild(); err != nil {
+		l.logger.Error("snapshot rebuild after a settings change failed, still serving the previous snapshot", "error", err)
+	}
+	l.logger.Info("settings applied")
+}

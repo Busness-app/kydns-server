@@ -100,3 +100,65 @@ func TestACLRefusesInvalidAddr(t *testing.T) {
 		t.Error("Allow(invalid) = true, want false")
 	}
 }
+
+func TestACLReplace(t *testing.T) {
+	lan := netip.MustParsePrefix("192.168.0.0/16")
+	tail := netip.MustParsePrefix("100.64.0.0/10")
+	acl := NewACL([]netip.Prefix{lan})
+
+	if !acl.Allow(netip.MustParseAddr("192.168.1.5")) {
+		t.Fatal("the LAN was refused before the swap")
+	}
+	if acl.Allow(netip.MustParseAddr("100.64.0.1")) {
+		t.Fatal("CGNAT was allowed before the swap")
+	}
+
+	acl.Replace([]netip.Prefix{lan, tail})
+
+	if !acl.Allow(netip.MustParseAddr("100.64.0.1")) {
+		t.Error("CGNAT is still refused after the swap")
+	}
+
+	// Narrowing has to work too: a mistake must be undoable without a restart.
+	acl.Replace([]netip.Prefix{tail})
+	if acl.Allow(netip.MustParseAddr("192.168.1.5")) {
+		t.Error("the LAN is still allowed after being removed")
+	}
+}
+
+// Replace must mask, exactly as NewACL does, or a host-bit-carrying prefix
+// silently matches nothing.
+func TestACLReplaceMasks(t *testing.T) {
+	acl := NewACL(nil)
+	acl.Replace([]netip.Prefix{netip.MustParsePrefix("192.168.1.99/24")})
+	if !acl.Allow(netip.MustParseAddr("192.168.1.5")) {
+		t.Error("an unmasked prefix did not match its own network")
+	}
+}
+
+// Counters describe the process, not the current policy, so a swap must not
+// reset them.
+func TestACLReplaceKeepsCounters(t *testing.T) {
+	acl := NewACL(nil)
+	acl.Allow(netip.MustParseAddr("8.8.8.8"))
+	acl.Replace([]netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")})
+	if acl.Stats().Total != 1 {
+		t.Errorf("refusal count reset by a swap: %d", acl.Stats().Total)
+	}
+}
+
+// Readers must not tear while the list is replaced. Meaningful only with -race.
+func TestACLReplaceUnderConcurrentReads(t *testing.T) {
+	acl := NewACL([]netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			acl.Allow(netip.MustParseAddr("192.168.1.5"))
+		}
+	}()
+	for i := 0; i < 2000; i++ {
+		acl.Replace([]netip.Prefix{netip.MustParsePrefix("192.168.0.0/16")})
+	}
+	<-done
+}

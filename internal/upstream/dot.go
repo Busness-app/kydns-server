@@ -37,6 +37,7 @@ func newDoT(s Spec, timeout time.Duration) *dot {
 
 func (d *dot) Secure() bool   { return true }
 func (d *dot) String() string { return d.spec.Raw }
+func (d *dot) Close() error   { return d.pool.Close() }
 
 // Exchange retries once per pooled connection it finds already dead — up to
 // the pool's size — because the server may have closed it while it sat idle.

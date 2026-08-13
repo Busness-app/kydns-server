@@ -5,16 +5,12 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/netip"
+	"net"
 	"os"
-	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/upstream"
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"gopkg.in/yaml.v3"
 )
-
-// TailscaleCGNAT is the range added to the ACL by DNSConfig.AllowTailscale.
-const TailscaleCGNAT = "100.64.0.0/10"
 
 // defaultAllowQuery is loopback plus RFC1918 and ULA. CGNAT is deliberately
 // absent: it is gated behind AllowTailscale.
@@ -132,52 +128,45 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// validate checks only the keys the file still owns. Everything else in this
+// struct seeds a fresh database once and is ignored afterwards, so refusing to
+// start over it would strand an operator who tidied their YAML. A bad seed is
+// caught by settings.ValidateStored on the first run instead.
 func (c *Config) validate() error {
 	if c.DataDir == "" {
 		return errors.New("data_dir is required")
 	}
-	if c.DNS.PrivateDomain == "" {
-		return errors.New("dns.private_domain must not be empty")
+	if _, _, err := net.SplitHostPort(c.DNS.Listen); err != nil {
+		return fmt.Errorf("dns.listen %q: %w", c.DNS.Listen, err)
 	}
-	for _, s := range c.DNS.AllowQuery {
-		if _, err := netip.ParsePrefix(s); err != nil {
-			return fmt.Errorf("dns.allow_query %q: %w", s, err)
-		}
-	}
-	for _, s := range c.DNS.ReverseZones {
-		if _, err := netip.ParsePrefix(s); err != nil {
-			return fmt.Errorf("dns.reverse_zones %q: %w", s, err)
-		}
-	}
-	if _, err := upstream.ParseAll(c.DNS.Upstreams); err != nil {
-		return fmt.Errorf("dns.upstreams: %w", err)
-	}
-	if c.DNS.CacheMinTTL > c.DNS.CacheMaxTTL {
-		return errors.New("dns.cache_min_ttl exceeds dns.cache_max_ttl")
+	if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
+		return fmt.Errorf("admin.listen %q: %w", c.Admin.Listen, err)
 	}
 	return nil
 }
 
-// PrivateFQDN returns the private domain as a lowercased FQDN with a trailing
-// dot, the form miekg/dns uses throughout.
-func (c *Config) PrivateFQDN() string {
-	return strings.ToLower(c.DNS.PrivateDomain) + "."
-}
-
-// EffectiveAllowQuery is AllowQuery plus the CGNAT range when AllowTailscale
-// is on. Parsing here means callers never re-parse strings.
-func (c *Config) EffectiveAllowQuery() ([]netip.Prefix, error) {
-	list := append([]string(nil), c.DNS.AllowQuery...)
-	if c.DNS.AllowTailscale {
-		list = append(list, TailscaleCGNAT)
+// SeedSettings is the config file's contribution to a fresh database: every
+// key that has moved into the store, with defaults already applied. It is read
+// once, on the first run. After that the database owns these values and edits
+// to the file do nothing.
+func (c *Config) SeedSettings() store.Settings {
+	return store.Settings{
+		PrivateDomain:     c.DNS.PrivateDomain,
+		ReverseZones:      append([]string(nil), c.DNS.ReverseZones...),
+		Upstreams:         append([]string(nil), c.DNS.Upstreams...),
+		AllowQuery:        append([]string(nil), c.DNS.AllowQuery...),
+		AllowTailscale:    c.DNS.AllowTailscale,
+		TTL:               c.DNS.TTL,
+		CacheMinTTL:       c.DNS.CacheMinTTL,
+		CacheMaxTTL:       c.DNS.CacheMaxTTL,
+		NegativeMaxTTL:    c.DNS.NegativeMaxTTL,
+		CacheEntries:      c.DNS.CacheEntries,
+		LogQueries:        c.DNS.LogQueries,
+		LogClientIP:       c.DNS.LogClientIP,
+		DHCPLeaseFile:     c.Discovery.DHCPLeaseFile,
+		DiscoveryInterval: c.Discovery.Interval,
+		HealthInterval:    c.Health.Interval,
+		HealthTimeout:     c.Health.Timeout,
+		HealthWorkers:     c.Health.Workers,
 	}
-	out := make([]netip.Prefix, 0, len(list))
-	for _, s := range list {
-		p, err := netip.ParsePrefix(s)
-		if err != nil {
-			return nil, fmt.Errorf("allow_query %q: %w", s, err)
-		}
-		out = append(out, p.Masked())
-	}
-	return out, nil
 }
