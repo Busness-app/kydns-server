@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/config"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 )
 
-var cgnat = netip.MustParsePrefix(config.TailscaleCGNAT)
+var cgnat = netip.MustParsePrefix(settings.TailscaleCGNAT)
 
 // RefusalStats is a point-in-time read of the ACL counters. It carries counts
 // and a timestamp only — never a source address — so it costs nothing against
@@ -24,7 +24,7 @@ type RefusalStats struct {
 // ACL is the query allow-list. It is default-closed: an empty allow list
 // refuses everything.
 type ACL struct {
-	allowed   []netip.Prefix
+	allowed   atomic.Pointer[[]netip.Prefix]
 	total     atomic.Uint64
 	cgnat     atomic.Uint64
 	lastCGNAT atomic.Int64
@@ -32,11 +32,20 @@ type ACL struct {
 }
 
 func NewACL(allowed []netip.Prefix) *ACL {
+	a := &ACL{now: time.Now}
+	a.Replace(allowed)
+	return a
+}
+
+// Replace swaps the allow list. Readers on the query path load a pointer, so a
+// swap never blocks a query and never shows a half-built list. Refusal
+// counters describe the process and survive it.
+func (a *ACL) Replace(allowed []netip.Prefix) {
 	masked := make([]netip.Prefix, 0, len(allowed))
 	for _, p := range allowed {
 		masked = append(masked, p.Masked())
 	}
-	return &ACL{allowed: masked, now: time.Now}
+	a.allowed.Store(&masked)
 }
 
 // Allow reports whether addr may query, counting refusals. Refusals are
@@ -48,7 +57,7 @@ func (a *ACL) Allow(addr netip.Addr) bool {
 		return false
 	}
 	addr = addr.Unmap()
-	for _, p := range a.allowed {
+	for _, p := range *a.allowed.Load() {
 		if p.Contains(addr) {
 			return true
 		}
