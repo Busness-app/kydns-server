@@ -4,9 +4,17 @@
   const HEALTH_MS = 10000;
   const LEASE_MS = 30000;
 
+  let healthTimer = null;
+
   async function refreshHealth() {
     try {
-      const resp = await fetch("/api/v1/health", { headers: { Accept: "application/json" } });
+      const resp = await fetch("/services/health.json", { headers: { Accept: "application/json" } });
+      // A signed-out session will not sign itself back in. Stop polling and let
+      // the next click land on the login page.
+      if (resp.status === 401) {
+        clearInterval(healthTimer);
+        return;
+      }
       if (!resp.ok) return; // a failed poll is not worth disturbing the page over
       const data = await resp.json();
       for (const s of data.health || []) {
@@ -23,7 +31,7 @@
 
   if (document.querySelector("[data-health-for]")) {
     refreshHealth();
-    setInterval(refreshHealth, HEALTH_MS);
+    healthTimer = setInterval(refreshHealth, HEALTH_MS);
   }
   if (document.getElementById("lease-table")) {
     setInterval(function () { location.reload(); }, LEASE_MS);

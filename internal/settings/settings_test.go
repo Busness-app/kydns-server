@@ -90,6 +90,10 @@ type fakeWriter struct {
 	cur     store.Settings
 	writes  int
 	failErr error
+
+	// renames records the zone move, so a test can prove Set routed the write
+	// through the transactional path rather than the plain one.
+	renames [][2]string
 }
 
 func (f *fakeWriter) PutSettings(v store.Settings) error {
@@ -99,6 +103,16 @@ func (f *fakeWriter) PutSettings(v store.Settings) error {
 	f.cur = v
 	f.writes++
 	return nil
+}
+
+func (f *fakeWriter) PutSettingsRenamingZone(v store.Settings, from, to string) (int, error) {
+	if f.failErr != nil {
+		return 0, f.failErr
+	}
+	f.cur = v
+	f.writes++
+	f.renames = append(f.renames, [2]string{from, to})
+	return 0, nil
 }
 
 func newTestService(t *testing.T) (*fakeWriter, *Service, *[]*Snapshot) {
@@ -278,5 +292,57 @@ func TestServiceSetDoesNotReadSourceAfterAWriteSucceeds(t *testing.T) {
 	}
 	if h.Current().Raw.TTL != 120 {
 		t.Error("the holder still serves the old snapshot")
+	}
+}
+
+// Changing the private domain has to move the manual records with it, in the
+// same transaction as the settings row. Anything else strands every record
+// outside the zone the server now serves.
+func TestSetRenamesTheZoneWhenTheDomainChanges(t *testing.T) {
+	w, svc, _ := newTestService(t)
+
+	v := valid()
+	v.PrivateDomain = "lan.example"
+	if err := svc.Set(v, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	if len(w.renames) != 1 {
+		t.Fatalf("renames = %v, want one zone move", w.renames)
+	}
+	if w.renames[0] != [2]string{"home.arpa.", "lan.example."} {
+		t.Errorf("renamed %v, want home.arpa. -> lan.example.", w.renames[0])
+	}
+	if w.writes != 1 {
+		t.Errorf("writes = %d, want the settings written exactly once", w.writes)
+	}
+}
+
+// Every other setting must keep taking the plain write path: a rename that ran
+// on an unrelated save would rewrite records for no reason.
+func TestSetDoesNotRenameWhenTheDomainIsUnchanged(t *testing.T) {
+	w, svc, _ := newTestService(t)
+
+	v := valid()
+	v.TTL = 120
+	if err := svc.Set(v, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if len(w.renames) != 0 {
+		t.Errorf("renamed %v on a change that left the domain alone", w.renames)
+	}
+}
+
+// Case and a trailing dot are presentation, not a different zone.
+func TestSetTreatsTheSameDomainDifferentlyWrittenAsUnchanged(t *testing.T) {
+	w, svc, _ := newTestService(t)
+
+	v := valid()
+	v.PrivateDomain = "Home.Arpa."
+	if err := svc.Set(v, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if len(w.renames) != 0 {
+		t.Errorf("renamed %v for the same zone written differently", w.renames)
 	}
 }

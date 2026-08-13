@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -16,7 +17,7 @@ import (
 // here so the JSON API and the CLI cannot drift apart.
 type Registry struct {
 	s        *store.Store
-	zone     string
+	zone     atomic.Pointer[string]
 	onChange func() error
 }
 
@@ -24,7 +25,24 @@ func New(s *store.Store, zoneFQDN string, onChange func() error) *Registry {
 	if onChange == nil {
 		onChange = func() error { return nil }
 	}
-	return &Registry{s: s, zone: Normalize(zoneFQDN), onChange: onChange}
+	r := &Registry{s: s, onChange: onChange}
+	r.SetZone(zoneFQDN)
+	return r
+}
+
+// Zone is the private zone every name is validated against.
+func (r *Registry) Zone() string {
+	if z := r.zone.Load(); z != nil {
+		return *z
+	}
+	return ""
+}
+
+// SetZone follows a change to the private domain. Each write validates against
+// the zone it reads once, so a rename landing mid-write cannot half-apply.
+func (r *Registry) SetZone(zoneFQDN string) {
+	z := Normalize(zoneFQDN)
+	r.zone.Store(&z)
 }
 
 func (r *Registry) knownViews() (map[string]bool, error) {
@@ -42,9 +60,9 @@ func (r *Registry) knownViews() (map[string]bool, error) {
 // validateService normalizes and validates a service against a set of known
 // view names. It never touches the store, so import --replace can validate a
 // whole document before writing any of it.
-func (r *Registry) validateService(svc store.Service, known map[string]bool) (store.Service, error) {
+func (r *Registry) validateService(svc store.Service, known map[string]bool, zone string) (store.Service, error) {
 	svc.Name = strings.ToLower(strings.TrimSpace(svc.Name))
-	if err := ValidateName(svc.Name+"."+r.zone, r.zone); err != nil {
+	if err := ValidateName(svc.Name+"."+zone, zone); err != nil {
 		return svc, err
 	}
 	if len(svc.Addresses) == 0 {
@@ -70,7 +88,7 @@ func (r *Registry) validateService(svc store.Service, known map[string]bool) (st
 	}
 	for i, al := range svc.Aliases {
 		svc.Aliases[i] = strings.ToLower(strings.TrimSpace(al))
-		if err := ValidateName(svc.Aliases[i]+"."+r.zone, r.zone); err != nil {
+		if err := ValidateName(svc.Aliases[i]+"."+zone, zone); err != nil {
 			return svc, err
 		}
 	}
@@ -84,7 +102,7 @@ func (r *Registry) PutService(svc store.Service) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	svc, err = r.validateService(svc, known)
+	svc, err = r.validateService(svc, known, r.Zone())
 	if err != nil {
 		return 0, err
 	}
@@ -108,7 +126,7 @@ func (r *Registry) DeleteService(id int64) error {
 
 // validateRecord normalizes and validates a record against a set of known
 // view names. It never touches the store; see validateService.
-func (r *Registry) validateRecord(rec store.Record, known map[string]bool) (store.Record, error) {
+func (r *Registry) validateRecord(rec store.Record, known map[string]bool, zone string) (store.Record, error) {
 	rec.Name = Normalize(rec.Name)
 	rec.Type = strings.ToUpper(strings.TrimSpace(rec.Type))
 	if err := ValidateRecordType(rec.Type); err != nil {
@@ -116,14 +134,14 @@ func (r *Registry) validateRecord(rec store.Record, known map[string]bool) (stor
 	}
 	switch rec.Type {
 	case "A", "AAAA":
-		if err := ValidateName(rec.Name, r.zone); err != nil {
+		if err := ValidateName(rec.Name, zone); err != nil {
 			return rec, err
 		}
 		if err := ValidateAddress(rec.Value); err != nil {
 			return rec, err
 		}
 	case "CNAME":
-		if err := ValidateName(rec.Name, r.zone); err != nil {
+		if err := ValidateName(rec.Name, zone); err != nil {
 			return rec, err
 		}
 		rec.Value = Normalize(rec.Value)
@@ -147,7 +165,7 @@ func (r *Registry) PutRecord(rec store.Record) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	rec, err = r.validateRecord(rec, known)
+	rec, err = r.validateRecord(rec, known, r.Zone())
 	if err != nil {
 		return 0, err
 	}
@@ -213,6 +231,9 @@ func (r *Registry) DeleteView(name string) error {
 // can neither bypass the rules PutService enforces one at a time, nor leave
 // the registry half-wiped if a store-level constraint still rejects it.
 func (r *Registry) ReplaceAll(views []store.View, services []store.Service, records []store.Record) error {
+	// One zone for the whole document: a rename landing mid-import must not
+	// validate half of it against each domain.
+	zone := r.Zone()
 	vs := make([]store.View, 0, len(views))
 	known := map[string]bool{}
 	for _, v := range views {
@@ -225,7 +246,7 @@ func (r *Registry) ReplaceAll(views []store.View, services []store.Service, reco
 	}
 	ss := make([]store.Service, 0, len(services))
 	for _, svc := range services {
-		svc, err := r.validateService(svc, known)
+		svc, err := r.validateService(svc, known, zone)
 		if err != nil {
 			return err
 		}
@@ -233,7 +254,7 @@ func (r *Registry) ReplaceAll(views []store.View, services []store.Service, reco
 	}
 	rs := make([]store.Record, 0, len(records))
 	for _, rec := range records {
-		rec, err := r.validateRecord(rec, known)
+		rec, err := r.validateRecord(rec, known, zone)
 		if err != nil {
 			return err
 		}

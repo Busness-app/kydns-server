@@ -13,10 +13,11 @@ import (
 const cnameChaseDepth = 8
 
 // Authoritative answers from the snapshot for names inside the private zone
-// and the configured reverse zones. TTL and the reverse zones are read on
-// every query, so both are atomics rather than mutex-guarded fields.
+// and the configured reverse zones. The zone, the TTL and the reverse zones
+// are all read on every query, so all three are atomics rather than
+// mutex-guarded fields.
 type Authoritative struct {
-	Zone         string // FQDN with trailing dot; restart-required, never swapped
+	zone         atomic.Pointer[string]
 	ttl          atomic.Uint32
 	reverseZones atomic.Pointer[[]netip.Prefix]
 }
@@ -24,10 +25,26 @@ type Authoritative struct {
 // NewAuthoritative builds an Authoritative for zone, with the given initial
 // TTL and reverse zones.
 func NewAuthoritative(zone string, ttl uint32, reverse []netip.Prefix) *Authoritative {
-	a := &Authoritative{Zone: zone}
+	a := &Authoritative{}
+	a.SetZone(zone)
 	a.ttl.Store(ttl)
 	a.SetReverseZones(reverse)
 	return a
+}
+
+// Zone is the private zone, as an FQDN with a trailing dot.
+func (a *Authoritative) Zone() string {
+	if z := a.zone.Load(); z != nil {
+		return *z
+	}
+	return ""
+}
+
+// SetZone changes the private zone. Answer reads the zone once at the top of
+// each call, so one reply never straddles a change.
+func (a *Authoritative) SetZone(zone string) {
+	z := strings.ToLower(dns.Fqdn(zone))
+	a.zone.Store(&z)
 }
 
 // SetTTL changes the TTL on authoritative answers. Answer snapshots the TTL
@@ -48,9 +65,13 @@ func (a *Authoritative) SetReverseZones(z []netip.Prefix) {
 // Owns reports whether qname falls in a zone this server is authoritative for.
 // A reverse name outside every configured reverse zone is not owned, so the
 // pipeline forwards it instead of answering NXDOMAIN for the whole internet.
-func (a *Authoritative) Owns(qname string) bool {
+func (a *Authoritative) Owns(qname string) bool { return a.owns(a.Zone(), qname) }
+
+// owns is Owns against an already-read zone, so one Answer call decides every
+// name it touches against the same zone.
+func (a *Authoritative) owns(zone, qname string) bool {
 	n := strings.ToLower(dns.Fqdn(qname))
-	if n == a.Zone || strings.HasSuffix(n, "."+a.Zone) {
+	if zone != "" && (n == zone || strings.HasSuffix(n, "."+zone)) {
 		return true
 	}
 	if strings.HasSuffix(n, ".in-addr.arpa.") || strings.HasSuffix(n, ".ip6.arpa.") {
@@ -74,14 +95,14 @@ func (a *Authoritative) Owns(qname string) bool {
 // SOA synthesizes the apex SOA. The serial is the snapshot generation, so it
 // advances on every rebuild for free.
 func (a *Authoritative) SOA(serial uint32) *dns.SOA {
-	return a.soa(serial, a.ttl.Load())
+	return a.soa(a.Zone(), serial, a.ttl.Load())
 }
 
-func (a *Authoritative) soa(serial, ttl uint32) *dns.SOA {
+func (a *Authoritative) soa(zone string, serial, ttl uint32) *dns.SOA {
 	return &dns.SOA{
-		Hdr:     dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
-		Ns:      "ns." + a.Zone,
-		Mbox:    "hostmaster." + a.Zone,
+		Hdr:     dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
+		Ns:      "ns." + zone,
+		Mbox:    "hostmaster." + zone,
 		Serial:  serial,
 		Refresh: 3600, Retry: 600, Expire: 604800, Minttl: ttl,
 	}
@@ -91,7 +112,8 @@ func (a *Authoritative) soa(serial, ttl uint32) *dns.SOA {
 // ours and the caller should forward. The TTL is read once at the top, so a
 // concurrent SetTTL cannot split one message across two TTL values.
 func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question) *dns.Msg {
-	if snap == nil || !a.Owns(q.Name) {
+	zone := a.Zone()
+	if snap == nil || !a.owns(zone, q.Name) {
 		return nil
 	}
 	ttl := a.ttl.Load()
@@ -100,17 +122,17 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 	m.Question = []dns.Question{q}
 	name := strings.ToLower(dns.Fqdn(q.Name))
 
-	if name == a.Zone {
+	if name == zone {
 		switch q.Qtype {
 		case dns.TypeSOA:
-			m.Answer = []dns.RR{a.soa(snap.Generation, ttl)}
+			m.Answer = []dns.RR{a.soa(zone, snap.Generation, ttl)}
 		case dns.TypeNS:
 			m.Answer = []dns.RR{&dns.NS{
-				Hdr: dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
-				Ns:  "ns." + a.Zone,
+				Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
+				Ns:  "ns." + zone,
 			}}
 		default:
-			m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
+			m.Ns = []dns.RR{a.soa(zone, snap.Generation, ttl)}
 		}
 		return m
 	}
@@ -124,20 +146,20 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 			return m
 		}
 		m.Rcode = dns.RcodeNameError
-		m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
+		m.Ns = []dns.RR{a.soa(zone, snap.Generation, ttl)}
 		return m
 	}
 
 	rrs := snap.Lookup(view, name)
 	if len(rrs) == 0 {
 		m.Rcode = dns.RcodeNameError
-		m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
+		m.Ns = []dns.RR{a.soa(zone, snap.Generation, ttl)}
 		return m
 	}
 
 	// A CNAME is the only record at its name, so this branch is exclusive.
 	if rrs[0].Type == "CNAME" {
-		m.Answer = a.chase(snap, view, name, rrs[0].Value, q.Qtype, 0, ttl)
+		m.Answer = a.chase(zone, snap, view, name, rrs[0].Value, q.Qtype, 0, ttl)
 		return m
 	}
 
@@ -147,26 +169,26 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 		}
 	}
 	if len(m.Answer) == 0 { // name exists, type does not: NODATA
-		m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
+		m.Ns = []dns.RR{a.soa(zone, snap.Generation, ttl)}
 	}
 	return m
 }
 
 // chase follows in-zone CNAME targets so the client gets one complete answer.
 // Out-of-zone targets are returned alone for the client's resolver to continue.
-func (a *Authoritative) chase(snap *zone.Snapshot, view, name, target string, qtype uint16, depth int, ttl uint32) []dns.RR {
+func (a *Authoritative) chase(zn string, snap *zone.Snapshot, view, name, target string, qtype uint16, depth int, ttl uint32) []dns.RR {
 	cname := &dns.CNAME{
 		Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl},
 		Target: dns.Fqdn(target),
 	}
-	if depth >= cnameChaseDepth || qtype == dns.TypeCNAME || !a.Owns(target) {
+	if depth >= cnameChaseDepth || qtype == dns.TypeCNAME || !a.owns(zn, target) {
 		return []dns.RR{cname}
 	}
 	out := []dns.RR{cname}
 	next := snap.Lookup(view, dns.Fqdn(target))
 	for _, rr := range next {
 		if rr.Type == "CNAME" {
-			return append(out, a.chase(snap, view, dns.Fqdn(target), rr.Value, qtype, depth+1, ttl)...)
+			return append(out, a.chase(zn, snap, view, dns.Fqdn(target), rr.Value, qtype, depth+1, ttl)...)
 		}
 		if converted := a.toRR(rr, qtype, ttl); converted != nil {
 			out = append(out, converted)

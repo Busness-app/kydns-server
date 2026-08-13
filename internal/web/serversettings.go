@@ -112,6 +112,17 @@ func (s *Server) postServerSettings(w http.ResponseWriter, r *http.Request) {
 		*f.dst = n
 	}
 
+	// Renaming the private zone moves every manual record with it. That is the
+	// operator's data, so they see exactly what will change and say yes before
+	// it happens — once per rename, not on every save.
+	if cur, ok := s.liveSettings(); ok {
+		if plan := s.planZoneRename(cur.PrivateDomain, v.PrivateDomain); plan != nil &&
+			r.PostFormValue("confirm_rename") != v.PrivateDomain {
+			s.serverSettingsRename(w, r, v, plan)
+			return
+		}
+	}
+
 	// Exactly what the operator typed in the confirmation box: anything derived
 	// from the submitted allow_query would confirm the exposure on their behalf.
 	confirm := strings.TrimSpace(r.PostFormValue("confirm_public"))
@@ -120,6 +131,71 @@ func (s *Server) postServerSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// renameRow is one record the rename will move.
+type renameRow struct{ From, To string }
+
+// zoneRename is what changing the private domain would do to the records.
+type zoneRename struct {
+	From, To string
+	Confirm  string // the domain exactly as typed, echoed back to authorize it
+	Rows     []renameRow
+	Count    int
+	More     int
+}
+
+// renamePreview caps the list. A long one is a wall of text nobody reads, and
+// the count above it is the number that matters.
+const renamePreview = 12
+
+// planZoneRename reports what moving from one private domain to another would
+// rewrite, or nil when nothing would change: a first save, the same domain
+// written differently, or a zone with no manual records in it.
+func (s *Server) planZoneRename(from, to string) *zoneRename {
+	fromZ, toZ := store.ZoneSuffix(from), store.ZoneSuffix(to)
+	if fromZ == "" || toZ == "" || fromZ == toZ || s.o.Registry == nil {
+		return nil
+	}
+	recs, err := s.o.Registry.Records()
+	if err != nil {
+		s.o.Logger.Error("read records for the rename preview", "error", err)
+		return nil
+	}
+	plan := &zoneRename{From: fromZ, To: toZ, Confirm: to}
+	for _, rec := range recs {
+		name, movedName := store.RenameInZone(rec.Name, fromZ, toZ)
+		value, movedValue := rec.Value, false
+		if rec.Type == "CNAME" || rec.Type == "PTR" {
+			value, movedValue = store.RenameInZone(rec.Value, fromZ, toZ)
+		}
+		if !movedName && !movedValue {
+			continue
+		}
+		plan.Count++
+		if len(plan.Rows) < renamePreview {
+			row := renameRow{From: rec.Name, To: name}
+			if movedValue {
+				row.From += " → " + rec.Value
+				row.To += " → " + value
+			}
+			plan.Rows = append(plan.Rows, row)
+		}
+	}
+	if plan.Count == 0 {
+		return nil
+	}
+	plan.More = plan.Count - len(plan.Rows)
+	return plan
+}
+
+// serverSettingsRename re-renders the form with everything the operator typed
+// still in it, plus what saving would rewrite. Saving again authorizes it.
+func (s *Server) serverSettingsRename(w http.ResponseWriter, r *http.Request, attempted store.Settings, plan *zoneRename) {
+	data := s.settingsData("", "")
+	data["Server"] = attempted
+	data["Rename"] = plan
+	s.render(w, r, "settings.html", data)
 }
 
 // serverSettingsError re-renders with the rejected input still in the boxes.

@@ -9,7 +9,7 @@
         <td>{{if eq $i 0}}{{$svc.Name}}{{end}}</td>
         <td>{{$a.Address}}{{if and (eq $i 0) $svc.RouteViaProxy}} <span class="badge warn">&rarr; {{$svc.ProxyAddress}}</span>{{end}}</td>
         <td>{{if $a.Tagged}}<span class="badge accent">{{$a.View}}</span>
-            {{else}}<span class="muted">{{$a.View}}</span>{{end}}</td>
+            {{else}}<span class="muted nowrap">{{$a.View}}</span>{{end}}</td>
         <td>{{if eq $i 0}}{{$svc.Aliases}}{{end}}</td>
         <td>{{if eq $i 0}}<span class="badge{{if eq $svc.Health "down"}} down{{else if eq $svc.Health "up"}} accent{{end}}"
               data-health-for="{{$svc.ID}}">{{$svc.Health}}</span>{{end}}</td>

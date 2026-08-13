@@ -1,11 +1,13 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -341,5 +343,63 @@ func TestServiceFormAcceptsProxyFields(t *testing.T) {
 	body := page(t, h, "/services", c)
 	if !strings.Contains(body, "192.168.1.20") {
 		t.Error("services table does not show the proxy address on a routed row")
+	}
+}
+
+// The health badges are polled by live.js, which carries a session cookie and
+// no API token. Before this endpoint existed it polled /api/v1/health and got
+// 401 forever, so the badges never left "unknown" without a page reload.
+func TestHealthJSONServesTheBrowserSession(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	srv.o.Health = func() []health.Status {
+		return []health.Status{{ServiceID: 7, Name: "nas", State: "up"}}
+	}
+
+	rec := get(t, h, "/services/health.json", c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET health.json = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want JSON", ct)
+	}
+	var body struct {
+		Health []struct {
+			ServiceID int64  `json:"service_id"`
+			State     string `json:"state"`
+		} `json:"health"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v: %s", err, rec.Body)
+	}
+	if len(body.Health) != 1 || body.Health[0].ServiceID != 7 || body.Health[0].State != "up" {
+		t.Errorf("= %+v, want service 7 up", body.Health)
+	}
+}
+
+func TestHealthJSONRefusesWithoutASession(t *testing.T) {
+	h, _ := newWeb(t)
+	setupAndLogin(t, h)
+
+	rec := get(t, h, "/services/health.json", nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET health.json = %d, want 401", rec.Code)
+	}
+	// A redirect to the HTML login page is not something a fetch can use.
+	if strings.Contains(rec.Body.String(), "<") {
+		t.Errorf("body is not JSON: %s", rec.Body)
+	}
+}
+
+// live.js and the route have to name the same path, and nothing else checks it.
+func TestLiveScriptPollsTheSessionEndpoint(t *testing.T) {
+	b, err := staticFS.ReadFile("static/live.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "/services/health.json") {
+		t.Error("live.js does not poll /services/health.json")
+	}
+	if strings.Contains(string(b), "/api/v1/health") {
+		t.Error("live.js still polls the token-only API endpoint")
 	}
 }

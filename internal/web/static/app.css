@@ -6,7 +6,8 @@
 
 .app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
 .app-nav { background: var(--panel); border-right: 1px solid var(--line); padding: 1.5rem 0;
-           display: flex; flex-direction: column; }
+           display: flex; flex-direction: column; position: sticky; top: 0;
+           height: 100vh; overflow-y: auto; }
 .app-nav h1 { font-family: var(--font-display); font-size: 1.1rem; margin: 0 1.25rem 1.5rem; color: var(--accent); }
 .app-nav a { display: block; padding: .55rem 1.25rem; color: var(--ink); text-decoration: none;
              font-family: var(--font-mono); font-size: .85rem; }
@@ -33,26 +34,50 @@
 .license-body { margin: 0; padding: 1.5rem; font-family: var(--font-mono); font-size: .75rem;
                 line-height: 1.6; color: var(--ink); white-space: pre-wrap; }
 
+/* A grid item defaults to min-content width, which lets a wide table stretch
+   the whole page instead of scrolling inside its own card. */
+.app > * { min-width: 0; }
 .app-main { padding: 2rem 2.5rem; max-width: var(--max-width); }
 .app-main h2 { font-family: var(--font-display); color: var(--ink-strong); margin-top: 0; }
 .app-main h3 { font-family: var(--font-display); color: var(--ink-strong); font-size: 1rem; margin-top: 0; }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-        padding: 1.25rem; margin-bottom: 1.5rem; }
-.stat-row { display: flex; gap: 1.5rem; flex-wrap: wrap; }
-.stat { flex: 1 1 8rem; }
-.stat .value { font-family: var(--font-display); font-size: 1.6rem; color: var(--ink-strong); }
+        padding: 1.15rem 1.25rem; margin-bottom: 1.1rem; }
+.card > h3 { display: flex; align-items: baseline; gap: .6rem; margin-bottom: .35rem; }
+.card > h3::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.card > h3 + p.muted { margin-top: 0; }
+.stat-row { display: flex; gap: 0; flex-wrap: wrap; }
+.stat { flex: 1 1 8rem; padding: .15rem 1.5rem; border-left: 1px solid var(--line); }
+.stat:first-child { border-left: 0; padding-left: .25rem; }
+.stat .value { font-family: var(--font-display); font-size: 2rem; letter-spacing: -.02em;
+               line-height: 1.1; color: var(--ink-strong); }
 .stat .label { font-family: var(--font-mono); font-size: .72rem; color: var(--ink); text-transform: uppercase; }
 
 table.grid { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .85rem; }
 table.grid th { text-align: left; color: var(--ink); font-weight: 500; text-transform: uppercase;
-                font-size: .7rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
-table.grid td { padding: .55rem .75rem; border-bottom: 1px solid var(--line); color: var(--ink-strong);
+                font-size: .7rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line);
+                background: var(--panel); position: sticky; top: 0; z-index: 1; white-space: nowrap; }
+table.grid td { padding: .5rem .75rem; border-bottom: 1px solid var(--line); color: var(--ink-strong);
                 vertical-align: middle; }
 table.grid tr:last-child td { border-bottom: 0; }
+table.grid tr:hover td { background: rgba(255,255,255,.02); }
+/* The trailing column of a grid is always its row's controls. Keep them on one
+   line and against the right edge instead of wrapping the table wider. */
+table.grid td:last-child:has(form) { text-align: right; white-space: nowrap; width: 1%; }
+table.grid td:last-child:has(form) form { display: inline-flex; gap: .4rem; margin-left: .4rem; }
+/* A list carries a paragraph of description and a URL that does not wrap on
+   its own. Give the prose room and let the URL break. */
+table.grid.lists td:first-child { width: 22%; }
+table.grid.lists td:nth-child(2) { width: 34%; overflow-wrap: anywhere; }
+/* The timestamp and its interval already carry their own line break. */
+table.grid.lists td:nth-child(5) { white-space: nowrap; }
+table.grid.lists td:first-child .muted { display: block; margin-top: .2rem; font-size: .78rem;
+                                         line-height: 1.5; }
 
 .badge { display: inline-block; padding: .12rem .5rem; border-radius: 999px; font-size: .7rem;
-         font-family: var(--font-mono); border: 1px solid var(--line); color: var(--ink); }
+         font-family: var(--font-mono); border: 1px solid var(--line); color: var(--ink);
+         white-space: nowrap; }
+.nowrap { white-space: nowrap; }
 .badge.accent { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
 .badge.warn { color: #fbbf24; border-color: #78350f; background: rgba(120,53,15,.2); }
 .badge.down { color: #f87171; border-color: #7f1d1d; background: rgba(127,29,29,.2); }
@@ -64,17 +89,38 @@ table.grid tr:last-child td { border-bottom: 0; }
 .banner code, code { font-family: var(--font-mono); background: rgba(0,0,0,.35);
                      padding: .1rem .35rem; border-radius: 3px; }
 
-form.stack { display: flex; flex-direction: column; gap: .75rem; max-width: 32rem; margin-top: 1rem; }
-form.stack label { font-family: var(--font-mono); font-size: .75rem; color: var(--ink); text-transform: uppercase; }
+/* Label beside its control, not above it: the same fields in half the height,
+   and the labels line up into a column you can read down. */
+form.stack, .fields { display: grid; grid-template-columns: minmax(6rem, 11rem) minmax(0, 1fr);
+                      gap: .5rem .9rem; align-items: start; max-width: 46rem; margin-top: .9rem; }
+.fields { margin-top: 0; max-width: none; }
+form.stack > label, .fields > label { font-family: var(--font-mono); font-size: .72rem; color: var(--ink);
+                                      text-transform: uppercase; letter-spacing: .03em; grid-column: 1;
+                                      padding-top: .62rem; line-height: 1.35; }
+form.stack > :not(label), .fields > :not(label) { grid-column: 2; }
+form.stack > button, .fields > button { justify-self: start; margin-top: .3rem; }
+form.stack > p, .fields > p { margin: .1rem 0 .3rem; font-size: .82rem; }
 input[type=text], input[type=password], input[type=number], textarea, select {
   background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: .5rem .65rem;
   color: var(--ink-strong); font-family: var(--font-mono); font-size: .85rem; width: 100%;
   box-sizing: border-box; }
 textarea { resize: vertical; line-height: 1.5; }
-/* A checkbox is a switch, not a full-width text box. */
-form.stack label:has(input[type=checkbox]) { display: flex; gap: .5rem; align-items: center;
-                                             text-transform: none; color: var(--ink-strong); }
-form.stack input[type=checkbox] { width: auto; accent-color: var(--accent); }
+/* Numbers are short. A full-width box for "60" reads as a mistake. */
+input[type=number] { max-width: 9rem; }
+/* A checkbox is a switch, not a full-width text box. It carries its own label,
+   so it spans both columns rather than leaving an empty label cell. */
+form.stack > label:has(input[type=checkbox]), .fields > label:has(input[type=checkbox]) {
+  display: flex; gap: .5rem; align-items: center; text-transform: none; color: var(--ink-strong);
+  grid-column: 1 / -1; text-align: left; padding-top: .2rem; font-size: .82rem; }
+form.stack input[type=checkbox], .fields input[type=checkbox] { width: auto; accent-color: var(--accent); }
+
+/* Settings is seven groups of related fields, not one wall of eighteen. */
+.field-grid { display: grid; gap: .9rem; align-items: start; margin: .9rem 0 1rem;
+              grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
+.field-set { border: 1px solid var(--line); border-radius: 6px; padding: .5rem 1rem 1rem;
+             margin: 0; min-width: 0; }
+.field-set legend { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .09em;
+                    text-transform: uppercase; color: var(--accent); padding: 0 .4rem; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
 button { background: var(--accent); color: #04211f; border: 0; border-radius: 5px; padding: .55rem 1.1rem;
          font-family: var(--font-mono); font-size: .82rem; cursor: pointer; }
@@ -82,9 +128,41 @@ button:hover { filter: brightness(1.1); }
 button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
 button.danger { background: transparent; color: #f87171; border: 1px solid #7f1d1d; }
 .error { color: #f87171; font-family: var(--font-mono); font-size: .82rem; }
+/* Sign-in and setup are one narrow column. Side labels need a width these
+   cards do not have, so they keep the stacked form. */
 .centered { max-width: 24rem; margin: 12vh auto; }
-.address-row { display: flex; gap: .5rem; }
-.address-row input { flex: 2; }
-.address-row select { flex: 1; }
+.centered form.stack { grid-template-columns: minmax(0, 1fr); gap: .35rem; }
+.centered form.stack > label { grid-column: 1; text-align: left; padding-top: .4rem; }
+.centered form.stack > :not(label) { grid-column: 1; }
+.address-row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.address-row input[type=text] { flex: 2 1 8rem; }
+.address-row select { flex: 1 1 6rem; }
+.address-row label { white-space: nowrap; }
+/* A form inside a row needs room to be typed into. One that is only buttons
+   does not, so the width goes on the ones with a field. */
+table.grid .address-row:has(input[type=text]) { min-width: 16rem; }
+table.grid .address-row input[type=text] { min-width: 8rem; }
 .muted { color: var(--ink); }
 a { color: var(--accent); }
+
+/* Below the two-column breakpoint the nav rides the top instead of the side. */
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+  .app-nav { position: static; height: auto; flex-flow: row wrap; align-items: center; gap: .25rem;
+             padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--line); }
+  .app-nav h1 { margin: 0 .75rem 0 0; }
+  .app-nav a { padding: .4rem .6rem; }
+  .app-nav a[aria-current="page"] { border-left: 0; border-bottom: 2px solid var(--accent); }
+  .app-nav form { padding: 0 !important; margin-left: auto; }
+  .app-footer { margin: 0; padding: 0; flex-basis: 100%; }
+  .app-main { padding: 1.25rem 1rem; }
+  form.stack, .fields { grid-template-columns: minmax(0, 1fr); gap: .3rem; }
+  form.stack > label, .fields > label { grid-column: 1; text-align: left; padding-top: .4rem; }
+  form.stack > :not(label), .fields > :not(label) { grid-column: 1; }
+  .card { overflow-x: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

@@ -256,11 +256,10 @@ func TestRestartPending(t *testing.T) {
 	}
 
 	cur := boot
-	cur.PrivateDomain = "lab.example"
 	cur.DHCPLeaseFile = "/var/lib/misc/dnsmasq.leases"
 	got := restartPending(boot, cur)
-	if len(got) != 2 {
-		t.Fatalf("got %d pending items, want 2: %+v", len(got), got)
+	if len(got) != 1 {
+		t.Fatalf("got %d pending items, want 1: %+v", len(got), got)
 	}
 	// The banner has to name both values, or the operator cannot tell which
 	// one is actually serving queries right now.
@@ -270,8 +269,8 @@ func TestRestartPending(t *testing.T) {
 		}
 	}
 
-	// Only these two keys are restart-required. Everything else applies live,
-	// so a live-applied change must never raise the banner.
+	// dhcp_lease_file is the only restart-required key left. Everything else
+	// applies live, so a live-applied change must never raise the banner.
 	live := boot
 	live.TTL = 999
 	live.LogQueries = true
@@ -279,12 +278,12 @@ func TestRestartPending(t *testing.T) {
 		t.Errorf("a live-applied change raised the restart banner: %+v", got)
 	}
 
-	// The zone is lowercased before it is served, so a change of case is the
-	// same zone and must not ask for a restart that would change nothing.
-	recased := boot
-	recased.PrivateDomain = "HOME.ARPA"
-	if got := restartPending(boot, recased); len(got) != 0 {
-		t.Errorf("a case-only change raised the restart banner: %+v", got)
+	// The private domain is applied live now. Asking for a restart it does not
+	// need would send the operator to reboot a DNS server for nothing.
+	renamed := boot
+	renamed.PrivateDomain = "lab.example"
+	if got := restartPending(boot, renamed); len(got) != 0 {
+		t.Errorf("a zone rename raised the restart banner: %+v", got)
 	}
 }
 

@@ -109,6 +109,10 @@ func (h *Holder) publish(s *Snapshot) {
 // Writer is the store slice this package needs.
 type Writer interface {
 	PutSettings(store.Settings) error
+
+	// PutSettingsRenamingZone writes the settings and moves every manual record
+	// from the old private zone into the new one, in one transaction.
+	PutSettingsRenamingZone(v store.Settings, from, to string) (int, error)
 }
 
 // Service is the single write path for settings: validate, persist, rebuild,
@@ -187,7 +191,14 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	if err != nil {
 		return err
 	}
-	if err := s.w.PutSettings(v); err != nil {
+	// Renaming the private zone moves the manual records with it. Records are
+	// stored as full names, so leaving them behind would strand every one of
+	// them outside the zone the server now serves.
+	if from, to := store.ZoneSuffix(prev.PrivateDomain), store.ZoneSuffix(v.PrivateDomain); from != "" && from != to {
+		if _, err := s.w.PutSettingsRenamingZone(v, from, to); err != nil {
+			return err
+		}
+	} else if err := s.w.PutSettings(v); err != nil {
 		return err
 	}
 	s.h.publish(snap)

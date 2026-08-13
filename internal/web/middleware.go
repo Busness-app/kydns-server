@@ -96,6 +96,21 @@ func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	})
 }
 
+// requireSessionJSON is requireSession for the polled endpoints the pages
+// fetch. A redirect to an HTML login page is not an answer a fetch can use, so
+// an expired session gets a status the caller can act on.
+func (s *Server) requireSessionJSON(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.session(r); !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"signed out"}`))
+			return
+		}
+		next(w, r)
+	}
+}
+
 // requireCSRF rejects a form post whose token does not belong to its session.
 // SameSite=Lax already blocks most cross-site posts; this closes the rest.
 func (s *Server) requireCSRF(next http.HandlerFunc) http.HandlerFunc {
