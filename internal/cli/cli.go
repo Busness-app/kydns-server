@@ -32,6 +32,18 @@ func NewClient() *Client {
 	}
 }
 
+// APIError is the API's structured error. The code is carried, not only the
+// message, because a caller sometimes has to act on which failure it was: a
+// refused fingerprint is not a peer that failed to answer.
+type APIError struct{ Code, Field, Message string }
+
+func (e *APIError) Error() string {
+	if e.Field != "" {
+		return e.Field + ": " + e.Message
+	}
+	return e.Message
+}
+
 // Do sends a request and decodes the reply, surfacing the API's structured
 // error so the CLI reports the same field name the UI would.
 func (c *Client) Do(method, path string, body, out any) error {
@@ -62,10 +74,7 @@ func (c *Client) Do(method, path string, body, out any) error {
 			Error struct{ Code, Message, Field string } `json:"error"`
 		}
 		if json.Unmarshal(raw, &e) == nil && e.Error.Message != "" {
-			if e.Error.Field != "" {
-				return fmt.Errorf("%s: %s", e.Error.Field, e.Error.Message)
-			}
-			return fmt.Errorf("%s", e.Error.Message)
+			return &APIError{Code: e.Error.Code, Field: e.Error.Field, Message: e.Error.Message}
 		}
 		return fmt.Errorf("%s %s: %s", method, path, resp.Status)
 	}

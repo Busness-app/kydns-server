@@ -239,6 +239,106 @@ func TestExplicitFingerprintMismatchFailsClosed(t *testing.T) {
 	}
 }
 
+// The peek is what the CLI shows an operator before they decide. It hands the
+// peer nothing at all, so a peer they go on to decline never heard from them.
+func TestPeekFingerprintSendsNoCode(t *testing.T) {
+	addr, want, rec := startRecordingPrimary(t)
+
+	got, err := PeekFingerprint(pairCtx(t), addr, newIdentity(t))
+	if err != nil {
+		t.Fatalf("PeekFingerprint: %v", err)
+	}
+	if got != want {
+		t.Fatalf("PeekFingerprint = %q, want the key that answered %q", got, want)
+	}
+	if codes, requests := rec.seen(); len(codes) != 0 || requests != 0 {
+		t.Fatalf("the peek made %d requests carrying codes %q", requests, codes)
+	}
+}
+
+// Both dials are on a clock. A peer that accepts a connection and then says
+// nothing must not hold the operator's terminal open indefinitely, and the
+// budget is requestTimeout rather than whatever the caller happened to pass.
+func TestEachPairingDialCarriesTheRequestTimeout(t *testing.T) {
+	restore := requestTimeout
+	requestTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { requestTimeout = restore })
+
+	// Far larger than requestTimeout: a dial that ignored requestTimeout would
+	// run until this fired instead, and the elapsed time gives it away.
+	const parentBudget = 5 * time.Second
+	// Generous enough that a loaded machine does not fail here, small enough
+	// that only requestTimeout can have ended the dial.
+	const promptly = time.Second
+
+	t.Run("peek", func(t *testing.T) {
+		// Accepts TCP and never speaks TLS, so the handshake never completes.
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		go func() {
+			var held []net.Conn
+			for {
+				c, err := l.Accept()
+				if err != nil {
+					for _, c := range held {
+						c.Close()
+					}
+					return
+				}
+				held = append(held, c)
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), parentBudget)
+		defer cancel()
+		start := time.Now()
+		_, err = PeekFingerprint(ctx, l.Addr().String(), newIdentity(t))
+		if err == nil {
+			t.Fatal("PeekFingerprint returned a fingerprint from a peer that never handshook")
+		}
+		if elapsed := time.Since(start); elapsed > promptly {
+			t.Fatalf("the peek dial took %v; it is not bounded by requestTimeout", elapsed)
+		}
+	})
+
+	t.Run("send", func(t *testing.T) {
+		// Handshakes, then never answers the request carrying the code.
+		id := newIdentity(t)
+		block := make(chan struct{})
+		t.Cleanup(func() { close(block) })
+		cfg, err := pinnedTLSConfig(id, func(string) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := &http.Server{Handler: http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			select {
+			case <-block:
+			case <-r.Context().Done():
+			}
+		})}
+		go srv.Serve(tls.NewListener(l, cfg))
+		t.Cleanup(func() { srv.Close() })
+
+		ctx, cancel := context.WithTimeout(context.Background(), parentBudget)
+		defer cancel()
+		start := time.Now()
+		_, err = PairAsReplica(ctx, l.Addr().String(), newIdentity(t), "SECRETCODE", acceptAny, &fakeState{})
+		if err == nil {
+			t.Fatal("PairAsReplica succeeded against a peer that never replied")
+		}
+		if elapsed := time.Since(start); elapsed > promptly {
+			t.Fatalf("the pairing request took %v; it is not bounded by requestTimeout", elapsed)
+		}
+	})
+}
+
 // unknownCodeError is the refusal an attacker guessing codes gets from this
 // server. Expired and spent codes must be indistinguishable from it.
 func unknownCodeError(t *testing.T, addr string) string {

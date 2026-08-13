@@ -200,7 +200,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	errs := make(chan error, 3)
 	roleHolder := NewRoleHolder(RoleFrom(cfg.Replication))
-	replSrv, repPuller, nodeID, err := startReplication(ctx, cfg, st,
+	replSrv, repPuller, replID, err := startReplication(ctx, cfg, st,
 		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
 		checker.Statuses, errs, logger)
 	if err != nil {
@@ -208,6 +208,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	if replSrv != nil {
 		defer replSrv.Close()
+	}
+	nodeID := ""
+	if replID != nil {
+		nodeID = replID.NodeID
 	}
 
 	leaseFn := func() []dhcp.Lease {
@@ -236,6 +240,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithMetrics(dnsSrv.Metrics()).
 		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
 		WithReplicaAdmin(&replicaAdmin{st: st, srv: replSrv})
+	// Pairing needs this node's key, so it is offered only where there is one.
+	if replID != nil {
+		api = api.WithReplicaJoiner(&replicaJoiner{st: st, id: replID})
+	}
 	mux := http.NewServeMux()
 	api.Routes(mux)
 

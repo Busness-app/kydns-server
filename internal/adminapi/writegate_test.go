@@ -94,9 +94,9 @@ func TestWriteExemptIsExactlyThreePaths(t *testing.T) {
 	}
 }
 
-// The three exempt paths reach their handler. Tasks 6 and 7 register them for
-// real; registering them here behind the same gate proves the exemption works
-// before those handlers exist.
+// The three exempt paths reach their handler. Task 7 has yet to register
+// promote; registering all three here behind the same gate proves the
+// exemption works whether or not the handler exists yet.
 func TestExemptPathsPassTheGateOnAReplica(t *testing.T) {
 	a, tok := replicaAPI(t, "10.0.0.2:8443")
 	mux := http.NewServeMux()
@@ -111,10 +111,16 @@ func TestExemptPathsPassTheGateOnAReplica(t *testing.T) {
 			t.Errorf("POST %s on a replica = %d, want 200: the exemption is not honoured", p, rec.Code)
 		}
 	}
-	// Unregistered today, so the live API must 404 them rather than refuse them.
+	// On the live API the two pairing paths now have handlers of their own, and
+	// promote does not yet. Neither may be answered by the gate: whatever comes
+	// back, it is not the read-only refusal.
 	for _, p := range []string{PathReplicaPairPeek, PathReplicaJoin, PathReplicaPromote} {
-		if rec := do(t, a.Handler(), "POST", p, tok, "{}"); rec.Code != http.StatusNotFound {
-			t.Errorf("POST %s = %d, want 404", p, rec.Code)
+		rec := do(t, a.Handler(), "POST", p, tok, "{}")
+		if strings.Contains(rec.Body.String(), "read_only_replica") {
+			t.Errorf("POST %s was refused by the gate it is exempt from: %s", p, rec.Body)
+		}
+		if p == PathReplicaPromote && rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s = %d, want 404 until Task 7 registers it", p, rec.Code)
 		}
 	}
 }

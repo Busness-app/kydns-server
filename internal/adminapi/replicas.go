@@ -1,10 +1,13 @@
 package adminapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/yoshiofthewire/kydns-server/internal/replica"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -32,6 +35,91 @@ type ReplicaAdmin interface {
 func (a *API) WithReplicaAdmin(r ReplicaAdmin) *API {
 	a.replicaAdmin = r
 	return a
+}
+
+// ReplicaJoiner is the replica's half of pairing, split in two because the CLI
+// is not the process holding the connection whose key is being confirmed: it
+// may not even run on this machine. Peek dials and reports what answered; Join
+// sends the code, and only to the key the operator confirmed. Peek has nowhere
+// to put a code, which is the ordering made structural.
+type ReplicaJoiner interface {
+	Peek(ctx context.Context, address string) (fingerprint string, err error)
+	Join(ctx context.Context, address, code, fingerprint string) (primaryNodeID string, err error)
+}
+
+// WithReplicaJoiner attaches the pairing surface. It is optional: a node with
+// no replication identity has nothing to pair with.
+func (a *API) WithReplicaJoiner(j ReplicaJoiner) *API {
+	a.replicaJoiner = j
+	return a
+}
+
+type joinRequest struct {
+	Address     string `json:"address"`
+	Code        string `json:"code"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// peekPrimary reports the key the peer at address presents. It sends nothing:
+// the operator has confirmed nothing yet, so a peer they go on to decline must
+// learn nothing from having been dialled.
+func (a *API) peekPrimary(w http.ResponseWriter, r *http.Request) {
+	var req joinRequest
+	if !a.joinRequest(w, r, &req) {
+		return
+	}
+	fp, err := a.replicaJoiner.Peek(r.Context(), req.Address)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "peek_failed", "address", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"fingerprint": fp})
+}
+
+// joinPrimary pairs with address, pinned to the fingerprint the operator
+// confirmed. The fingerprint is required: there is no prompt-free default that
+// trusts whatever answered, here or in the CLI above it.
+func (a *API) joinPrimary(w http.ResponseWriter, r *http.Request) {
+	var req joinRequest
+	if !a.joinRequest(w, r, &req) {
+		return
+	}
+	fingerprint := strings.TrimSpace(req.Fingerprint)
+	if fingerprint == "" {
+		writeErr(w, http.StatusBadRequest, "fingerprint_required", "fingerprint",
+			"pairing needs the fingerprint the operator confirmed; peek first")
+		return
+	}
+	nodeID, err := a.replicaJoiner.Join(r.Context(), req.Address, req.Code, fingerprint)
+	if err != nil {
+		// Its own code: a rejected fingerprint may mean something is in the path,
+		// which reads nothing like a peer that failed to answer.
+		if errors.Is(err, replica.ErrFingerprintRejected) {
+			writeErr(w, http.StatusConflict, "fingerprint_mismatch", "fingerprint", err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadGateway, "pair_failed", "address", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"primary_node_id": nodeID})
+}
+
+// joinRequest decodes the body both pairing calls share and refuses the two
+// cases neither can do anything with.
+func (a *API) joinRequest(w http.ResponseWriter, r *http.Request, req *joinRequest) bool {
+	if a.replicaJoiner == nil {
+		writeErr(w, http.StatusConflict, "replication_disabled", "",
+			"replication is not configured on this node; set replication.primary and restart before pairing")
+		return false
+	}
+	if !decode(w, r, req) {
+		return false
+	}
+	if strings.TrimSpace(req.Address) == "" {
+		writeErr(w, http.StatusBadRequest, "address_required", "address", "an address to pair with is required")
+		return false
+	}
+	return true
 }
 
 // The three peer states an operator acts on. A peer that has never answered is

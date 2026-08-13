@@ -17,8 +17,9 @@ import (
 )
 
 // requestTimeout bounds one replication request. A primary that stops
-// answering must not wedge a replica's pull loop.
-const requestTimeout = 10 * time.Second
+// answering must not wedge a replica's pull loop. A var, so a test can shrink
+// it rather than wait out the real budget.
+var requestTimeout = 10 * time.Second
 
 // maxReplyBytes caps what a replica will read from a primary. Pinned is not
 // the same as trusted with unbounded memory: a compromised primary must not be

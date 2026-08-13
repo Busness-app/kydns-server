@@ -34,6 +34,7 @@ type API struct {
 	metrics       *dnsserver.Metrics
 	replicaStatus func() ReplicaStatus
 	replicaAdmin  ReplicaAdmin
+	replicaJoiner ReplicaJoiner
 }
 
 // ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
@@ -239,6 +240,11 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
 
 	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
+
+	// Registered from the constants the exemption list is built from, so a
+	// renamed path cannot end up gated on one side and exempt on the other.
+	mux.HandleFunc("POST "+PathReplicaPairPeek, auth(a.peekPrimary))
+	mux.HandleFunc("POST "+PathReplicaJoin, auth(a.joinPrimary))
 
 	// Managing replicas is the primary's job. These two are deliberately not in
 	// writeExempt: a replica minting invites would enroll nodes its primary

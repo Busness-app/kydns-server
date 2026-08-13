@@ -48,9 +48,7 @@ type pairReply struct {
 // Each dial carries its own budget; the operator's decision carries none.
 func PairAsReplica(ctx context.Context, address string, id *Identity, code string,
 	confirm Confirmer, state StateStore) (string, error) {
-	peekCtx, cancelPeek := context.WithTimeout(ctx, requestTimeout)
-	fingerprint, err := peekFingerprint(peekCtx, address, id)
-	cancelPeek()
+	fingerprint, err := PeekFingerprint(ctx, address, id)
 	if err != nil {
 		return "", err
 	}
@@ -106,9 +104,14 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	return fingerprint, nil
 }
 
-// peekFingerprint handshakes and hangs up. Nothing is written, so a peer the
-// operator goes on to decline never receives a request at all.
-func peekFingerprint(ctx context.Context, address string, id *Identity) (string, error) {
+// PeekFingerprint handshakes and hangs up. Nothing is written, so a peer the
+// operator goes on to decline never receives a request at all. It is exported
+// because the CLI shows this fingerprint to the operator on one call and pairs
+// on a second: the connection being confirmed cannot be held open across an
+// operator's decision made on another machine.
+func PeekFingerprint(ctx context.Context, address string, id *Identity) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
 	cfg, err := pinnedTLSConfig(id, func(string) bool { return true })
 	if err != nil {
 		return "", err
