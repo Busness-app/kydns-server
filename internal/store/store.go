@@ -766,7 +766,24 @@ func (s *Store) ApplySnapshot(in SnapshotInput) error {
 	if err := replaceAll(tx, in.Views, in.Services, in.Records); err != nil {
 		return err
 	}
-	if err := putSettings(tx, in.Settings); err != nil {
+	// dhcp_lease_file, discovery_interval, log_queries and log_client_ip are
+	// node-local and never replicated. Enforced here rather than trusted to
+	// the caller, so a later caller that forwards a pulled Settings verbatim
+	// cannot wipe them out.
+	settings := in.Settings
+	var dhcpLeaseFile string
+	var discoveryInterval int
+	var logQueries, logClientIP bool
+	err = tx.QueryRow(`SELECT dhcp_lease_file, discovery_interval, log_queries, log_client_ip FROM settings WHERE id = 1`).
+		Scan(&dhcpLeaseFile, &discoveryInterval, &logQueries, &logClientIP)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		settings.DHCPLeaseFile, settings.DiscoveryInterval = dhcpLeaseFile, discoveryInterval
+		settings.LogQueries, settings.LogClientIP = logQueries, logClientIP
+	}
+	if err := putSettings(tx, settings); err != nil {
 		return err
 	}
 	if err := replaceBlacklistDefinitions(tx, in.Blacklist, in.Lists, in.Rules); err != nil {

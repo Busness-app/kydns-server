@@ -226,18 +226,18 @@ func replaceBlacklistDefinitions(tx *sql.Tx, set BlacklistSettings, lists []Blac
 		return err
 	}
 
-	existing := map[string]bool{}
-	rows, err := tx.Query(`SELECT name FROM blacklist_lists`)
+	existing := map[string]string{} // name -> url
+	rows, err := tx.Query(`SELECT name, url FROM blacklist_lists`)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, url string
+		if err := rows.Scan(&name, &url); err != nil {
 			rows.Close()
 			return err
 		}
-		existing[name] = true
+		existing[name] = url
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -247,7 +247,21 @@ func replaceBlacklistDefinitions(tx *sql.Tx, set BlacklistSettings, lists []Blac
 	incoming := map[string]bool{}
 	for _, l := range lists {
 		incoming[l.Name] = true
-		if existing[l.Name] {
+		if oldURL, ok := existing[l.Name]; ok {
+			// The body belongs to the URL, not the name: a repointed list must
+			// not keep serving the old source's downloaded content or ETag.
+			if oldURL != l.URL {
+				if _, err := tx.Exec(`
+					UPDATE blacklist_lists
+					SET url = ?, format = ?, description = ?, enabled = ?, builtin = ?, interval_seconds = ?,
+					    snapshot = '', entry_count = 0, skipped_count = 0, etag = '', last_modified = '',
+					    last_attempt_at = 0, last_ok_at = 0, last_error = ''
+					WHERE name = ?`,
+					l.URL, l.Format, l.Description, l.Enabled, l.Builtin, l.IntervalSeconds, l.Name); err != nil {
+					return err
+				}
+				continue
+			}
 			if _, err := tx.Exec(`
 				UPDATE blacklist_lists
 				SET url = ?, format = ?, description = ?, enabled = ?, builtin = ?, interval_seconds = ?
