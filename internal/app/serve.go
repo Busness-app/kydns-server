@@ -160,9 +160,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	dnsSrv := dnsserver.New(dnsserver.Options{
 		Holder: holder, ACL: acl,
-		Auth: &dnsserver.Authoritative{
-			Zone: cfg.PrivateFQDN(), TTL: uint32(cfg.DNS.TTL), ReverseZones: reverse,
-		},
+		Auth:        dnsserver.NewAuthoritative(cfg.PrivateFQDN(), uint32(cfg.DNS.TTL), reverse),
 		Forwarder:   fwd,
 		Policy:      policyHolder,
 		LogQueries:  cfg.DNS.LogQueries,

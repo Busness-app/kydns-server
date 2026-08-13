@@ -237,3 +237,37 @@ func TestCacheGetPreservesOPTRecordAfterAgeDecrement(t *testing.T) {
 		t.Errorf("OPT version = %d after aging, want 0", opt.Version())
 	}
 }
+
+func TestCacheRetuneShrinks(t *testing.T) {
+	c := NewCache(10, 1, 3600, 300)
+	for i := 0; i < 10; i++ {
+		name := question("h" + string(rune('a'+i)) + ".example.")
+		c.Put(name, false, reply(name.Name, 60))
+	}
+	if c.Len() != 10 {
+		t.Fatalf("cache holds %d, want 10", c.Len())
+	}
+
+	// Shrinking must evict down immediately, not wait for the next insert:
+	// an operator lowering this is reclaiming memory now.
+	c.Retune(3, 1, 3600, 300)
+	if c.Len() > 3 {
+		t.Errorf("cache still holds %d after shrinking to 3", c.Len())
+	}
+}
+
+func TestCacheRetuneChangesClamp(t *testing.T) {
+	c := NewCache(10, 1, 3600, 300)
+	q := question("a.example.")
+
+	c.Retune(10, 1, 10, 300)
+	c.Put(q, false, reply(q.Name, 3000))
+
+	got, ok := c.Get(q, false)
+	if !ok {
+		t.Fatal("entry missing")
+	}
+	if got.Answer[0].Header().Ttl > 10 {
+		t.Errorf("TTL %d exceeds the new maximum of 10", got.Answer[0].Header().Ttl)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
 	"github.com/yoshiofthewire/kydns-server/internal/zone"
@@ -12,11 +13,34 @@ import (
 const cnameChaseDepth = 8
 
 // Authoritative answers from the snapshot for names inside the private zone
-// and the configured reverse zones.
+// and the configured reverse zones. TTL and the reverse zones are read on
+// every query, so both are atomics rather than mutex-guarded fields.
 type Authoritative struct {
-	Zone         string // FQDN with trailing dot
-	TTL          uint32
-	ReverseZones []netip.Prefix
+	Zone         string // FQDN with trailing dot; restart-required, never swapped
+	ttl          atomic.Uint32
+	reverseZones atomic.Pointer[[]netip.Prefix]
+}
+
+// NewAuthoritative builds an Authoritative for zone, with the given initial
+// TTL and reverse zones.
+func NewAuthoritative(zone string, ttl uint32, reverse []netip.Prefix) *Authoritative {
+	a := &Authoritative{Zone: zone}
+	a.ttl.Store(ttl)
+	a.SetReverseZones(reverse)
+	return a
+}
+
+// SetTTL changes the TTL on authoritative answers. Answers already in flight
+// keep the value they started with, which is one query's worth of staleness.
+func (a *Authoritative) SetTTL(ttl uint32) { a.ttl.Store(ttl) }
+
+// SetReverseZones changes which networks get derived PTR records.
+func (a *Authoritative) SetReverseZones(z []netip.Prefix) {
+	masked := make([]netip.Prefix, 0, len(z))
+	for _, p := range z {
+		masked = append(masked, p.Masked())
+	}
+	a.reverseZones.Store(&masked)
 }
 
 // Owns reports whether qname falls in a zone this server is authoritative for.
@@ -32,7 +56,7 @@ func (a *Authoritative) Owns(qname string) bool {
 		if !ok {
 			return false
 		}
-		for _, p := range a.ReverseZones {
+		for _, p := range *a.reverseZones.Load() {
 			if p.Contains(addr) {
 				return true
 			}
@@ -45,11 +69,11 @@ func (a *Authoritative) Owns(qname string) bool {
 // advances on every rebuild for free.
 func (a *Authoritative) SOA(serial uint32) *dns.SOA {
 	return &dns.SOA{
-		Hdr:     dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: a.TTL},
+		Hdr:     dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: a.ttl.Load()},
 		Ns:      "ns." + a.Zone,
 		Mbox:    "hostmaster." + a.Zone,
 		Serial:  serial,
-		Refresh: 3600, Retry: 600, Expire: 604800, Minttl: a.TTL,
+		Refresh: 3600, Retry: 600, Expire: 604800, Minttl: a.ttl.Load(),
 	}
 }
 
@@ -70,7 +94,7 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 			m.Answer = []dns.RR{a.SOA(snap.Generation)}
 		case dns.TypeNS:
 			m.Answer = []dns.RR{&dns.NS{
-				Hdr: dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: a.TTL},
+				Hdr: dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: a.ttl.Load()},
 				Ns:  "ns." + a.Zone,
 			}}
 		default:
@@ -82,7 +106,7 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 	if q.Qtype == dns.TypePTR {
 		if target := snap.LookupPTR(view, name); target != "" {
 			m.Answer = []dns.RR{&dns.PTR{
-				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: a.TTL},
+				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: a.ttl.Load()},
 				Ptr: dns.Fqdn(target),
 			}}
 			return m
@@ -120,7 +144,7 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 // Out-of-zone targets are returned alone for the client's resolver to continue.
 func (a *Authoritative) chase(snap *zone.Snapshot, view, name, target string, qtype uint16, depth int) []dns.RR {
 	cname := &dns.CNAME{
-		Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: a.TTL},
+		Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: a.ttl.Load()},
 		Target: dns.Fqdn(target),
 	}
 	if depth >= cnameChaseDepth || qtype == dns.TypeCNAME || !a.Owns(target) {
@@ -141,7 +165,7 @@ func (a *Authoritative) chase(snap *zone.Snapshot, view, name, target string, qt
 
 func (a *Authoritative) toRR(rr zone.RR, qtype uint16) dns.RR {
 	hdr := func(t uint16) dns.RR_Header {
-		return dns.RR_Header{Name: rr.Name, Rrtype: t, Class: dns.ClassINET, Ttl: a.TTL}
+		return dns.RR_Header{Name: rr.Name, Rrtype: t, Class: dns.ClassINET, Ttl: a.ttl.Load()}
 	}
 	switch rr.Type {
 	case "A":

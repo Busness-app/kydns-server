@@ -93,7 +93,7 @@ func TestLocalRecordAndAllowRuleBothWin(t *testing.T) {
 	}
 
 	// The local name is answered authoritatively, so the policy is never asked.
-	auth := &dnsserver.Authoritative{Zone: "home.arpa.", TTL: 60}
+	auth := dnsserver.NewAuthoritative("home.arpa.", 60, nil)
 	q := dns.Question{Name: "kypost.home.arpa.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	m := auth.Answer(zh.Current(), "", q)
 	if m == nil || m.Rcode != dns.RcodeSuccess || len(m.Answer) != 1 {
@@ -196,7 +196,7 @@ func TestDNSServerWiredToARealHolderBlocksAndServesLocalNames(t *testing.T) {
 	srv := dnsserver.New(dnsserver.Options{
 		Holder: zh,
 		ACL:    dnsserver.NewACL([]netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}),
-		Auth:   &dnsserver.Authoritative{Zone: "home.arpa.", TTL: 60},
+		Auth:   dnsserver.NewAuthoritative("home.arpa.", 60, nil),
 		Policy: policyHolder,
 	})
 	addr := startUDP(t, srv)

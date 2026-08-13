@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -37,16 +38,27 @@ type Options struct {
 }
 
 type Server struct {
-	o    Options
-	mu   sync.Mutex
-	srvs []*dns.Server
+	o           Options
+	logQueries  atomic.Bool
+	logClientIP atomic.Bool
+	mu          sync.Mutex
+	srvs        []*dns.Server
 }
 
 func New(o Options) *Server {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
-	return &Server{o: o}
+	s := &Server{o: o}
+	s.SetLogging(o.LogQueries, o.LogClientIP)
+	return s
+}
+
+// SetLogging changes both logging opt-ins. The client IP stays a separate
+// choice from query logging: turning on one must never turn on the other.
+func (s *Server) SetLogging(queries, clientIP bool) {
+	s.logQueries.Store(queries)
+	s.logClientIP.Store(clientIP)
 }
 
 // ServeDNS is the whole pipeline: opcode and class checks, ACL, view
@@ -199,7 +211,7 @@ func blockSOA(qname string, ttl uint32) *dns.SOA {
 // the client IP needs its own separate flag. The policy field says which
 // decision produced the answer; it never says who asked.
 func (s *Server) logQuery(r, m *dns.Msg, w dns.ResponseWriter, source, view, policy string, d time.Duration) {
-	if !s.o.LogQueries || len(r.Question) == 0 {
+	if !s.logQueries.Load() || len(r.Question) == 0 {
 		return
 	}
 	q := r.Question[0]
@@ -212,7 +224,7 @@ func (s *Server) logQuery(r, m *dns.Msg, w dns.ResponseWriter, source, view, pol
 		"policy", policy,
 		"duration_ms", d.Milliseconds(),
 	}
-	if s.o.LogClientIP {
+	if s.logClientIP.Load() {
 		args = append(args, "client", w.RemoteAddr().String())
 	}
 	s.o.Logger.Info("query", args...)
