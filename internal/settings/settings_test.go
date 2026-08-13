@@ -257,7 +257,7 @@ func TestServiceSetDoesNotReadSourceAfterAWriteSucceeds(t *testing.T) {
 		return store.Settings{}, errors.New("read failed")
 	})
 	// Seed the holder without going through the failing source.
-	h.Publish(&Snapshot{Raw: valid()})
+	h.publish(&Snapshot{Raw: valid()})
 
 	var applied []*Snapshot
 	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) })

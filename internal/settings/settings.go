@@ -92,8 +92,15 @@ func (h *Holder) Rebuild() error {
 // Current returns the live snapshot, or nil before the first successful build.
 func (h *Holder) Current() *Snapshot { return h.cur.Load() }
 
-// Publish swaps in an already-built snapshot, ordered against Rebuild.
-func (h *Holder) Publish(s *Snapshot) {
+// publish swaps in an already-built snapshot, ordered against Rebuild. It is
+// unexported: the only caller that may skip Rebuild's validate-then-swap is
+// Service.Set, which has already validated and persisted the same value this
+// snapshot was built from. A caller outside this package has no such
+// guarantee, and could publish a snapshot that was never persisted (a restart
+// would then boot to something else) or one built from a wider baseline than
+// the stored row (defeating the exposure guardrail, which trusts the running
+// snapshot as "already confirmed").
+func (h *Holder) publish(s *Snapshot) {
 	h.rebuildMu.Lock()
 	defer h.rebuildMu.Unlock()
 	h.cur.Store(s)
@@ -158,7 +165,7 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	if err := s.w.PutSettings(v); err != nil {
 		return err
 	}
-	s.h.Publish(snap)
+	s.h.publish(snap)
 	s.onApply(snap)
 	return nil
 }

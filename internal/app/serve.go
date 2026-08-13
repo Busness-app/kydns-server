@@ -224,7 +224,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc)
+	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc).WithSettings(settingsSvc)
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
