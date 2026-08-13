@@ -166,28 +166,91 @@ func TestServiceSetDoesNotApplyWhenTheWriteFails(t *testing.T) {
 	}
 }
 
-// Concurrent reads of the snapshot while it is being replaced must not tear.
-// Run with -race for this to mean anything.
+// Concurrent reads of the snapshot while it is being replaced must never see a
+// torn value: the source alternates between two known TTLs, and the reader
+// checks the exact value it observes, not just non-nil. Run with -race for
+// this to mean anything.
 func TestHolderConcurrentRebuild(t *testing.T) {
-	w := &fakeWriter{cur: valid()}
-	h := NewHolder(func() (store.Settings, error) { return w.cur, nil })
+	const ttlA, ttlB = 60, 120
+	next := ttlA
+	h := NewHolder(func() (store.Settings, error) {
+		v := valid()
+		v.TTL = next
+		if next == ttlA {
+			next = ttlB
+		} else {
+			next = ttlA
+		}
+		return v, nil
+	})
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
+
+	stop := make(chan struct{})
+	readDone := make(chan struct{})
 	go func() {
-		defer close(done)
-		for i := 0; i < 500; i++ {
-			if h.Current() == nil {
+		defer close(readDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			snap := h.Current()
+			if snap == nil {
 				t.Error("Current returned nil after the first build")
+				return
+			}
+			if snap.Raw.TTL != ttlA && snap.Raw.TTL != ttlB {
+				t.Errorf("Current returned a torn TTL: %d", snap.Raw.TTL)
 				return
 			}
 		}
 	}()
+
 	for i := 0; i < 500; i++ {
 		if err := h.Rebuild(); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			break
 		}
 	}
-	<-done
+	close(stop)
+	<-readDone
+}
+
+// A store failure that only shows up after the write already committed - a
+// SQLite read hiccup on the very next query, say - must not be reported as a
+// save failure: Set no longer reads back through Source at all once the write
+// has succeeded.
+func TestServiceSetDoesNotReadSourceAfterAWriteSucceeds(t *testing.T) {
+	w := &fakeWriter{cur: valid()}
+	reads := 0
+	h := NewHolder(func() (store.Settings, error) {
+		reads++
+		return store.Settings{}, errors.New("read failed")
+	})
+	// Seed the holder without going through the failing source.
+	h.Publish(&Snapshot{Raw: valid()})
+
+	var applied []*Snapshot
+	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) })
+
+	v := valid()
+	v.TTL = 120
+	if err := svc.Set(v, ""); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if reads != 0 {
+		t.Errorf("Set read through Source %d times; it must not read Source at all", reads)
+	}
+	if w.cur.TTL != 120 {
+		t.Errorf("not persisted: %d", w.cur.TTL)
+	}
+	if len(applied) != 1 || applied[0].Raw.TTL != 120 {
+		t.Fatalf("apply did not see the new snapshot: %v", applied)
+	}
+	if h.Current().Raw.TTL != 120 {
+		t.Error("the holder still serves the old snapshot")
+	}
 }

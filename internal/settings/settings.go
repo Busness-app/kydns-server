@@ -92,6 +92,13 @@ func (h *Holder) Rebuild() error {
 // Current returns the live snapshot, or nil before the first successful build.
 func (h *Holder) Current() *Snapshot { return h.cur.Load() }
 
+// Publish swaps in an already-built snapshot, ordered against Rebuild.
+func (h *Holder) Publish(s *Snapshot) {
+	h.rebuildMu.Lock()
+	defer h.rebuildMu.Unlock()
+	h.cur.Store(s)
+}
+
 // Writer is the store slice this package needs.
 type Writer interface {
 	PutSettings(store.Settings) error
@@ -119,7 +126,7 @@ func NewService(w Writer, h *Holder, onApply func(*Snapshot)) *Service {
 
 func (s *Service) Holder() *Holder { return s.h }
 
-// Get returns the settings as stored.
+// Get returns the settings the server is running.
 func (s *Service) Get() (store.Settings, error) {
 	if snap := s.h.Current(); snap != nil {
 		return snap.Raw, nil
@@ -127,8 +134,10 @@ func (s *Service) Get() (store.Settings, error) {
 	return store.Settings{}, errors.New("settings are not loaded yet")
 }
 
-// Set validates, persists, rebuilds the snapshot, then applies it. Nothing is
-// stored or applied unless every step before it succeeded.
+// Set validates, builds, persists, then publishes the built snapshot. Nothing
+// is stored or applied unless every step before it succeeded, and once the
+// write succeeds nothing after it can fail: the snapshot is already built, and
+// publishing it does no I/O.
 func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -136,17 +145,14 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	if err := Validate(v, confirmPublic); err != nil {
 		return err
 	}
-	// Build before the write, so an input that validates but cannot be
-	// constructed never reaches the database.
-	if _, err := Build(v); err != nil {
+	snap, err := Build(v)
+	if err != nil {
 		return err
 	}
 	if err := s.w.PutSettings(v); err != nil {
 		return err
 	}
-	if err := s.h.Rebuild(); err != nil {
-		return err
-	}
-	s.onApply(s.h.Current())
+	s.h.Publish(snap)
+	s.onApply(snap)
 	return nil
 }
