@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -27,25 +27,46 @@ type UpstreamStatus struct {
 // fwdState pairs the upstream list with its status slice. They are only ever
 // swapped together, so an in-flight query cannot record a result against an
 // upstream that is no longer at that index.
+//
+// wg counts queries currently using ups. A reader increments it before it can
+// be swapped out (see Forwarder.acquireState) and decrements it when done, so
+// Replace can wait for exactly those queries to finish before closing.
 type fwdState struct {
 	ups []upstream.Upstream
+	wg  sync.WaitGroup
 
 	mu     sync.Mutex
 	status []UpstreamStatus
 }
 
-// close releases every upstream's connections. Only called once this state
-// has been retired by a swap.
-func (st *fwdState) close() {
+// close releases every retired upstream's connections, skipping any instance
+// also present in keep: Replace may carry an unchanged Upstream over into the
+// new list, and closing it would tear down a pool that is still live.
+func (st *fwdState) close(keep []upstream.Upstream) {
 	for _, u := range st.ups {
-		u.Close()
+		if carriedOver(keep, u) {
+			continue
+		}
+		if err := u.Close(); err != nil {
+			slog.Default().Warn("failed to close retired upstream", "upstream", u.String(), "error", err)
+		}
 	}
+}
+
+func carriedOver(keep []upstream.Upstream, u upstream.Upstream) bool {
+	for _, k := range keep {
+		if k == u {
+			return true
+		}
+	}
+	return false
 }
 
 // Forwarder resolves non-authoritative queries through the cache and, on a
 // miss, the upstream list in order.
 type Forwarder struct {
-	state   atomic.Pointer[fwdState]
+	mu      sync.RWMutex
+	state   *fwdState
 	timeout time.Duration
 	cache   *Cache
 	group   singleflight.Group
@@ -61,28 +82,57 @@ func NewForwarder(ups []upstream.Upstream, timeout time.Duration, c *Cache) *For
 // have never been tried, and a stale error would send the operator after a
 // problem that no longer exists.
 //
-// A query already in flight loaded the retiring state before this call and
-// may still be mid-exchange on one of its connections, so the retired
-// upstreams are not closed synchronously here. exchange loops over at most
-// len(old.ups) attempts, each bounded by f.timeout, so closing after that
-// worst case has elapsed is enough to guarantee no in-flight exchange is
-// still using them. A goroutine that raced past its context deadline right
-// at that boundary could in principle still be holding a connection; this is
-// a bounded, best-effort guarantee, not a proof.
+// Replace takes ownership of every upstream it retires: once it returns, the
+// caller must not use or close them itself. An upstream instance that
+// appears in both the old and the new list (a reload that reuses an
+// unchanged Upstream) is treated as still live and is never closed.
+//
+// A query already in flight holds the retiring state and may still be
+// mid-exchange on one of its connections. acquireState/wg tracks exactly
+// those queries, so the retired upstreams are closed only after every one of
+// them has finished — not on a timer guessing how long that could take.
 func (f *Forwarder) Replace(ups []upstream.Upstream) {
 	st := &fwdState{ups: ups, status: make([]UpstreamStatus, len(ups))}
 	for i, u := range ups {
 		st.status[i] = UpstreamStatus{Spec: u.String(), Secure: u.Secure()}
 	}
-	old := f.state.Swap(st)
-	if old != nil && len(old.ups) > 0 {
-		time.AfterFunc(time.Duration(len(old.ups))*f.timeout, old.close)
+	f.mu.Lock()
+	old := f.state
+	f.state = st
+	f.mu.Unlock()
+	if old != nil {
+		go func() {
+			old.wg.Wait()
+			old.close(ups)
+		}()
 	}
+}
+
+// currentState is for readers that only need a consistent snapshot, not a
+// guarantee that the upstreams inside it stay open — Status never touches a
+// connection.
+func (f *Forwarder) currentState() *fwdState {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.state
+}
+
+// acquireState loads the state a query will use and marks it in-use so
+// Replace cannot close its upstreams until the caller calls the returned
+// done func. RLock ties the increment to the swap: any reader that observes
+// the old state here provably incremented wg before Replace's write lock
+// could have swapped it out from under it.
+func (f *Forwarder) acquireState() (st *fwdState, done func()) {
+	f.mu.RLock()
+	st = f.state
+	st.wg.Add(1)
+	f.mu.RUnlock()
+	return st, st.wg.Done
 }
 
 // Status is a snapshot for the UI, copied so callers cannot race the recorder.
 func (f *Forwarder) Status() []UpstreamStatus {
-	st := f.state.Load()
+	st := f.currentState()
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	return append([]UpstreamStatus(nil), st.status...)
@@ -138,7 +188,8 @@ func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns
 	req.CheckingDisabled = false
 	req.AuthenticatedData = true
 
-	st := f.state.Load()
+	st, done := f.acquireState()
+	defer done()
 	if len(st.ups) == 0 {
 		return nil, errors.New("no upstreams configured")
 	}

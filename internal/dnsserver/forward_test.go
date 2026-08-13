@@ -3,6 +3,7 @@ package dnsserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -434,23 +435,28 @@ func TestForwarderReplace(t *testing.T) {
 }
 
 // Queries in flight during a swap must not panic or write to the wrong status
-// entry. Meaningful only with -race.
+// entry. Each query targets a unique name so it actually reaches an upstream
+// instead of being absorbed by the cache. The two-upstream list fails at
+// index 0 and succeeds at index 1, so a record against index 1 lands out of
+// range on the one-upstream list — a stale index does not just land on a
+// different-but-valid entry, it panics. Meaningful only with -race.
 func TestForwarderReplaceUnderLoad(t *testing.T) {
 	a := okUpstream("udp://10.0.0.1:53", false)
-	b := deadUpstream("udp://10.0.0.2:53", false)
+	bad := deadUpstream("udp://10.0.0.2:53", false)
+	good := okUpstream("udp://10.0.0.3:53", false)
 	f := newForwarder(a)
 
-	q := question("a.example.com.")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for i := 0; i < 500; i++ {
+			q := question(fmt.Sprintf("q%d.example.com.", i))
 			_, _ = f.Resolve(context.Background(), q, false)
 		}
 	}()
 	for i := 0; i < 500; i++ {
 		if i%2 == 0 {
-			f.Replace([]upstream.Upstream{b})
+			f.Replace([]upstream.Upstream{bad, good})
 		} else {
 			f.Replace([]upstream.Upstream{a})
 		}
@@ -468,10 +474,26 @@ func TestForwarderReplaceClosesRetiredUpstreams(t *testing.T) {
 
 	f.Replace([]upstream.Upstream{b})
 	// The retired upstream's sockets must be released, not held until the
-	// process exits.
+	// process exits. With no query in flight, wg is already zero, so this
+	// resolves almost immediately rather than waiting out a timer.
 	waitFor(t, 3*time.Second, func() bool { return a.closed.Load() })
 	if b.closed.Load() {
 		t.Error("Replace closed the live upstream, not just the retired one")
+	}
+}
+
+// An upstream instance carried over unchanged into the new list (the shape a
+// settings reload that only touches other fields would produce) must not be
+// closed: its DoT pool is still live and in use.
+func TestForwarderReplaceKeepsCarriedOverUpstream(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := okUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a, b)
+
+	f.Replace([]upstream.Upstream{b}) // a retired, b carried over unchanged
+	waitFor(t, 3*time.Second, func() bool { return a.closed.Load() })
+	if b.closed.Load() {
+		t.Error("Replace closed an upstream instance still present in the new list")
 	}
 }
 
