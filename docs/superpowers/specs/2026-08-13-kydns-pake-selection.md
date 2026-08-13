@@ -1,7 +1,14 @@
 # Choosing a PAKE for peer pairing
 
-Status: blocked — no candidate qualified
+Status: resolved — no candidate qualified; operator-mediated fingerprint
+confirmation adopted instead
 Date: 2026-08-13
+
+**Outcome.** The operator chose the second unblock path below. Pairing now
+confirms the primary's fingerprint by eye before the code is sent, and the
+[replication design](2026-08-13-kydns-linked-server-replication-design.md)
+records the protocol. This document stands as the record of why no dependency
+was taken, and as the criteria any future candidate is measured against.
 
 ## Why this decision exists
 

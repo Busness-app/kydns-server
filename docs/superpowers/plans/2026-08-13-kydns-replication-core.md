@@ -4,9 +4,11 @@
 
 **Goal:** A KyDNS replica pulls its configuration from a linked primary over an authenticated TLS link and serves DNS from it, with no operator surface yet.
 
-**Architecture:** The primary keeps a `config_version` bumped by SQL triggers on replicated tables only. A replica polls that version, and on a change pulls the whole configuration document and applies it in one transaction. Peers are enrolled once by a single-use pairing code exchanged as a PAKE secret, then authenticate on pinned Ed25519 key fingerprints forever after.
+**Architecture:** The primary keeps a `config_version` bumped by SQL triggers on replicated tables only. A replica polls that version, and on a change pulls the whole configuration document and applies it in one transaction. Peers are enrolled once — the operator confirms the primary's key fingerprint, then a single-use code authorizes the replica — and authenticate on pinned Ed25519 key fingerprints forever after.
 
-**Tech Stack:** Go 1.26.5, `modernc.org/sqlite`, `crypto/tls`, `crypto/ed25519`, one new PAKE dependency selected in Task 6.
+**Tech Stack:** Go 1.26.5, `modernc.org/sqlite`, `crypto/tls`, `crypto/ed25519`. No new dependencies — Task 6 evaluated the Go PAKE landscape and found nothing that qualified.
+
+**Execution order:** 1-7, then **9 before 8** — revised Task 8 pairs over TLS and needs Task 9's certificate helpers — then 10, 11.
 
 **Spec:** `docs/superpowers/specs/2026-08-13-kydns-linked-server-replication-design.md`
 
@@ -1095,7 +1097,7 @@ and typed by a human, so it can never be sent as a bearer token."
 - Test: `internal/store/peer_test.go`, `internal/replica/pairing_test.go`
 
 **Interfaces:**
-- Consumes: `replica.Identity`, `replica.Fingerprint`, the PAKE from Task 6.
+- Consumes: `replica.Identity`, `replica.Fingerprint`.
 - Produces:
 
 ```go
@@ -1317,9 +1319,9 @@ import (
 // lookalikes stay out.
 var codeEncoding = base32.NewEncoding("ABCDEFGHJKMNPQRSTVWXYZ0123456789").WithPadding(base32.NoPadding)
 
-// NewPairingCode returns 80 bits of entropy. That is far more than a PAKE
-// needs, and it costs the operator one extra line to type once in a node's
-// lifetime.
+// NewPairingCode returns 80 bits of entropy. The code authorizes an
+// enrollment rather than authenticating one, and it costs the operator one
+// extra line to type once in a node's lifetime.
 func NewPairingCode() (string, error) {
 	b := make([]byte, 10)
 	if _, err := rand.Read(b); err != nil {
@@ -1406,191 +1408,126 @@ anchors are its own and must never arrive from a peer."
 
 ### Task 8: The pairing exchange
 
+**Revised after Task 6.** No Go PAKE qualified — see
+`docs/superpowers/specs/2026-08-13-kydns-pake-selection.md`. Pairing now uses
+operator-mediated fingerprint confirmation (the SSH model). Because the
+fingerprint comes from the TLS certificate, **this task now depends on Task 9
+and must be implemented after it.**
+
 **Files:**
-- Create: `internal/replica/handshake.go`
-- Test: `internal/replica/handshake_test.go`
+- Create: `internal/replica/pairing_exchange.go`
+- Modify: `internal/replica/server.go` (add the pairing endpoint)
+- Test: `internal/replica/pairing_exchange_test.go`
 
 **Interfaces:**
-- Consumes: `Identity`, `InviteBook`, `Fingerprint`, the PAKE from Task 6.
+- Consumes: `Identity`, `InviteBook`, `Fingerprint`, `selfSignedCert` and the
+  pinned-TLS helpers from Task 9, `store.Peer`.
 - Produces:
 
 ```go
-// PairAsPrimary runs the primary side over conn, returning the peer's
-// fingerprint on success.
-func PairAsPrimary(conn net.Conn, id *Identity, book *InviteBook) (peerFingerprint string, err error)
+// Confirmer decides whether the fingerprint a peer presented really belongs
+// to the intended primary. An interactive caller prompts the operator; a
+// scripted caller compares against a fingerprint passed on the command line.
+// Returning false aborts pairing before anything is sent.
+type Confirmer func(fingerprint string) (bool, error)
 
-// PairAsReplica runs the replica side over conn, returning the primary's
-// fingerprint on success.
-func PairAsReplica(conn net.Conn, id *Identity, code string) (primaryFingerprint string, err error)
+// ErrFingerprintRejected is returned when the Confirmer declines. It is a
+// distinct error because the CLI reports it differently from a network
+// failure: a rejected fingerprint may mean an attacker is in the path.
+var ErrFingerprintRejected = errors.New("fingerprint not confirmed")
+
+// PairAsReplica dials address, reads the certificate the peer presents, and
+// asks confirm about its fingerprint. Only on approval does it send code.
+// It returns the primary's fingerprint.
+func PairAsReplica(ctx context.Context, address string, id *Identity,
+	code string, confirm Confirmer) (primaryFingerprint string, err error)
 ```
 
-Both sides derive a shared key from the code with the PAKE, then each signs a
-transcript hash with its Ed25519 key and sends its public key. The signature
-binds the key to the PAKE session, so an observer who later guesses the code
-still cannot substitute a key. Only after both signatures verify does either
-side return a fingerprint.
+The primary side is `POST /replica/pair` on the Task 9 listener.
+
+**The security property is the ordering.** The code is transmitted only after
+the Confirmer approves. An attacker in the path presents its own certificate
+and therefore its own fingerprint, which does not match what the primary
+displays, so the operator declines and no code is ever sent. The attacker
+learns nothing and cannot enroll.
+
+**The pairing endpoint is the one unpinned route.** Task 9's server refuses
+any peer whose fingerprint is not pinned. `/replica/pair` must accept an
+unpinned client — that is what pairing is for — while every other route
+continues to require a pin. Implement this as a check in the handler chain
+keyed on the route, not by loosening the TLS config: the connection still
+requires a client certificate, because the primary pins the replica's
+fingerprint from it.
+
+Protocol:
+
+1. Replica dials with its own client certificate and TLS 1.3.
+2. Replica computes `Fingerprint` of the peer's leaf key and calls `confirm`.
+   On false, close the connection and return `ErrFingerprintRejected`
+   without writing a request body.
+3. Replica `POST`s `{"code": "..."}` to `/replica/pair`.
+4. Primary redeems the code from its `InviteBook`. On failure, `403` with no
+   detail distinguishing an unknown code from an expired or spent one.
+5. Primary takes the client certificate's fingerprint, writes a `store.Peer`
+   with it, and replies `{"node_id": "<primary fingerprint>"}`.
+6. Replica records the primary's fingerprint and address.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `internal/replica/handshake_test.go`:
+Create `internal/replica/pairing_exchange_test.go`. Use a real TLS listener
+on `127.0.0.1:0` with the Task 9 helpers, not `net.Pipe` — the fingerprint
+comes from the certificate, so the transport is part of what is under test.
+
+Tests, each of which must be able to fail:
 
 ```go
-package replica
+// Pairing succeeds, and each side ends up holding the OTHER's fingerprint.
+func TestPairingPinsBothWays(t *testing.T)
 
-import (
-	"net"
-	"testing"
-	"time"
-)
+// The whole reason the SSH model closes the PAKE's hole: a declined
+// fingerprint must send no code at all. Assert against a primary that
+// records every code it ever saw, and assert that set is empty.
+func TestDeclinedFingerprintSendsNoCode(t *testing.T)
 
-func pairOver(t *testing.T, code string, book *InviteBook) (string, string, error, error) {
-	t.Helper()
-	a, b := net.Pipe()
-	t.Cleanup(func() { a.Close(); b.Close() })
+// The confirmer is handed the fingerprint of whoever actually answered, so
+// an attacker substituting its own certificate is visible to the operator.
+func TestConfirmerSeesThePeersRealFingerprint(t *testing.T)
 
-	pid, err := LoadOrCreateIdentity(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	rid, err := LoadOrCreateIdentity(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+// A scripted join with a mismatched expected fingerprint fails without
+// prompting and without sending the code.
+func TestExplicitFingerprintMismatchFailsClosed(t *testing.T)
 
-	type res struct {
-		fp  string
-		err error
-	}
-	pc := make(chan res, 1)
-	go func() {
-		fp, err := PairAsPrimary(a, pid, book)
-		pc <- res{fp, err}
-	}()
-	rfp, rerr := PairAsReplica(b, rid, code)
-	p := <-pc
-	return p.fp, rfp, p.err, rerr
-}
+func TestPairingRejectsWrongCode(t *testing.T)
+func TestPairingRejectsSpentCode(t *testing.T)
+func TestPairingRejectsExpiredCode(t *testing.T)
 
-func TestPairingSucceedsAndPinsBothWays(t *testing.T) {
-	book := NewInviteBook(10*time.Minute, time.Now)
-	inv, err := book.Mint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	pfp, rfp, perr, rerr := pairOver(t, inv.Code, book)
-	if perr != nil || rerr != nil {
-		t.Fatalf("pairing failed: primary=%v replica=%v", perr, rerr)
-	}
-	if pfp == "" || rfp == "" {
-		t.Fatal("pairing returned an empty fingerprint")
-	}
-	if pfp == rfp {
-		t.Fatal("both sides returned the same fingerprint; each must return " +
-			"the OTHER node's")
-	}
-}
-
-func TestPairingRejectsWrongCode(t *testing.T) {
-	book := NewInviteBook(10*time.Minute, time.Now)
-	if _, err := book.Mint(); err != nil {
-		t.Fatal(err)
-	}
-	_, _, perr, rerr := pairOver(t, "WRONGCODE123", book)
-	if perr == nil && rerr == nil {
-		t.Fatal("pairing succeeded with a code that was never minted")
-	}
-}
-
-func TestPairingRejectsSpentCode(t *testing.T) {
-	book := NewInviteBook(10*time.Minute, time.Now)
-	inv, err := book.Mint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, perr, rerr := pairOver(t, inv.Code, book); perr != nil || rerr != nil {
-		t.Fatalf("first pairing failed: %v %v", perr, rerr)
-	}
-	_, _, perr, rerr := pairOver(t, inv.Code, book)
-	if perr == nil && rerr == nil {
-		t.Fatal("the same code paired a second node")
-	}
-}
-
-func TestPairingRejectsExpiredCode(t *testing.T) {
-	now := time.Now()
-	clock := func() time.Time { return now }
-	book := NewInviteBook(10*time.Minute, clock)
-	inv, err := book.Mint()
-	if err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(11 * time.Minute)
-	_, _, perr, rerr := pairOver(t, inv.Code, book)
-	if perr == nil && rerr == nil {
-		t.Fatal("an expired code still paired")
-	}
-}
-
-// The property the PAKE exists for. An attacker who records the entire
-// exchange must not learn the code, so they cannot pair later or replay it.
-func TestObserverCannotRecoverTheCodeFromTheTranscript(t *testing.T) {
-	book := NewInviteBook(10*time.Minute, time.Now)
-	inv, err := book.Mint()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	tapped, transcript := tap(a)
-
-	pid, _ := LoadOrCreateIdentity(t.TempDir())
-	rid, _ := LoadOrCreateIdentity(t.TempDir())
-	go func() { _, _ = PairAsPrimary(tapped, pid, book) }()
-	if _, err := PairAsReplica(b, rid, inv.Code); err != nil {
-		t.Fatal(err)
-	}
-
-	if bytesContains(transcript.Bytes(), []byte(inv.Code)) {
-		t.Fatal("the pairing code appears verbatim in the wire transcript")
-	}
-}
+// Pairing is the only route an unpinned peer may reach.
+func TestUnpinnedPeerReachesPairButNotVersion(t *testing.T)
 ```
 
-Write the `tap` helper (an `io.ReadWriter` wrapper recording both directions
-into a `bytes.Buffer`) and `bytesContains` (`bytes.Contains`) in the test file.
-
-Note what this last test does and does not prove: it shows the code is not
-transmitted in the clear, which is the mistake worth guarding against in this
-codebase. It is not a proof of the PAKE's security — that comes from the
-reviewed implementation chosen in Task 6, and the note belongs in a comment
-above the test.
+For `TestDeclinedFingerprintSendsNoCode`, have the primary's handler append
+every received code to a slice guarded by a mutex, and assert the slice is
+empty after a declined pairing. Asserting only that pairing returned an error
+would pass even if the code had been sent and then rejected, which is exactly
+the bug this test exists to catch.
 
 - [ ] **Step 2: Run to verify failure**
 
 ```bash
-CGO_ENABLED=0 go test ./internal/replica/ -run Pairing -v
+CGO_ENABLED=0 go test ./internal/replica/ -run Pair -v
 ```
 
-Expected: FAIL — `undefined: PairAsPrimary`.
+Expected: FAIL — `undefined: PairAsReplica`.
 
-- [ ] **Step 3: Implement the handshake**
+- [ ] **Step 3: Implement**
 
-Create `internal/replica/handshake.go`. Structure:
+Create `internal/replica/pairing_exchange.go` with `PairAsReplica`,
+`Confirmer`, and `ErrFingerprintRejected`. Add the `/replica/pair` route and
+its unpinned exemption to `internal/replica/server.go`.
 
-1. Length-prefixed JSON messages over `conn`, with a read deadline of 10
-   seconds and a maximum message size of 64 KiB, so a stalled or hostile peer
-   cannot hold a goroutine or exhaust memory.
-2. Replica sends its PAKE message; primary redeems the code from the book and
-   replies with its own PAKE message. A redeem failure still completes the
-   round trip with a dummy message before erroring, so failure timing does not
-   distinguish "no such code" from "wrong code".
-3. Both derive the shared key.
-4. Each sends `{public_key, signature}` where the signature is over
-   `sha256("kydns-pair-v1" || sharedKey || sortedConcat(bothPublicKeys))`.
-5. Each verifies the other's signature; on success return
-   `Fingerprint(theirPub)`.
+Use a 30-second context timeout for the whole exchange — longer than the
+other endpoints because a human is deciding in the middle of it. Cap the
+request body at 4 KiB.
 
 - [ ] **Step 4: Run the tests**
 
@@ -1603,12 +1540,12 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal/replica/handshake.go internal/replica/handshake_test.go
-git commit -m "feat(replica): pair two nodes from a typed code
+git add internal/replica/pairing_exchange.go internal/replica/server.go internal/replica/pairing_exchange_test.go
+git commit -m "feat(replica): pair by confirming a fingerprint, then a code
 
-The code is a PAKE secret, never a bearer token: before pinning there is
-nothing to authenticate a certificate against, so a transmitted code goes
-straight to whoever answered the connection."
+No Go PAKE qualified, so the operator vouches for the far end instead. The
+code goes only after that confirmation, so it never crosses a channel
+nobody has authenticated."
 ```
 
 ---
@@ -2027,7 +1964,9 @@ Deferred to `docs/superpowers/plans/2026-08-13-kydns-replication-operator-surfac
 ## Self-review
 
 **Spec coverage.** Node identity → Task 4. Config keys and the both-set error →
-Task 11. Pairing codes, single-use, expiry → Tasks 7, 8. PAKE → Tasks 6, 8.
+Task 11. Pairing codes, single-use, expiry → Tasks 7, 8. Fingerprint
+confirmation before the code is sent → Task 8 (after Task 6 found no
+qualifying PAKE).
 Fingerprint pinning and mismatch refusal → Task 9. `config_version` discipline
 → Task 1. Settings split → Tasks 1, 2. Snapshot endpoints and version/body
 consistency → Tasks 3, 9. Pull loop, backoff, staleness → Task 10. Apply

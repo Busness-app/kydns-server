@@ -25,7 +25,7 @@ sketch — see [Departures from the deferred sketch](#departures-from-the-deferr
 | Who writes | One primary. Replicas are read-only. |
 | How data moves | Versioned snapshot pull, not a change log. |
 | Transport | Dedicated TLS listener, peers pinned by key fingerprint. |
-| Enrollment | Short-lived single-use pairing code, PAKE exchange. |
+| Enrollment | Operator confirms the primary's fingerprint, then a short-lived single-use code authorizes the replica. |
 | What replicates | Views, services, records, aliases, blacklist definitions and rules, shared settings, health status. |
 | What does not | Tokens, the admin account, blacklist list bodies, node-local settings, query history. |
 | Primary down | Replica keeps serving. Never self-promotes. |
@@ -97,28 +97,51 @@ identity is the key rather than a name two operators could collide on.
 
 ## Pairing
 
+Enrollment answers two separate questions, and the design keeps them
+separate. *Is this really my primary?* is answered by the operator comparing
+a fingerprint. *Is this replica allowed to enroll?* is answered by the
+pairing code.
+
 1. On the primary, *Add replica* in the UI or `kydns replica invite` mints a
-   pairing code: human-typable, single-use, valid ten minutes.
+   pairing code — human-typable, single-use, valid ten minutes — and displays
+   the primary's own key fingerprint beside it.
 2. On the replica, the operator supplies the primary's address and the code.
-3. The two run a PAKE exchange over the connection using the code as the
-   shared secret. On success each records the other's key fingerprint
-   permanently, and the code is spent.
-4. Every later connection authenticates on pinned fingerprints alone.
+3. The replica dials, reads the certificate the primary presents, and shows
+   the operator the fingerprint it computed: *the primary presented `ab:cd:…`
+   — does that match what the primary displays?*
+4. The operator confirms. **Only then** does the replica pin that fingerprint
+   and send the code.
+5. The primary redeems the code and pins the replica's fingerprint, taken
+   from the client certificate on the same connection. The code is spent.
+6. Every later connection authenticates on pinned fingerprints alone.
 
-The code is **never sent as a bearer token.** Before pinning there is nothing
-to authenticate a certificate against, so a man-in-the-middle could present
-any certificate and capture a transmitted code. A PAKE gives mutual
-authentication from a low-entropy secret without revealing it, which is
-exactly the situation.
+**The order in step 4 is the security property, not a detail.** The code is
+sent only after the operator has vouched for the far end, so it never crosses
+an unauthenticated channel. An attacker in the path presents its own
+certificate and therefore its own fingerprint, which does not match what the
+primary displays, and the operator stops before anything is sent. The
+attacker never learns the code and so can never enroll itself.
 
-Neither the standard library nor `golang.org/x/crypto` provides one, so
-selecting a balanced PAKE — CPace and SPAKE2 are the candidates — and a
-reviewed Go implementation of it is the first task of the implementation
-plan, and the only new dependency this feature adds. Do not hand-roll the
-exchange. If no implementation clears review, that decision comes back here
-before anything is built: falling back to sending the code as a bearer token
-is not an acceptable substitute, because it reintroduces exactly the
-man-in-the-middle this design exists to close.
+This is the SSH model, and it is here because no Go PAKE qualified. The full
+evaluation is in
+[the PAKE selection](2026-08-13-kydns-pake-selection.md): nothing in Go
+currently offers a reviewed, maintained, specified balanced PAKE. A PAKE
+would have removed the comparison step; without one, an operator comparing a
+short string across two screens once per replica is the honest price of
+closing the same hole. Should a reviewed implementation appear, it would
+replace steps 3 and 4 and nothing else.
+
+Sending the code as a bearer token *before* the confirmation, hashing it, or
+running an HMAC challenge-response over the connection are all still
+excluded, and for the original reason: until the operator has vouched for the
+certificate, an attacker in the path completes the exchange with each side in
+turn and ends up pinned by both.
+
+For scripted installs, `kydns replica join` accepts the expected fingerprint
+as an argument. Supplying it is the same assertion the operator makes by
+eye, moved into the automation that already knows both hosts. Pairing never
+proceeds without one or the other — there is no prompt-free default that
+trusts whatever answered.
 
 A fingerprint mismatch after pairing is a hard failure: refuse the
 connection, log it at error with both fingerprints, and raise a UI banner.
@@ -247,9 +270,15 @@ shown to fail against the unfixed code before it is trusted.
 - A spent code is rejected.
 - After pairing, a peer presenting a different fingerprint is refused, with
   no prompt and no fallback.
-- An observer of the complete pairing exchange can derive neither the code
-  nor either party's key, and cannot impersonate either side. This is the
-  property the PAKE exists for and gets an explicit test, not a comment.
+- The code is not sent before the operator confirms. A pairing attempt
+  against a peer whose fingerprint the operator rejects transmits no code at
+  all — asserted against the wire transcript, since this ordering is the
+  whole reason the SSH model closes the same hole a PAKE would have.
+- A machine-in-the-middle presenting its own certificate produces a
+  fingerprint that does not match the primary's, so the confirmation fails
+  and the attacker learns nothing.
+- `join` with an explicitly supplied fingerprint that does not match what the
+  peer presents fails without prompting and without sending the code.
 
 **Version discipline**
 
