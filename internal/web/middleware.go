@@ -20,12 +20,12 @@ import (
 )
 
 type Options struct {
-	Store          *store.Store
-	Registry       *registry.Registry
-	API            *adminapi.API
-	Config         *config.Config
-	Sessions       *auth.Sessions
-	Backoff        *auth.Backoff
+	Store      *store.Store
+	Registry   *registry.Registry
+	API        *adminapi.API
+	Config     *config.Config
+	Sessions   *auth.Sessions
+	Backoff    *auth.Backoff
 	ACL        *dnsserver.ACL
 	Cache      *dnsserver.Cache
 	SetupToken string

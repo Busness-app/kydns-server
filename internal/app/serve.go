@@ -212,10 +212,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	web.New(web.Options{
 		Store: st, Registry: reg, API: api, Config: cfg,
-		Sessions:       auth.NewSessions(time.Hour, 12*time.Hour),
-		Backoff:        auth.NewBackoff(),
-		ACL:            acl,
-		Cache:          cache,
+		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
+		Backoff:    auth.NewBackoff(),
+		ACL:        acl,
+		Cache:      cache,
 		Policy:     policySvc,
 		Settings:   settingsSvc,
 		Upstreams:  fwd.Status,
@@ -300,6 +300,9 @@ func ensureSettings(st *store.Store, cfg *config.Config, logger *slog.Logger) (s
 	if err := settings.ValidateStored(seed); err != nil {
 		return store.Settings{}, fmt.Errorf("seed from config file: %w", err)
 	}
+	// Same masking the write path applies: a seeded "192.168.1.99/0" enforces
+	// 0.0.0.0/0, and every surface must read back what the ACL actually does.
+	seed = settings.Canonicalize(seed)
 	if err := st.PutSettings(seed); err != nil {
 		return store.Settings{}, err
 	}
@@ -356,9 +359,9 @@ func restartPending(boot, cur store.Settings) []RestartItem {
 	// The zone is lowercased before use, so a change of case serves the same
 	// names and must not raise the banner. Lease paths stay case-sensitive.
 	if !strings.EqualFold(boot.PrivateDomain, cur.PrivateDomain) {
-		add("dns.private_domain", boot.PrivateDomain, cur.PrivateDomain)
+		add("private_domain", boot.PrivateDomain, cur.PrivateDomain)
 	}
-	add("discovery.dhcp_lease_file", orOff(boot.DHCPLeaseFile), orOff(cur.DHCPLeaseFile))
+	add("dhcp_lease_file", orOff(boot.DHCPLeaseFile), orOff(cur.DHCPLeaseFile))
 	return out
 }
 
