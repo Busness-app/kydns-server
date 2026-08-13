@@ -8,8 +8,10 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"math/big"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,7 +20,7 @@ import (
 // is refused, with no prompt and no trust-on-next-use.
 func TestClientRefusesPrimaryWithWrongFingerprint(t *testing.T) {
 	client := newIdentity(t)
-	addr, _ := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
+	_, addr, _ := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -76,7 +78,7 @@ func TestNonEd25519CertificateIsRefused(t *testing.T) {
 
 // End to end: a client holding an ECDSA certificate gets no data.
 func TestServerRefusesNonEd25519Client(t *testing.T) {
-	addr, fp := startServer(t, newFakePeers(), &fakeSource{})
+	_, addr, fp := startServer(t, newFakePeers(), &fakeSource{})
 
 	cfg, err := pinnedTLSConfig(newIdentity(t), func(got string) bool { return got == fp })
 	if err != nil {
@@ -97,6 +99,47 @@ func TestServerRefusesNonEd25519Client(t *testing.T) {
 	if err == nil {
 		resp.Body.Close()
 		t.Fatalf("server answered %d to a client holding an ECDSA certificate", resp.StatusCode)
+	}
+}
+
+// hugeSource ships more than a replica will read. Pinned is not trusted with
+// unbounded memory.
+type hugeSource struct{}
+
+func (hugeSource) Version() (VersionReply, error) {
+	return VersionReply{SchemaVersion: SchemaVersion, ConfigVersion: 1}, nil
+}
+
+func (hugeSource) Snapshot() (Snapshot, error) {
+	big := make([]byte, maxReplyBytes+1024)
+	for i := range big {
+		big[i] = 'x'
+	}
+	return Snapshot{
+		SchemaVersion: SchemaVersion,
+		ConfigVersion: 1,
+		Config:        json.RawMessage(`"` + string(big) + `"`),
+	}, nil
+}
+
+func TestClientRefusesAnOversizedReply(t *testing.T) {
+	client := newIdentity(t)
+	_, addr, fp := startServer(t, newFakePeers(client.NodeID), hugeSource{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, addr, client, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	s, err := c.Snapshot(ctx)
+	if err == nil {
+		t.Fatalf("Snapshot() read %d bytes of config, want a refusal past %d", len(s.Config), maxReplyBytes)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Snapshot() error = %v, want the size ceiling to be the reason", err)
 	}
 }
 

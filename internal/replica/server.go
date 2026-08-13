@@ -32,16 +32,28 @@ type Server struct {
 	peers PeerStore
 	src   Source
 	book  *InviteBook
+	mux   *http.ServeMux
 	http  *http.Server
 }
 
+// unpinnedPaths is the entire list of routes an unpaired peer may reach.
+// Pairing is on it because pairing is how a peer becomes pinned; the handler
+// arrives with the pairing route.
+var unpinnedPaths = map[string]bool{"/replica/pair": true}
+
 func NewServer(id *Identity, peers PeerStore, src Source, book *InviteBook) *Server {
-	s := &Server{id: id, peers: peers, src: src, book: book}
-	mux := http.NewServeMux()
+	s := &Server{id: id, peers: peers, src: src, book: book, mux: http.NewServeMux()}
 	// Replication is read-only; the mux answers any other method with 405.
-	mux.HandleFunc("GET /replica/version", s.requirePinned(s.handleVersion))
-	mux.HandleFunc("GET /replica/snapshot", s.requirePinned(s.handleSnapshot))
-	s.http = &http.Server{Handler: mux, ReadHeaderTimeout: requestTimeout}
+	s.mux.HandleFunc("GET /replica/version", s.handleVersion)
+	s.mux.HandleFunc("GET /replica/snapshot", s.handleSnapshot)
+	s.http = &http.Server{
+		Handler:           s.pinnedExcept(s.mux),
+		ReadHeaderTimeout: requestTimeout,
+		WriteTimeout:      requestTimeout,
+		// A peer that completes a handshake and then goes quiet costs a goroutine
+		// and a connection until this fires.
+		IdleTimeout: 60 * time.Second,
+	}
 	return s
 }
 
@@ -57,21 +69,27 @@ func (s *Server) Serve(l net.Listener) error {
 
 func (s *Server) Close() error { return s.http.Close() }
 
-// requirePinned refuses peers that are not paired. Pairing is the one route
-// that will register itself without this wrapper.
-func (s *Server) requirePinned(h func(w http.ResponseWriter, r *http.Request, fp string)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+// pinnedExcept guards every route, so a handler added later fails closed
+// rather than being reachable by anyone holding a self-signed key. An
+// unpinned peer is answered the same way whatever it asks for, which also
+// keeps it from learning which routes exist.
+func (s *Server) pinnedExcept(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if unpinnedPaths[r.URL.Path] {
+			h.ServeHTTP(w, r)
+			return
+		}
 		fp, ok := peerFingerprint(r)
 		if !ok {
-			http.Error(w, "no peer certificate", http.StatusForbidden)
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		if _, err := s.peers.Peer(fp); err != nil {
-			http.Error(w, "peer is not paired", http.StatusForbidden)
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		h(w, r, fp)
-	}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // peerFingerprint is the identity the handshake verified for this connection.
@@ -87,27 +105,29 @@ func peerFingerprint(r *http.Request) (string, bool) {
 	return Fingerprint(pub), true
 }
 
-func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request, fp string) {
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	v, err := s.src.Version()
 	if err != nil {
 		http.Error(w, "version unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.write(w, fp, v.ConfigVersion, v)
+	s.write(w, r, v.ConfigVersion, v)
 }
 
-func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request, fp string) {
+func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	snap, err := s.src.Snapshot()
 	if err != nil {
 		http.Error(w, "snapshot unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.write(w, fp, snap.ConfigVersion, snap)
+	s.write(w, r, snap.ConfigVersion, snap)
 }
 
-func (s *Server) write(w http.ResponseWriter, fp string, version int64, body any) {
+func (s *Server) write(w http.ResponseWriter, r *http.Request, version int64, body any) {
 	// Last-seen bookkeeping only; a failure here must not fail the pull.
-	_ = s.peers.TouchPeer(fp, time.Now().Unix(), version)
+	if fp, ok := peerFingerprint(r); ok {
+		_ = s.peers.TouchPeer(fp, time.Now().Unix(), version)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
 }

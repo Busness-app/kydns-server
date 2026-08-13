@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"time"
@@ -18,6 +19,13 @@ import (
 // requestTimeout bounds one replication request. A primary that stops
 // answering must not wedge a replica's pull loop.
 const requestTimeout = 10 * time.Second
+
+// maxReplyBytes caps what a replica will read from a primary. Pinned is not
+// the same as trusted with unbounded memory: a compromised primary must not be
+// able to stream a replica out of heap. 16 MiB matches the admin API's own body
+// ceiling, so a configuration too large to have been submitted cannot arrive by
+// replication either.
+const maxReplyBytes = 16 << 20
 
 // selfSignedCert wraps the node's Ed25519 key in a certificate. Nothing but
 // the key itself signs it, and the validity is a century because there is no
@@ -148,5 +156,14 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("GET %s: %s", path, resp.Status)
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	// Read one byte past the ceiling so an oversized reply is an error rather
+	// than a silently truncated document.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReplyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > maxReplyBytes {
+		return fmt.Errorf("GET %s: reply exceeds %d bytes", path, maxReplyBytes)
+	}
+	return json.Unmarshal(body, out)
 }

@@ -101,17 +101,17 @@ func (f *fakeSource) Snapshot() (Snapshot, error) {
 	}, nil
 }
 
-func startServer(t *testing.T, peers PeerStore, src Source) (addr, primaryFP string) {
+func startServer(t *testing.T, peers PeerStore, src Source) (srv *Server, addr, primaryFP string) {
 	t.Helper()
 	id := newIdentity(t)
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(id, peers, src, NewInviteBook(time.Minute, time.Now))
+	srv = NewServer(id, peers, src, NewInviteBook(time.Minute, time.Now))
 	go srv.Serve(l)
 	t.Cleanup(func() { srv.Close() })
-	return l.Addr().String(), id.NodeID
+	return srv, l.Addr().String(), id.NodeID
 }
 
 // rawDo speaks to the server without the client wrapper, so a test can assert
@@ -139,28 +139,96 @@ func rawDo(t *testing.T, addr string, id *Identity, want, method, path string) *
 // An unpinned peer is a stranger. It gets a refusal, not a snapshot.
 func TestServerRefusesUnpinnedPeer(t *testing.T) {
 	peers := newFakePeers()
-	addr, fp := startServer(t, peers, &fakeSource{})
+	_, addr, fp := startServer(t, peers, &fakeSource{})
 
-	resp := rawDo(t, addr, newIdentity(t), fp, http.MethodGet, "/replica/version")
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET /replica/version status = %d, want %d", resp.StatusCode, http.StatusForbidden)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(body), "config_version") {
-		t.Fatalf("refused peer still received a version reply: %s", body)
+	for _, path := range []string{"/replica/version", "/replica/snapshot"} {
+		resp := rawDo(t, addr, newIdentity(t), fp, http.MethodGet, path)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("GET %s status = %d, want %d", path, resp.StatusCode, http.StatusForbidden)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "config_version") {
+			t.Errorf("refused peer still received a reply from %s: %s", path, body)
+		}
 	}
 	if peers.touches() != 0 {
 		t.Fatalf("TouchPeer called %d times for an unpinned peer, want 0", peers.touches())
 	}
 }
 
+// Authorization runs before routing, so a stranger cannot map the surface by
+// reading 405 for a route that exists and 404 for one that does not.
+func TestUnpinnedPeerLearnsNothingAboutRoutes(t *testing.T) {
+	_, addr, fp := startServer(t, newFakePeers(), &fakeSource{})
+	stranger := newIdentity(t)
+
+	for _, c := range []struct{ method, path string }{
+		{http.MethodPost, "/replica/version"},
+		{http.MethodGet, "/replica/nonexistent"},
+	} {
+		resp := rawDo(t, addr, stranger, fp, c.method, c.path)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("%s %s status = %d, want %d for every request from a stranger",
+				c.method, c.path, resp.StatusCode, http.StatusForbidden)
+		}
+	}
+}
+
+// Pinning is the default, not something a route opts into. A handler added
+// later without a thought must still be closed to strangers.
+func TestRouteAddedWithoutThoughtIsStillPinned(t *testing.T) {
+	client := newIdentity(t)
+	srv, addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
+	srv.mux.HandleFunc("GET /replica/forgotten", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("secrets"))
+	})
+
+	if resp := rawDo(t, addr, newIdentity(t), fp, http.MethodGet, "/replica/forgotten"); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unpinned peer reached a route nobody wrapped: status %d, want %d",
+			resp.StatusCode, http.StatusForbidden)
+	}
+	if resp := rawDo(t, addr, client, fp, http.MethodGet, "/replica/forgotten"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("pinned peer status = %d on the same route, want %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+// Pairing is the one exemption, and it has to work: a peer becomes pinned by
+// reaching it while unpinned.
+func TestExemptRouteIsReachableUnpinned(t *testing.T) {
+	srv, addr, fp := startServer(t, newFakePeers(), &fakeSource{})
+	srv.mux.HandleFunc("GET /replica/pair", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	})
+
+	if resp := rawDo(t, addr, newIdentity(t), fp, http.MethodGet, "/replica/pair"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /replica/pair status = %d for an unpinned peer, want %d; pairing is unreachable",
+			resp.StatusCode, http.StatusOK)
+	}
+}
+
+// Every stage of a connection needs a deadline, or a peer that completes a
+// handshake and then stalls costs a goroutine indefinitely. Timing these out
+// for real would mean sleeping, so the configuration is what is checked.
+func TestServerBoundsEveryStageOfAConnection(t *testing.T) {
+	srv, _, _ := startServer(t, newFakePeers(), &fakeSource{})
+	for name, d := range map[string]time.Duration{
+		"ReadHeaderTimeout": srv.http.ReadHeaderTimeout,
+		"WriteTimeout":      srv.http.WriteTimeout,
+		"IdleTimeout":       srv.http.IdleTimeout,
+	} {
+		if d <= 0 {
+			t.Errorf("%s = %v, want a deadline", name, d)
+		}
+	}
+}
+
 func TestPinnedPeerReadsVersionAndSnapshot(t *testing.T) {
 	client := newIdentity(t)
 	peers := newFakePeers(client.NodeID)
-	addr, fp := startServer(t, peers, &fakeSource{})
+	_, addr, fp := startServer(t, peers, &fakeSource{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -201,7 +269,7 @@ func TestRemovedPeerIsRefusedOnNextRequest(t *testing.T) {
 	if err := db.PutPeer(store.Peer{NodeID: client.NodeID, Label: "replica"}); err != nil {
 		t.Fatal(err)
 	}
-	addr, fp := startServer(t, db, &fakeSource{})
+	_, addr, fp := startServer(t, db, &fakeSource{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -225,7 +293,7 @@ func TestRemovedPeerIsRefusedOnNextRequest(t *testing.T) {
 // Replication is read-only. A write method must not be a way in.
 func TestServerRejectsNonGETMethods(t *testing.T) {
 	client := newIdentity(t)
-	addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
+	_, addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
 
 	for _, path := range []string{"/replica/version", "/replica/snapshot"} {
 		for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
@@ -241,7 +309,7 @@ func TestServerRejectsNonGETMethods(t *testing.T) {
 // snapshot shipped with it.
 func TestSnapshotVersionMatchesItsBody(t *testing.T) {
 	client := newIdentity(t)
-	addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
+	_, addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -271,7 +339,7 @@ func TestSnapshotVersionMatchesItsBody(t *testing.T) {
 // The server must ask for a client certificate: the peer's key is the only
 // credential in this design.
 func TestServerRequiresAClientCertificate(t *testing.T) {
-	addr, fp := startServer(t, newFakePeers(), &fakeSource{})
+	_, addr, fp := startServer(t, newFakePeers(), &fakeSource{})
 
 	cfg, err := pinnedTLSConfig(newIdentity(t), func(got string) bool { return got == fp })
 	if err != nil {
