@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -238,8 +239,19 @@ func TestPrimaryFingerprintComesFromReplicaState(t *testing.T) {
 // It must say so and carry on serving, not spin on a dial it cannot complete.
 func TestUnpairedReplicaStartsAndServes(t *testing.T) {
 	dir, _ := nodeDir(t, "lonely")
+	primary := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	cfg, dnsPort, adminPort := writeConfig(t, dir,
-		fmt.Sprintf("replication:\n  primary: \"127.0.0.1:%d\"\n", freePort(t)))
+		fmt.Sprintf("replication:\n  primary: %q\n", primary))
+
+	// Seeded through the store: a replica refuses admin writes, so the record
+	// it serves has to arrive the way a pull would deliver it.
+	seed := openDB(t, dir)
+	if _, err := seed.PutService(store.Service{
+		Name: "local", Addresses: []store.Address{{Address: "192.168.1.30"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seed.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -249,8 +261,12 @@ func TestUnpairedReplicaStartsAndServes(t *testing.T) {
 	base := fmt.Sprintf("http://127.0.0.1:%d", adminPort)
 	waitForHTTP(t, base+"/api/v1/healthz")
 	token := waitForFile(t, filepath.Join(dir, "bootstrap-token"))
-	postJSON(t, base+"/api/v1/services", token,
-		`{"name":"local","addresses":[{"address":"192.168.1.30"}]}`)
+	if code, body := postStatus(t, base+"/api/v1/services", token,
+		`{"name":"other","addresses":[{"address":"192.168.1.31"}]}`); code != http.StatusConflict {
+		t.Errorf("POST /api/v1/services on a replica = %d: %s", code, body)
+	} else if !strings.Contains(body, primary) {
+		t.Errorf("refusal does not name the primary to go to: %s", body)
+	}
 
 	if got := resolveA(t, fmt.Sprintf("127.0.0.1:%d", dnsPort), "local.home.arpa."); !slices.Contains(got, "192.168.1.30") {
 		t.Errorf("unpaired replica answered %v, want 192.168.1.30", got)

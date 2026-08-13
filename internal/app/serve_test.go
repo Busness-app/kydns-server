@@ -77,6 +77,24 @@ func waitForFile(t *testing.T, path string) string {
 	return ""
 }
 
+// postStatus is postJSON for calls a test expects to be refused.
+func postStatus(t *testing.T, url, token, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
 func postJSON(t *testing.T, url, token, body string) {
 	t.Helper()
 	req, err := http.NewRequest("POST", url, strings.NewReader(body))

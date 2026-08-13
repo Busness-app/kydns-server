@@ -147,9 +147,53 @@ func (a *API) Handler() http.Handler {
 	return mux
 }
 
+// The three writes a replica must still accept. Promote is the operator's
+// deliberate escape from being a replica; the two pairing calls are how a
+// node becomes one. Everything else a replica accepts would be silently
+// overwritten by the primary on the next pull.
+const (
+	PathReplicaPairPeek = "/api/v1/replica/pair/peek"
+	PathReplicaJoin     = "/api/v1/replica/join"
+	PathReplicaPromote  = "/api/v1/replica/promote"
+)
+
+// writeExempt is the whole exemption list, shared with route registration so
+// renaming a route cannot silently un-exempt it.
+var writeExempt = map[string]bool{
+	PathReplicaPairPeek: true,
+	PathReplicaJoin:     true,
+	PathReplicaPromote:  true,
+}
+
+// registrar is the sliver of *http.ServeMux that registration uses. ServeMux
+// cannot be enumerated, so this is what lets a test derive the route table
+// from the router rather than hand-listing it.
+type registrar interface {
+	HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request))
+}
+
+// gatedRoutes puts every registration behind the write gate. Registration is
+// the only door into the mux, so a route added to routes below is refused on
+// a replica without anyone listing it anywhere.
+type gatedRoutes struct {
+	api *API
+	mux *http.ServeMux
+}
+
+func (g gatedRoutes) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	g.mux.Handle(pattern, g.api.writeGate(http.HandlerFunc(h)))
+}
+
+// gated is how routes reach a real mux. Mounting one gated subtree instead
+// would be tidier, but the web transport registers "GET /" on the same mux
+// and ServeMux calls that a conflict with "/api/v1/".
+func (a *API) gated(mux *http.ServeMux) registrar { return gatedRoutes{a, mux} }
+
 // Routes registers the API on a mux, so the web transport can share one
 // listener with it.
-func (a *API) Routes(mux *http.ServeMux) {
+func (a *API) Routes(mux *http.ServeMux) { a.routes(a.gated(mux)) }
+
+func (a *API) routes(mux registrar) {
 	mux.HandleFunc("GET /api/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
@@ -204,6 +248,36 @@ func (a *API) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
 
 	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
+}
+
+// roleReplica mirrors app.Role's replica value, which adminapi cannot import
+// because app already imports adminapi.
+const roleReplica = "replica"
+
+// writeGate refuses writes on a replica. A write that lands here is not just
+// unauthorized, it is discarded: the primary overwrites this node's config on
+// the next pull, and the operator would never know. Default-deny, so a route
+// added later is covered without being listed anywhere.
+func (a *API) writeGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead ||
+			writeExempt[r.URL.Path] || a.replicaStatus == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Read per request, so promotion stops the refusals immediately.
+		st := a.replicaStatus()
+		if st.Role != roleReplica {
+			next.ServeHTTP(w, r)
+			return
+		}
+		where := st.PrimaryAddr
+		if where == "" {
+			where = "its primary"
+		}
+		writeErr(w, http.StatusConflict, "read_only_replica", "",
+			"this node is a read-only replica; make this change on "+where)
+	})
 }
 
 func (a *API) getReplicaStatus(w http.ResponseWriter, _ *http.Request) {

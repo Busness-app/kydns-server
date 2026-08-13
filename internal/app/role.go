@@ -82,12 +82,13 @@ type puller interface {
 // replica, and a nil p (or the literal nil interface value) means no
 // primary fields are populated.
 func replicaStatus(role Role, primaryAddr string, p puller) ReplicaStatus {
-	rs := ReplicaStatus{Role: role}
+	// The address comes from config, so an unpaired replica with no puller
+	// still tells the operator which box to make the change on.
+	rs := ReplicaStatus{Role: role, PrimaryAddr: primaryAddr}
 	if p == nil {
 		return rs
 	}
 	st := p.Status()
-	rs.PrimaryAddr = primaryAddr
 	rs.PrimaryNodeID = st.PrimaryNodeID
 	if !st.LastSyncAt.IsZero() {
 		rs.LastSyncUnix = st.LastSyncAt.Unix()

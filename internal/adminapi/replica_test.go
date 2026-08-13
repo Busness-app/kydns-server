@@ -14,6 +14,13 @@ import (
 // assert what the endpoint renders without a real Puller.
 func newReplicaAPI(t *testing.T, status ReplicaStatus) (http.Handler, string) {
 	t.Helper()
+	return newReplicaAPICallback(t, func() ReplicaStatus { return status })
+}
+
+// newReplicaAPICallback is newReplicaAPI where the status can change between
+// requests, so a test can promote a node mid-flight.
+func newReplicaAPICallback(t *testing.T, status func() ReplicaStatus) (http.Handler, string) {
+	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -24,7 +31,7 @@ func newReplicaAPI(t *testing.T, status ReplicaStatus) (http.Handler, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := NewAPI(reg, nil, nil).WithReplication(func() ReplicaStatus { return status })
+	api := NewAPI(reg, nil, nil).WithReplication(status)
 	return api.Handler(), tok
 }
 

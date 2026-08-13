@@ -55,6 +55,14 @@ func TestReplicaStatusStandaloneHasNoPrimaryFields(t *testing.T) {
 	}
 }
 
+// An unpaired replica has no puller, but it still knows which box its primary
+// is, and the write gate's refusal has to name it.
+func TestUnpairedReplicaStatusStillNamesThePrimary(t *testing.T) {
+	if got := replicaStatus(RoleReplica, "10.0.0.2:8443", nil); got.PrimaryAddr != "10.0.0.2:8443" {
+		t.Fatalf("PrimaryAddr = %q, want 10.0.0.2:8443", got.PrimaryAddr)
+	}
+}
+
 func TestReplicaStatusReportsPrimaryAndStaleness(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	syncedAt := now.Add(-61 * time.Second)
