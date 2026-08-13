@@ -198,6 +198,18 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
 
+	errs := make(chan error, 3)
+	roleHolder := NewRoleHolder(RoleFrom(cfg.Replication))
+	replSrv, repPuller, err := startReplication(ctx, cfg, st,
+		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
+		errs, logger)
+	if err != nil {
+		return err
+	}
+	if replSrv != nil {
+		defer replSrv.Close()
+	}
+
 	leaseFn := func() []dhcp.Lease {
 		if poller == nil {
 			return nil
@@ -207,7 +219,18 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc).WithSettings(settingsSvc).WithMetrics(dnsSrv.Metrics())
+	api := adminapi.NewAPI(reg, acl, cache).
+		WithProviders(leaseFn, checker.Statuses).
+		WithPolicy(policySvc).
+		WithSettings(settingsSvc).
+		WithMetrics(dnsSrv.Metrics()).
+		WithReplication(func() adminapi.ReplicaStatus {
+			var p puller
+			if repPuller != nil {
+				p = repPuller
+			}
+			return replicaStatus(roleHolder.Current(), cfg.Replication.Primary, p).toAdminAPI()
+		})
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
@@ -255,19 +278,6 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	errs := make(chan error, 3)
-	replSrv, puller, err := startReplication(ctx, cfg, st,
-		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
-		errs, logger)
-	if err != nil {
-		return err
-	}
-	// puller.Status() is what the replica dashboard and CLI will read; until
-	// those exist the loop reports through the log.
-	_ = puller
-	if replSrv != nil {
-		defer replSrv.Close()
-	}
 	go func() { errs <- dnsSrv.ListenAndServe(cfg.DNS.Listen) }()
 	go func() {
 		if err := adminSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

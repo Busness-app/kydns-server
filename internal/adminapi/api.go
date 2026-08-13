@@ -24,14 +24,29 @@ import (
 )
 
 type API struct {
-	reg      *registry.Registry
-	acl      *dnsserver.ACL
-	cache    *dnsserver.Cache
-	leases   func() []dhcp.Lease
-	health   func() []health.Status
-	policy   *policy.Service
-	settings *settings.Service
-	metrics  *dnsserver.Metrics
+	reg           *registry.Registry
+	acl           *dnsserver.ACL
+	cache         *dnsserver.Cache
+	leases        func() []dhcp.Lease
+	health        func() []health.Status
+	policy        *policy.Service
+	settings      *settings.Service
+	metrics       *dnsserver.Metrics
+	replicaStatus func() ReplicaStatus
+}
+
+// ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
+// app.ReplicaStatus field-for-field: adminapi cannot import internal/app,
+// because app already imports adminapi to wire this endpoint.
+type ReplicaStatus struct {
+	Role          string `json:"role"`
+	PrimaryAddr   string `json:"primary_address,omitempty"`
+	PrimaryNodeID string `json:"primary_node_id,omitempty"`
+	NodeID        string `json:"node_id,omitempty"`
+	LastSyncUnix  int64  `json:"last_sync_unix,omitempty"`
+	LastVersion   int64  `json:"last_version,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	Stale         bool   `json:"stale,omitempty"`
 }
 
 // topBlockedShown is how many blocked names /api/v1/stats lists.
@@ -66,6 +81,14 @@ func (a *API) WithPolicy(p *policy.Service) *API {
 // still constructs where settings are not wired.
 func (a *API) WithSettings(s *settings.Service) *API {
 	a.settings = s
+	return a
+}
+
+// WithReplication attaches the status producer for GET /api/v1/replica/status.
+// It is optional; an API built without it reports standalone, since that is
+// what a node with no replication configured actually is.
+func (a *API) WithReplication(status func() ReplicaStatus) *API {
+	a.replicaStatus = status
 	return a
 }
 
@@ -179,6 +202,16 @@ func (a *API) Routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/settings", auth(a.getSettings))
 	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
+
+	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
+}
+
+func (a *API) getReplicaStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.replicaStatus == nil {
+		writeJSON(w, http.StatusOK, ReplicaStatus{Role: "standalone"})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.replicaStatus())
 }
 
 type errBody struct {
