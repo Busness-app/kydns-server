@@ -15,6 +15,7 @@ import (
 type PeerStore interface {
 	Peer(nodeID string) (store.Peer, error)
 	Peers() ([]store.Peer, error)
+	PutPeer(p store.Peer) error
 	TouchPeer(nodeID string, syncedAt, version int64) error
 }
 
@@ -46,6 +47,7 @@ func NewServer(id *Identity, peers PeerStore, src Source, book *InviteBook) *Ser
 	// Replication is read-only; the mux answers any other method with 405.
 	s.mux.HandleFunc("GET /replica/version", s.handleVersion)
 	s.mux.HandleFunc("GET /replica/snapshot", s.handleSnapshot)
+	s.mux.HandleFunc("POST /replica/pair", s.handlePair)
 	s.http = &http.Server{
 		Handler:           s.pinnedExcept(s.mux),
 		ReadHeaderTimeout: requestTimeout,

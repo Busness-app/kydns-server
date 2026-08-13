@@ -60,6 +60,13 @@ func (f *fakePeers) Peers() ([]store.Peer, error) {
 	return out, nil
 }
 
+func (f *fakePeers) PutPeer(p store.Peer) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pinned[p.NodeID] = p
+	return nil
+}
+
 func (f *fakePeers) TouchPeer(nodeID string, syncedAt, version int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
