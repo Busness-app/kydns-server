@@ -280,6 +280,30 @@ func TestCheckerRunObservesNewInterval(t *testing.T) {
 	waitFor(t, func() bool { return lister.Calls() >= 3 })
 }
 
+// A zero or negative interval must not turn Run's timer into a hot spin.
+func TestCheckerReconfigureFloorsInterval(t *testing.T) {
+	c := NewChecker(&fakeLister{}, 30*time.Second, 5*time.Second, 8, slog.Default())
+	c.Reconfigure(0, time.Second, 1)
+	if i, _, _ := c.Config(); i <= 0 {
+		t.Errorf("interval floored to %v, want a positive duration", i)
+	}
+}
+
+// NewChecker must not leave a wake token queued: Reconfigure queues one, but
+// a brand-new Checker has no Run in flight yet, so the first Run must not
+// see it as a second startup cycle.
+func TestNewCheckerRunsExactlyOneStartupCycle(t *testing.T) {
+	lister := &countingLister{}
+	c := NewChecker(lister, time.Hour, time.Second, 1, slog.Default())
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	c.Run(ctx)
+
+	if calls := lister.Calls(); calls != 1 {
+		t.Errorf("Run() did %d cycles at startup, want exactly 1", calls)
+	}
+}
+
 type countingLister struct {
 	mu sync.Mutex
 	n  int

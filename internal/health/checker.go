@@ -67,14 +67,31 @@ func NewChecker(lister Lister, interval, timeout time.Duration, workers int, log
 	}
 	c := &Checker{lister: lister, logger: logger, now: time.Now, entries: map[int64]*entry{}, changed: make(chan struct{}, 1)}
 	c.Reconfigure(interval, timeout, workers)
+	// Reconfigure queues a wake token, but a brand-new Checker has no Run in
+	// flight to wake. Drain it so the first Run doesn't see a stale token and
+	// double its startup cycle.
+	select {
+	case <-c.changed:
+	default:
+	}
 	return c
 }
 
-// Reconfigure changes the probe schedule. A Run already in flight picks the
-// new interval up immediately rather than at the next restart.
+// minInterval is the floor for the probe schedule. Zero or negative would
+// turn Run's timer into a hot spin (time.NewTicker(0) used to panic loudly;
+// a Reset(0) instead spins silently). It only guards against that failure
+// mode — sane production minimums are the settings validator's job.
+const minInterval = time.Millisecond
+
+// Reconfigure changes the probe schedule. A change takes effect immediately:
+// a Run already in flight picks up the new interval and runs a probe cycle
+// right away rather than waiting out the old interval or the next restart.
 func (c *Checker) Reconfigure(interval, timeout time.Duration, workers int) {
 	if workers < 1 {
 		workers = 8
+	}
+	if interval < minInterval {
+		interval = minInterval
 	}
 	c.cfgMu.Lock()
 	c.interval, c.timeout, c.workers = interval, timeout, workers

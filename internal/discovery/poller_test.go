@@ -205,6 +205,30 @@ func TestPollerSetInterval(t *testing.T) {
 	waitForPolls(t, src, 3)
 }
 
+// A zero or negative interval must not turn Run's timer into a hot spin.
+func TestPollerSetIntervalFloorsInterval(t *testing.T) {
+	p := NewPoller(&countingSource{}, time.Hour, nil, slog.Default())
+	p.SetInterval(0)
+	if got := p.Interval(); got <= 0 {
+		t.Errorf("interval floored to %v, want a positive duration", got)
+	}
+}
+
+// NewPoller must not leave a wake token queued: SetInterval queues one, but
+// a brand-new Poller has no Run in flight yet, so the first Run must not
+// see it as a second startup cycle.
+func TestNewPollerRunsExactlyOneStartupCycle(t *testing.T) {
+	src := &countingSource{}
+	p := NewPoller(src, time.Hour, nil, slog.Default())
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	p.Run(ctx)
+
+	if calls := src.Calls(); calls != 1 {
+		t.Errorf("Run() did %d cycles at startup, want exactly 1", calls)
+	}
+}
+
 type countingSource struct {
 	mu sync.Mutex
 	n  int

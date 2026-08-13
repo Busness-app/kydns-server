@@ -36,12 +36,30 @@ func NewPoller(src dhcp.Source, interval time.Duration, onChange func(), logger 
 	if onChange == nil {
 		onChange = func() {}
 	}
-	return &Poller{src: src, interval: interval, onChange: onChange, logger: logger, changed: make(chan struct{}, 1)}
+	p := &Poller{src: src, onChange: onChange, logger: logger, changed: make(chan struct{}, 1)}
+	p.SetInterval(interval)
+	// SetInterval queues a wake token, but a brand-new Poller has no Run in
+	// flight to wake. Drain it so the first Run doesn't see a stale token and
+	// double its startup cycle.
+	select {
+	case <-p.changed:
+	default:
+	}
+	return p
 }
 
-// SetInterval changes the poll cadence. A Run already in flight picks it up
-// immediately rather than at the next restart.
+// minInterval is the floor for the poll schedule. Zero or negative would turn
+// Run's timer into a hot spin. It only guards against that failure mode —
+// sane production minimums are the settings validator's job.
+const minInterval = time.Millisecond
+
+// SetInterval changes the poll cadence. A change takes effect immediately: a
+// Run already in flight picks up the new interval and polls right away
+// rather than waiting out the old interval or the next restart.
 func (p *Poller) SetInterval(d time.Duration) {
+	if d < minInterval {
+		d = minInterval
+	}
 	p.cfgMu.Lock()
 	p.interval = d
 	p.cfgMu.Unlock()
