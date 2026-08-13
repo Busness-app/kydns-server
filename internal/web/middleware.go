@@ -69,10 +69,26 @@ type ReplicaStatus struct {
 // roleReplica mirrors app.Role's replica value, for the same reason.
 const roleReplica = "replica"
 
-// webWriteExempt are the POSTs a replica must still answer. Signing in is how
-// an operator reaches the promote button, and being unable to sign out of a
-// replica would be its own trap.
-var webWriteExempt = map[string]bool{"/setup": true, "/login": true, "/logout": true}
+// The POST paths a replica must still answer, named so the exemption list and
+// route registration cannot drift apart. PathPromote has no handler yet: the
+// replication screen registers it in Task 8, and reserving it here means the
+// one button that ends a replica's read-only life is never refused by this
+// gate. Promotion goes through the web transport, not the API's own exempt
+// path, because the screen calls adminapi in-process.
+const (
+	PathSetup   = "/setup"
+	PathLogin   = "/login"
+	PathLogout  = "/logout"
+	PathPromote = "/replication/promote"
+)
+
+// webWriteExempt is the whole exemption list. Signing in is how an operator
+// reaches the promote button, being unable to sign out of a replica would be
+// its own trap, and a replica that refuses to be promoted is the outage this
+// feature exists to end.
+var webWriteExempt = map[string]bool{
+	PathSetup: true, PathLogin: true, PathLogout: true, PathPromote: true,
+}
 
 // managedBy names the box to make the change on.
 func (s ReplicaStatus) managedBy() string {

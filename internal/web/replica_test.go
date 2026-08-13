@@ -1,9 +1,11 @@
 package web
 
 import (
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +77,42 @@ func TestReplicaRefusesEveryPostRoute(t *testing.T) {
 	}
 }
 
+// The exempt set is this gate's whole attack surface, so it is pinned by value
+// rather than by whatever the map happens to hold. Adding an entry here has to
+// be a deliberate edit to this test.
+func TestExemptSetIsExactlyTheFourNamedPaths(t *testing.T) {
+	want := map[string]bool{
+		PathSetup: true, PathLogin: true, PathLogout: true, PathPromote: true,
+	}
+	if !maps.Equal(webWriteExempt, want) {
+		t.Fatalf("webWriteExempt = %v, want %v", webWriteExempt, want)
+	}
+
+	_, _, srv, _, _, _ := replicaWeb(t)
+	registered := registeredPostRoutes(t, srv)
+	// PathPromote is reserved, not yet registered: Task 8 adds its handler, and
+	// TestPromoteIsNotRefusedByTheGate covers it in the meantime.
+	for _, p := range []string{PathSetup, PathLogin, PathLogout} {
+		if !slices.Contains(registered, p) {
+			t.Errorf("exempt path %s is not a registered route: the exemption is dead or misspelled", p)
+		}
+	}
+}
+
+// Promotion is what ends a replica's read-only life, so the gate must never be
+// what refuses it. The handler arrives in Task 8; what matters today is that a
+// request to the path is not answered with a refusal.
+func TestPromoteIsNotRefusedByTheGate(t *testing.T) {
+	h, _, _, _, c, csrf := replicaWeb(t)
+	rec := postForm(t, h, PathPromote, url.Values{"csrf_token": {csrf}}, c)
+	if rec.Code == http.StatusConflict {
+		t.Fatalf("POST %s = 409: a replica cannot be promoted through the only UI that offers it", PathPromote)
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Logf("POST %s = %d; the handler now exists, which is fine", PathPromote, rec.Code)
+	}
+}
+
 // The promote button lives behind the login page, so an operator locked out of
 // a replica's browser UI cannot recover it.
 func TestLoginAndLogoutStillWorkOnAReplica(t *testing.T) {
@@ -131,6 +169,35 @@ func TestReplicaRendersDisabledControlsNotHiddenOnes(t *testing.T) {
 	}
 	if !strings.Contains(body, "Managed by "+testPrimaryAddr) {
 		t.Errorf("the disabled control does not say who manages it:\n%s", body)
+	}
+}
+
+var openFieldset = regexp.MustCompile(`<fieldset class="field-set"([^>]*)>`)
+
+// A checkbox that moves when clicked and then cannot be saved reads as broken.
+// One disabled fieldset per group takes every input inside it with it.
+func TestReplicaDisablesTheSettingsFieldsets(t *testing.T) {
+	h, _, _, status, c, _ := replicaWeb(t)
+	body := get(t, h, "/settings", c).Body.String()
+	if !strings.Contains(body, `name="log_queries"`) {
+		t.Fatalf("the log_queries checkbox is missing; a control that vanishes reads as a bug:\n%s", body)
+	}
+	sets := openFieldset.FindAllStringSubmatch(body, -1)
+	if len(sets) == 0 {
+		t.Fatal("no field-set groups on the settings screen; the selector has gone stale")
+	}
+	for _, m := range sets {
+		if !strings.Contains(m[1], "disabled") {
+			t.Errorf("a settings field-set is editable on a replica: <fieldset class=\"field-set\"%s>", m[1])
+		}
+	}
+
+	status.Role = "primary"
+	body = get(t, h, "/settings", c).Body.String()
+	for _, m := range openFieldset.FindAllStringSubmatch(body, -1) {
+		if strings.Contains(m[1], "disabled") {
+			t.Errorf("a primary renders its settings field-sets disabled: <fieldset class=\"field-set\"%s>", m[1])
+		}
 	}
 }
 

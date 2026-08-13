@@ -22,10 +22,10 @@ func (s *Server) Routes(mux *http.ServeMux) { s.routes(mux) }
 
 func (s *Server) routes(mux registrar) {
 	mux.HandleFunc("GET /setup", s.getSetup)
-	mux.HandleFunc("POST /setup", s.postSetup)
+	mux.HandleFunc("POST "+PathSetup, s.postSetup)
 	mux.HandleFunc("GET /login", s.requireSetup(s.getLogin))
-	mux.HandleFunc("POST /login", s.requireSetup(s.postLogin))
-	mux.HandleFunc("POST /logout", s.requireCSRF(s.postLogout))
+	mux.HandleFunc("POST "+PathLogin, s.requireSetup(s.postLogin))
+	mux.HandleFunc("POST "+PathLogout, s.requireCSRF(s.postLogout))
 	s.pageRoutes(mux)
 }
 

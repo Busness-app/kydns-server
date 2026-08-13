@@ -45,7 +45,7 @@
     {{with $.Rename}}<input type="hidden" name="confirm_rename" value="{{.Confirm}}">{{end}}
     <div class="field-grid">
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Zone</legend>
         <div class="fields">
           <label for="private_domain">Private domain</label>
@@ -60,7 +60,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Access</legend>
         <div class="fields">
           <label for="allow_query">Allow queries from, one CIDR per line</label>
@@ -74,7 +74,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Upstreams</legend>
         <div class="fields">
           <label for="upstreams">Upstreams, one per line, tried in order</label>
@@ -83,7 +83,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Cache</legend>
         <div class="fields">
           <label for="cache_min_ttl">Cache minimum TTL</label>
@@ -97,7 +97,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Discovery</legend>
         <div class="fields">
           <label for="dhcp_lease_file">DHCP lease file <span class="muted">(restart required, empty is off)</span></label>
@@ -107,7 +107,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Health checks</legend>
         <div class="fields">
           <label for="health_interval">Health check interval (seconds)</label>
@@ -119,7 +119,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Logging</legend>
         <div class="fields">
           <label><input type="checkbox" name="log_queries" {{if .LogQueries}}checked{{end}}> Log queries</label>
