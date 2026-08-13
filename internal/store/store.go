@@ -703,6 +703,15 @@ func (s *Store) ReplaceAll(views []View, services []Service, records []Record) e
 		return err
 	}
 	defer tx.Rollback()
+	if err := replaceAll(tx, views, services, records); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// replaceAll does the work of ReplaceAll against an already-open transaction,
+// so ApplySnapshot can write the registry as part of one larger transaction.
+func replaceAll(tx *sql.Tx, views []View, services []Service, records []Record) error {
 	for _, q := range []string{
 		`DELETE FROM records`, `DELETE FROM aliases`,
 		`DELETE FROM service_addresses`, `DELETE FROM services`,
@@ -728,6 +737,40 @@ func (s *Store) ReplaceAll(views []View, services []Service, records []Record) e
 		if _, err := putRecord(tx, r); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// SnapshotInput is a primary's replicated configuration, as pulled by a
+// replica and applied with ApplySnapshot.
+type SnapshotInput struct {
+	Views     []View
+	Services  []Service
+	Records   []Record
+	Settings  Settings
+	Blacklist BlacklistSettings
+	Lists     []BlacklistList
+	Rules     []BlacklistRule
+}
+
+// ApplySnapshot replaces all replicated state in one transaction. A replica
+// applying a bad document must be left exactly as it was, so nothing here is
+// allowed to commit independently. Tokens, the admin account, and list
+// bodies are node-local and untouched.
+func (s *Store) ApplySnapshot(in SnapshotInput) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := replaceAll(tx, in.Views, in.Services, in.Records); err != nil {
+		return err
+	}
+	if err := putSettings(tx, in.Settings); err != nil {
+		return err
+	}
+	if err := replaceBlacklistDefinitions(tx, in.Blacklist, in.Lists, in.Rules); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
