@@ -18,6 +18,10 @@ type Upstream interface {
 
 	// String is the spec as configured, for logs and the UI.
 	String() string
+
+	// Close releases any persistent connections. Called once, when this
+	// upstream is retired by a config reload; never while still configured.
+	Close() error
 }
 
 // New builds the resolver a Spec describes.

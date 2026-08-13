@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -23,44 +24,84 @@ type UpstreamStatus struct {
 	LastOKAt  time.Time
 }
 
-// Forwarder resolves non-authoritative queries through the cache and, on a
-// miss, the upstream list in order.
-type Forwarder struct {
-	ups     []upstream.Upstream
-	timeout time.Duration
-	cache   *Cache
-	group   singleflight.Group
+// fwdState pairs the upstream list with its status slice. They are only ever
+// swapped together, so an in-flight query cannot record a result against an
+// upstream that is no longer at that index.
+type fwdState struct {
+	ups []upstream.Upstream
 
 	mu     sync.Mutex
 	status []UpstreamStatus
 }
 
-func NewForwarder(ups []upstream.Upstream, timeout time.Duration, c *Cache) *Forwarder {
-	f := &Forwarder{ups: ups, timeout: timeout, cache: c, status: make([]UpstreamStatus, len(ups))}
-	for i, u := range ups {
-		f.status[i] = UpstreamStatus{Spec: u.String(), Secure: u.Secure()}
+// close releases every upstream's connections. Only called once this state
+// has been retired by a swap.
+func (st *fwdState) close() {
+	for _, u := range st.ups {
+		u.Close()
 	}
+}
+
+// Forwarder resolves non-authoritative queries through the cache and, on a
+// miss, the upstream list in order.
+type Forwarder struct {
+	state   atomic.Pointer[fwdState]
+	timeout time.Duration
+	cache   *Cache
+	group   singleflight.Group
+}
+
+func NewForwarder(ups []upstream.Upstream, timeout time.Duration, c *Cache) *Forwarder {
+	f := &Forwarder{timeout: timeout, cache: c}
+	f.Replace(ups)
 	return f
+}
+
+// Replace swaps the upstream list. Status starts clean: the new upstreams
+// have never been tried, and a stale error would send the operator after a
+// problem that no longer exists.
+//
+// A query already in flight loaded the retiring state before this call and
+// may still be mid-exchange on one of its connections, so the retired
+// upstreams are not closed synchronously here. exchange loops over at most
+// len(old.ups) attempts, each bounded by f.timeout, so closing after that
+// worst case has elapsed is enough to guarantee no in-flight exchange is
+// still using them. A goroutine that raced past its context deadline right
+// at that boundary could in principle still be holding a connection; this is
+// a bounded, best-effort guarantee, not a proof.
+func (f *Forwarder) Replace(ups []upstream.Upstream) {
+	st := &fwdState{ups: ups, status: make([]UpstreamStatus, len(ups))}
+	for i, u := range ups {
+		st.status[i] = UpstreamStatus{Spec: u.String(), Secure: u.Secure()}
+	}
+	old := f.state.Swap(st)
+	if old != nil && len(old.ups) > 0 {
+		time.AfterFunc(time.Duration(len(old.ups))*f.timeout, old.close)
+	}
 }
 
 // Status is a snapshot for the UI, copied so callers cannot race the recorder.
 func (f *Forwarder) Status() []UpstreamStatus {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]UpstreamStatus(nil), f.status...)
+	st := f.state.Load()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return append([]UpstreamStatus(nil), st.status...)
 }
 
-func (f *Forwarder) record(i int, err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+// record writes against the state the query started with. A result arriving
+// after a swap lands on the retired object and is discarded with it, which is
+// correct: it describes upstreams that are no longer configured.
+func (st *fwdState) record(i int, err error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	if err != nil {
-		f.status[i].LastError = err.Error()
-		f.status[i].LastErrAt = time.Now()
+		st.status[i].LastError = err.Error()
+		st.status[i].LastErrAt = time.Now()
 		return
 	}
-	f.status[i].LastError = ""
-	f.status[i].LastErrAt = time.Time{}
-	f.status[i].LastOKAt = time.Now()
+	st.status[i].LastError = ""
+	st.status[i].LastErrAt = time.Time{}
+	st.status[i].LastOKAt = time.Now()
 }
 
 // Resolve answers from cache, or collapses concurrent identical misses into a
@@ -97,11 +138,12 @@ func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns
 	req.CheckingDisabled = false
 	req.AuthenticatedData = true
 
-	if len(f.ups) == 0 {
+	st := f.state.Load()
+	if len(st.ups) == 0 {
 		return nil, errors.New("no upstreams configured")
 	}
 	var lastErr error
-	for i, u := range f.ups {
+	for i, u := range st.ups {
 		attempt, cancel := context.WithTimeout(ctx, f.timeout)
 		resp, err := u.Exchange(attempt, req)
 		cancel()
@@ -111,7 +153,7 @@ func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns
 				// plaintext answer cannot carry AD into the cache either.
 				resp.AuthenticatedData = false
 			}
-			f.record(i, nil)
+			st.record(i, nil)
 			return resp, nil
 		}
 		var reason string // bare: Status.Spec already names the upstream
@@ -129,7 +171,7 @@ func (f *Forwarder) exchange(ctx context.Context, q dns.Question, do bool) (*dns
 		// record keeps the bare reason so the UI doesn't print the upstream
 		// twice in adjacent columns; lastErr keeps the spec prefix, since the
 		// aggregate error below has no such column to lean on.
-		f.record(i, errors.New(reason))
+		st.record(i, errors.New(reason))
 	}
 	return nil, fmt.Errorf("all upstreams failed: %w", lastErr)
 }

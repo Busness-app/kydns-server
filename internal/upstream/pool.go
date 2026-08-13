@@ -13,9 +13,9 @@ import (
 // 50 connections and close all but the two the idle list holds. Household
 // query rates are sequential enough for that to be the common case.
 //
-// Upstreams are built exactly once at startup, with no reload path, which is
-// why the pool needs no Close. A config reload added without one would leak
-// these sockets on every reload.
+// A config reload retires whole upstreams, which is why the pool has Close:
+// without it, each retired dot's idle connections would sit open until the
+// process exits.
 type pool struct {
 	idle chan *pooledConn
 	dial func(context.Context) (*dns.Conn, error)
@@ -54,5 +54,21 @@ func (p *pool) put(c *dns.Conn) {
 	case p.idle <- &pooledConn{c: c, expires: p.now().Add(p.ttl)}:
 	default:
 		c.Close()
+	}
+}
+
+// Close closes every idle connection. Safe on an empty pool, and does not
+// block on connections currently checked out by get().
+func (p *pool) Close() error {
+	var err error
+	for {
+		select {
+		case pc := <-p.idle:
+			if e := pc.c.Close(); e != nil && err == nil {
+				err = e
+			}
+		default:
+			return err
+		}
 	}
 }

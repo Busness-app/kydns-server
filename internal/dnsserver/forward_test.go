@@ -21,6 +21,7 @@ type fakeUpstream struct {
 	calls  atomic.Int64
 	delay  time.Duration
 	reply  func(*dns.Msg) (*dns.Msg, error)
+	closed atomic.Bool
 
 	mu   sync.Mutex
 	sent []*dns.Msg // queries as they went out
@@ -28,6 +29,11 @@ type fakeUpstream struct {
 
 func (f *fakeUpstream) Secure() bool   { return f.secure }
 func (f *fakeUpstream) String() string { return f.name }
+
+func (f *fakeUpstream) Close() error {
+	f.closed.Store(true)
+	return nil
+}
 
 func (f *fakeUpstream) Exchange(_ context.Context, m *dns.Msg) (*dns.Msg, error) {
 	f.calls.Add(1)
@@ -402,5 +408,80 @@ func TestForwarderStatus(t *testing.T) {
 	}
 	if rst.LastOKAt.IsZero() {
 		t.Error("recovered upstream LastOKAt is zero after success")
+	}
+}
+
+func TestForwarderReplace(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := okUpstream("udp://10.0.0.2:53", false)
+
+	f := newForwarder(a)
+	if got := f.Status(); len(got) != 1 || got[0].Spec != "udp://10.0.0.1:53" {
+		t.Fatalf("status before the swap: %+v", got)
+	}
+
+	f.Replace([]upstream.Upstream{b})
+
+	got := f.Status()
+	if len(got) != 1 || got[0].Spec != "udp://10.0.0.2:53" {
+		t.Fatalf("status after the swap: %+v", got)
+	}
+	// A fresh list has never been tried, so it must not inherit the old list's
+	// errors: a stale red mark sends the operator debugging a fixed problem.
+	if got[0].LastError != "" {
+		t.Errorf("new upstream inherited an error: %q", got[0].LastError)
+	}
+}
+
+// Queries in flight during a swap must not panic or write to the wrong status
+// entry. Meaningful only with -race.
+func TestForwarderReplaceUnderLoad(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := deadUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a)
+
+	q := question("a.example.com.")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500; i++ {
+			_, _ = f.Resolve(context.Background(), q, false)
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		if i%2 == 0 {
+			f.Replace([]upstream.Upstream{b})
+		} else {
+			f.Replace([]upstream.Upstream{a})
+		}
+		_ = f.Status()
+	}
+	<-done
+}
+
+// Replace must close only the upstreams it retires: an in-flight query still
+// using the live ones must not have its connections pulled out from under it.
+func TestForwarderReplaceClosesRetiredUpstreams(t *testing.T) {
+	a := okUpstream("udp://10.0.0.1:53", false)
+	b := okUpstream("udp://10.0.0.2:53", false)
+	f := newForwarder(a)
+
+	f.Replace([]upstream.Upstream{b})
+	// The retired upstream's sockets must be released, not held until the
+	// process exits.
+	waitFor(t, 3*time.Second, func() bool { return a.closed.Load() })
+	if b.closed.Load() {
+		t.Error("Replace closed the live upstream, not just the retired one")
+	}
+}
+
+func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition never became true")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

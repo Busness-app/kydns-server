@@ -49,6 +49,12 @@ func newDoH(s Spec, timeout time.Duration) *doh {
 func (d *doh) Secure() bool   { return true }
 func (d *doh) String() string { return d.spec.Raw }
 
+// Close releases pooled connections held by the client's transport.
+func (d *doh) Close() error {
+	d.client.CloseIdleConnections()
+	return nil
+}
+
 func (d *doh) Exchange(ctx context.Context, m *dns.Msg) (*dns.Msg, error) {
 	q := m.Copy()
 	q.Id = 0 // RFC 8484 section 4.1
