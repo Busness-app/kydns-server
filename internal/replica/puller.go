@@ -287,8 +287,9 @@ func (p *Puller) pollHealth(ctx context.Context, c Primary) {
 }
 
 // healthUnknown marks health stale without discarding the key set, so Health()
-// still answers unknown for every service this replica last heard about
-// rather than an empty map an operator could misread as "nothing configured".
+// answers unknown for every service this replica has previously heard about.
+// Before the first successful poll there is no key set yet, and Health()
+// answers empty either way — that is a cold start, not stale data.
 func (p *Puller) healthUnknown() {
 	p.mu.Lock()
 	defer p.mu.Unlock()

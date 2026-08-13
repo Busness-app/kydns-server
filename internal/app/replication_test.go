@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/replica"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -80,6 +81,29 @@ func waitForA(t *testing.T, server, name, want string) {
 		case <-tick.C:
 		case <-deadline:
 			t.Fatalf("%s never resolved to %s on the replica", name, want)
+		}
+	}
+}
+
+// The wire vocabulary is the one thing an operator's dashboard renders
+// directly: swap healthy and unhealthy here and an outage shows green.
+func TestStoreSourceHealthStatusTranslatesStates(t *testing.T) {
+	src := &storeSource{health: func() []health.Status {
+		return []health.Status{
+			{Name: "up-svc", State: health.StateUp},
+			{Name: "down-svc", State: health.StateDown},
+			{Name: "unknown-svc", State: health.StateUnknown},
+		}
+	}}
+
+	got, err := src.HealthStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"up-svc": "healthy", "down-svc": "unhealthy", "unknown-svc": "unknown"}
+	for name, wantState := range want {
+		if got[name] != wantState {
+			t.Errorf("HealthStatus()[%q] = %q, want %q", name, got[name], wantState)
 		}
 	}
 }

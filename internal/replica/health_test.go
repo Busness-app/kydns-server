@@ -3,6 +3,7 @@ package replica
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -13,8 +14,21 @@ import (
 func TestHealthStatusReplicates(t *testing.T) {
 	client := newIdentity(t)
 	peers := newFakePeers(client.NodeID)
-	src := &fakeSource{health: map[string]string{"web": "unhealthy", "dns": "healthy"}}
-	_, addr, fp := startServer(t, peers, src)
+
+	// The identity is built here, not inside startServer, so its node ID is
+	// known before the server (and its goroutine) starts: fakeSource.id() is
+	// read concurrently once serving begins, so nodeID must be set in the
+	// struct literal rather than mutated afterward.
+	id := newIdentity(t)
+	src := &fakeSource{health: map[string]string{"web": "unhealthy", "dns": "healthy"}, nodeID: id.NodeID}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(id, peers, src, NewInviteBook(time.Minute, time.Now))
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	addr, fp := l.Addr().String(), id.NodeID
 
 	c, err := NewClient(addr, client, fp)
 	if err != nil {
@@ -32,7 +46,6 @@ func TestHealthStatusReplicates(t *testing.T) {
 		t.Fatalf("HealthStatus() = %+v, want web=unhealthy dns=healthy", got)
 	}
 
-	src.nodeID = fp // the puller checks the reply names the pin it dialled
 	st := &fakeState{nodeID: fp, version: 0}
 	p := NewPuller(PullerConfig{
 		Dial:     func(context.Context) (Primary, error) { return NewClient(addr, client, fp) },
@@ -52,26 +65,41 @@ func TestHealthStatusReplicates(t *testing.T) {
 
 // TestUnreachablePrimaryReportsHealthUnknownNotStale is the behaviour that
 // matters: a replica that already holds a good health value must drop it to
-// unknown the moment its primary stops answering, not keep serving it.
+// unknown the moment its primary stops answering, not keep serving it. This
+// is tabled over every way a tick can fail after a good one, because each
+// failure branch in poll() has its own call to mark health unknown and a
+// deleted call breaks no other test.
 func TestUnreachablePrimaryReportsHealthUnknownNotStale(t *testing.T) {
-	prim := &fakePrimary{version: 1, healthStatuses: map[string]string{"web": "unhealthy"}}
-	c := &clock{t: time.Unix(1000, 0)}
-	p := newTestPuller(prim, &fakeApplier{}, &fakeState{nodeID: pinnedFP, version: 1}, c.now)
-
-	// Establish a known-good value first.
-	p.poll(context.Background())
-	if got := p.Health(); got["web"] != "unhealthy" {
-		t.Fatalf("Health() after a good poll = %+v, want web=unhealthy", got)
+	cases := []struct {
+		name    string
+		corrupt func(*fakePrimary)
+	}{
+		{"version unreachable", func(p *fakePrimary) { p.versionErr = errors.New("connection refused") }},
+		{"schema mismatch", func(p *fakePrimary) { p.schemaVersion = SchemaVersion + 1 }},
+		{"wrong key", func(p *fakePrimary) { p.nodeID = "attacker-fp" }},
+		{"health fetch fails", func(p *fakePrimary) { p.healthErr = errors.New("health unavailable") }},
 	}
 
-	// The primary goes dark.
-	prim.versionErr = errors.New("connection refused")
-	c.add(5 * time.Second)
-	p.poll(context.Background())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prim := &fakePrimary{version: 1, healthStatuses: map[string]string{"web": "unhealthy"}}
+			c := &clock{t: time.Unix(1000, 0)}
+			p := newTestPuller(prim, &fakeApplier{}, &fakeState{nodeID: pinnedFP, version: 1}, c.now)
 
-	got := p.Health()
-	if got["web"] != "unknown" {
-		t.Fatalf("Health() with the primary unreachable = %+v, want web=unknown, not the stale unhealthy value", got)
+			// Establish a known-good value first.
+			p.poll(context.Background())
+			if got := p.Health(); got["web"] != "unhealthy" {
+				t.Fatalf("Health() after a good poll = %+v, want web=unhealthy", got)
+			}
+
+			tc.corrupt(prim)
+			c.add(5 * time.Second)
+			p.poll(context.Background())
+
+			if got := p.Health(); got["web"] != "unknown" {
+				t.Fatalf("Health() after %s = %+v, want web=unknown, not the stale unhealthy value", tc.name, got)
+			}
+		})
 	}
 }
 
