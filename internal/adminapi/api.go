@@ -582,19 +582,18 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Query().Get("mode") == "replace" {
-		// Check the settings block before ReplaceAll below, which is
-		// destructive: a document that cannot be applied must be rejected
-		// with the registry untouched, not discovered only after it is
-		// already gone. This only checks; it does not write or apply
-		// anything, so the running server is untouched either way until the
-		// applySettingsDoc call after ReplaceAll succeeds.
-		if doc.Settings != nil && a.settings != nil {
-			if err := a.settings.CheckWrite(fromSettingsDTO(*doc.Settings), ""); err != nil {
-				writeSettingsErr(w, err)
-				return
-			}
+	// Check the settings block before touching the registry in either mode: a
+	// document that cannot be applied must be rejected with the registry
+	// untouched, not discovered after rows are already written or gone. This
+	// only checks; nothing is written or applied until applySettingsDoc below.
+	if doc.Settings != nil && a.settings != nil {
+		if err := a.settings.CheckWrite(fromSettingsDTO(*doc.Settings), ""); err != nil {
+			writeSettingsErr(w, err)
+			return
 		}
+	}
+
+	if r.URL.Query().Get("mode") == "replace" {
 		views := make([]store.View, 0, len(doc.Views))
 		for _, v := range doc.Views {
 			views = append(views, store.View{Name: v.Name, Subnets: v.Subnets})

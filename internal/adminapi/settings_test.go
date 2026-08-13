@@ -290,6 +290,27 @@ func TestImportRejectsUnconfirmedPublicACL(t *testing.T) {
 	}
 }
 
+// Merge mode writes rows one at a time, so a settings block that cannot be
+// applied has to be caught before the first of them: a 400 that still leaves
+// the imported service being served is worse than either outcome alone.
+func TestImportMergeRejectsUnconfirmedPublicACLWithoutWritingTheRegistry(t *testing.T) {
+	srv, _ := testAPIWithSettings(t)
+
+	doc := `{"views":[],"services":[{"name":"sneaky","addresses":[{"address":"192.168.1.30"}]}],
+		"records":[],"settings":{
+		"private_domain":"home.arpa","reverse_zones":["192.168.1.0/24"],
+		"upstreams":["udp://1.1.1.1:53"],"allow_query":["0.0.0.0/0"],
+		"ttl":300,"cache_min_ttl":1,"cache_max_ttl":3600,"negative_max_ttl":60,
+		"cache_entries":1000,"discovery_interval":60,"health_interval":30,
+		"health_timeout":5,"health_workers":4}}`
+	if rec := srv.do(t, "POST", "/api/v1/import", doc); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if got := srv.do(t, "GET", "/api/v1/services", "").Body.String(); strings.Contains(got, "sneaky") {
+		t.Errorf("a rejected merge import wrote the registry anyway: %s", got)
+	}
+}
+
 // A replace-mode restore is the bare-metal-restore path: it must not destroy
 // the registry before the guardrail has had a chance to reject the document.
 // Backing this up from a moment the server was exposed is the common case,
