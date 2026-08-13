@@ -165,6 +165,49 @@ func TestPatchSettingsAcceptsConfirmedPublicACL(t *testing.T) {
 	}
 }
 
+// The guardrail's confirmation is only informed consent if what is later
+// read back is what was actually confirmed: a non-canonical entry like
+// "1.2.3.4/0" behaves as 0.0.0.0/0 but reads as a single host, so it must be
+// stored and returned in its masked, canonical form.
+func TestPatchSettingsStoresCanonicalPrefixes(t *testing.T) {
+	srv, svc := testAPIWithSettings(t)
+
+	rec := srv.do(t, "PATCH", "/api/v1/settings",
+		`{"allow_query":["192.168.0.0/16","1.2.3.4/0"],"reverse_zones":["10.0.0.99/24"],"confirm_public":"0.0.0.0/0"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+
+	cur, _ := svc.Get()
+	foundCanonical, foundTyped := false, false
+	for _, c := range cur.AllowQuery {
+		if c == "0.0.0.0/0" {
+			foundCanonical = true
+		}
+		if c == "1.2.3.4/0" {
+			foundTyped = true
+		}
+	}
+	if !foundCanonical {
+		t.Errorf("allow_query was not canonicalized: %v", cur.AllowQuery)
+	}
+	if foundTyped {
+		t.Errorf("allow_query still stores the misleading typed form: %v", cur.AllowQuery)
+	}
+	if len(cur.ReverseZones) != 1 || cur.ReverseZones[0] != "10.0.0.0/24" {
+		t.Errorf("reverse_zones was not canonicalized: %v", cur.ReverseZones)
+	}
+
+	// The GET response must show the same canonical form, not the typed one.
+	body := srv.do(t, "GET", "/api/v1/settings", "").Body.String()
+	if strings.Contains(body, "1.2.3.4/0") {
+		t.Errorf("GET echoes the misleading typed form: %s", body)
+	}
+	if !strings.Contains(body, `"0.0.0.0/0"`) {
+		t.Errorf("GET does not show the canonical confirmed prefix: %s", body)
+	}
+}
+
 // confirm_public is an instruction for this request, never a stored value.
 func TestConfirmPublicIsNotPersisted(t *testing.T) {
 	srv, _ := testAPIWithSettings(t)
@@ -244,6 +287,43 @@ func TestImportRejectsUnconfirmedPublicACL(t *testing.T) {
 	after, _ := svc.Get()
 	if len(after.AllowQuery) != len(before.AllowQuery) {
 		t.Error("a rejected import still changed the stored ACL")
+	}
+}
+
+// A replace-mode restore is the bare-metal-restore path: it must not destroy
+// the registry before the guardrail has had a chance to reject the document.
+// Backing this up from a moment the server was exposed is the common case,
+// so this failure mode is not an edge case for that endpoint.
+func TestImportReplaceRejectsUnconfirmedPublicACLWithoutWipingServices(t *testing.T) {
+	srv, svc := testAPIWithSettings(t)
+	before, _ := svc.Get()
+	rec := srv.do(t, "POST", "/api/v1/services", `{"name":"kypost","addresses":[{"address":"192.168.1.20"}]}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: POST services = %d: %s", rec.Code, rec.Body)
+	}
+
+	doc := `{"views":[],"services":[{"name":"kept","addresses":[{"address":"192.168.1.30"}]}],
+		"records":[],"settings":{
+		"private_domain":"home.arpa","reverse_zones":["192.168.1.0/24"],
+		"upstreams":["udp://1.1.1.1:53"],"allow_query":["0.0.0.0/0"],
+		"ttl":300,"cache_min_ttl":1,"cache_max_ttl":3600,"negative_max_ttl":60,
+		"cache_entries":1000,"discovery_interval":60,"health_interval":30,
+		"health_timeout":5,"health_workers":4}}`
+	rec = srv.do(t, "POST", "/api/v1/import?mode=replace", doc)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+
+	after, _ := svc.Get()
+	if len(after.AllowQuery) != len(before.AllowQuery) {
+		t.Error("a rejected replace-mode import still changed the stored ACL")
+	}
+	got := srv.do(t, "GET", "/api/v1/services", "").Body.String()
+	if !strings.Contains(got, "kypost") {
+		t.Errorf("a rejected replace-mode import wiped the existing registry: %s", got)
+	}
+	if strings.Contains(got, "kept") {
+		t.Errorf("a rejected replace-mode import still wrote the new services: %s", got)
 	}
 }
 

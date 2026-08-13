@@ -61,6 +61,11 @@ func (s *Server) SetLogging(queries, clientIP bool) {
 	s.logClientIP.Store(clientIP)
 }
 
+// LogQueries and LogClientIP report the current logging opt-ins, mirroring
+// Cache.Len and ACL.Stats as the read side of a live-tunable value.
+func (s *Server) LogQueries() bool  { return s.logQueries.Load() }
+func (s *Server) LogClientIP() bool { return s.logClientIP.Load() }
+
 // ServeDNS is the whole pipeline: opcode and class checks, ACL, view
 // resolution, authoritative lookup, then forwarding.
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {

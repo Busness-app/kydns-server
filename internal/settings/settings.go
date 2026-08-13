@@ -158,6 +158,13 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	if err := ValidateWrite(v, prev, confirmPublic); err != nil {
 		return err
 	}
+	// Store the canonical, masked form of every prefix: the guardrail's whole
+	// premise is that the operator can read back what is actually configured,
+	// and an entry like "1.2.3.4/0" behaves as 0.0.0.0/0 while reading as a
+	// single host. Canonicalizing after validation keeps a bad entry's error
+	// message showing exactly what the operator typed.
+	v.AllowQuery = canonicalPrefixes(v.AllowQuery)
+	v.ReverseZones = canonicalPrefixes(v.ReverseZones)
 	snap, err := Build(v)
 	if err != nil {
 		return err

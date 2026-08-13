@@ -157,6 +157,24 @@ func PublicPrefixes(list []string) []string {
 	return out
 }
 
+// canonicalPrefixes returns each entry in its masked, canonical CIDR form,
+// preserving order and length. Every entry has already passed validation by
+// the time Service.Set calls this, so a parse failure cannot happen in
+// practice; an entry that still fails to parse is kept as-is rather than
+// silently dropped.
+func canonicalPrefixes(list []string) []string {
+	out := make([]string, len(list))
+	for i, c := range list {
+		p, err := netip.ParsePrefix(c)
+		if err != nil {
+			out[i] = c
+			continue
+		}
+		out[i] = p.Masked().String()
+	}
+	return out
+}
+
 // validateAllowQuery holds the rules both paths apply: the list must be
 // non-empty, because an empty one refuses every query, and every entry must
 // parse.

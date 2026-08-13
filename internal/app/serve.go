@@ -186,34 +186,12 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		time.Duration(boot.HealthTimeout)*time.Second,
 		boot.HealthWorkers, logger)
 
-	// prevUpstreams tracks what the forwarder was last told. Only apply touches
-	// it, and Service.Set serializes apply.
-	prevUpstreams := boot.Upstreams
-
-	// Every value here is already validated and built, so no swap can fail.
-	apply := func(s *settings.Snapshot) {
-		acl.Replace(s.AllowQuery)
-		fwd.Replace(s.Upstreams)
-		flushOnUpstreamChange(cache, prevUpstreams, s.Raw.Upstreams, logger)
-		prevUpstreams = s.Raw.Upstreams
-		cache.Retune(s.Raw.CacheEntries, s.Raw.CacheMinTTL, s.Raw.CacheMaxTTL, s.Raw.NegativeMaxTTL)
-		dnsSrv.SetLogging(s.Raw.LogQueries, s.Raw.LogClientIP)
-		authoritative.SetTTL(uint32(s.Raw.TTL))
-		authoritative.SetReverseZones(s.ReverseZones)
-		checker.Reconfigure(
-			time.Duration(s.Raw.HealthInterval)*time.Second,
-			time.Duration(s.Raw.HealthTimeout)*time.Second,
-			s.Raw.HealthWorkers)
-		if poller != nil {
-			poller.SetInterval(time.Duration(s.Raw.DiscoveryInterval) * time.Second)
-		}
-		// Reverse zones are an input to the zone snapshot, so it has to be rebuilt.
-		if err := holder.Rebuild(); err != nil {
-			logger.Error("snapshot rebuild after a settings change failed, still serving the previous snapshot", "error", err)
-		}
-		logger.Info("settings applied")
+	live := &liveComponents{
+		acl: acl, forwarder: fwd, cache: cache, dnsSrv: dnsSrv,
+		authoritative: authoritative, checker: checker, poller: poller,
+		zoneHolder: holder, logger: logger, prevUpstreams: boot.Upstreams,
 	}
-	settingsSvc := settings.NewService(st, settingsHolder, apply)
+	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
 
 	leaseFn := func() []dhcp.Lease {
 		if poller == nil {
