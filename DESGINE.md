@@ -162,12 +162,20 @@ snapshot or the new one, never a half-applied mixture.
 
 A settings change is validated, persisted, and applied in that order, all or
 nothing, from whichever surface asked for it. Almost every setting takes effect
-on the next query. Two cannot change in a running process — the private domain,
-which defines the authoritative zone, and the DHCP lease file, which the
-discovery poller is opened against. Those are still stored, and the UI names the
-running value and the saved one until the operator restarts. There is no dirty
-flag: the banner is the boot values compared against the stored ones, so it
-cannot drift and it clears itself on restart.
+on the next query. One cannot change in a running process — the DHCP lease
+file, which the discovery poller is opened against. It is still stored, and the
+UI names the running value and the saved one until the operator restarts. There
+is no dirty flag: the banner is the boot values compared against the stored
+ones, so it cannot drift and it clears itself on restart.
+
+The private domain is applied live. The zone is an atomic on both the
+authoritative answerer and the registry that validates new names, and each
+answer reads it once so no reply straddles a change. Because manual records are
+stored as full names, renaming the zone moves them in the same transaction as
+the settings row: a half-applied rename would leave records outside the zone
+the server now serves, answering nothing, with no way back but re-authoring
+them. The administrative UI lists what will move and requires a second,
+explicit save before any of it is written.
 
 Query logs remain local and configurable.
 

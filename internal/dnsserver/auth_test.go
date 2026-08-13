@@ -261,14 +261,41 @@ func TestAuthoritativeConcurrentSetAndAnswer(t *testing.T) {
 	wg.Wait()
 }
 
-// Zone stays exported (private_domain is restart-required), so
-// &Authoritative{Zone: "..."} still compiles from any package and skips
-// NewAuthoritative entirely. Owns must not panic on the resulting
-// zero-value reverseZones — a nil-pointer deref here takes the whole
-// process down, since the dns package does not recover handler panics.
+// A zero-value Authoritative skips NewAuthoritative and so has neither zone
+// nor reverse zones stored. Owns must not panic on either nil pointer — a
+// deref here takes the whole process down, since the dns package does not
+// recover handler panics.
 func TestOwnsOnZeroValueAuthoritative(t *testing.T) {
-	a := &Authoritative{Zone: "home.arpa."}
+	a := &Authoritative{}
 	if got := a.Owns("20.1.168.192.in-addr.arpa."); got {
 		t.Errorf("Owns(%q) = true on a zero-value Authoritative, want false", "20.1.168.192.in-addr.arpa.")
+	}
+	// An empty zone must not make every name ours via the "."-suffix test.
+	if got := a.Owns("example.com."); got {
+		t.Error("Owns = true with no zone stored, want false")
+	}
+}
+
+// The private domain is editable at runtime, so a rename has to change what
+// the server answers for without a restart.
+func TestSetZoneChangesWhatIsOwned(t *testing.T) {
+	a := NewAuthoritative("home.arpa.", 60, nil)
+	if !a.Owns("nas.home.arpa.") {
+		t.Fatal("Owns(nas.home.arpa.) = false before the rename")
+	}
+
+	a.SetZone("lan.example")
+
+	if a.Owns("nas.home.arpa.") {
+		t.Error("still authoritative for the old zone after SetZone")
+	}
+	if !a.Owns("nas.lan.example.") {
+		t.Error("not authoritative for the new zone after SetZone")
+	}
+	if got := a.Zone(); got != "lan.example." {
+		t.Errorf("Zone() = %q, want the normalized FQDN", got)
+	}
+	if soa := a.SOA(1); soa.Hdr.Name != "lan.example." || soa.Ns != "ns.lan.example." {
+		t.Errorf("SOA still names the old zone: %+v", soa)
 	}
 }

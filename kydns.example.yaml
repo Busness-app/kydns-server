@@ -30,8 +30,9 @@ dns:
 
   # Your private zone. home.arpa is reserved for exactly this purpose
   # (RFC 8375) and will never collide with a public name.
-  # A first-run seed. Changing it later takes a restart, so the Settings screen
-  # saves it and then asks you to restart.
+  # A first-run seed; edit it under Settings, where it applies immediately.
+  # Changing it moves your manual records into the new zone, which the
+  # Settings screen lists and asks you to confirm before it writes anything.
   private_domain: home.arpa
 
   # Networks you want reverse (PTR) lookups for. Records are derived

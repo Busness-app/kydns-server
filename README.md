@@ -123,12 +123,26 @@ different settings do not clobber each other. Settings are part of
 `kydns export` and are applied by `kydns import`.
 
 Almost everything applies the moment it is saved, with no restart and no
-dropped queries: upstreams (which also flushes the cache), reverse zones,
-`allow_query`, `allow_tailscale`, the TTL, all four cache settings, both log
-flags, the three health settings, and the discovery interval. Two cannot
-change in a running process — `private_domain` and
-`dhcp_lease_file`. Those are saved anyway, and a banner names the
-running value and the saved one until you restart.
+dropped queries: upstreams (which also flushes the cache), the private domain,
+reverse zones, `allow_query`, `allow_tailscale`, the TTL, all four cache
+settings, both log flags, the three health settings, and the discovery
+interval. One cannot change in a running process — `dhcp_lease_file`, which
+the discovery poller is opened against. It is saved anyway, and a banner names
+the running value and the saved one until you restart.
+
+### Renaming the private domain
+
+Services are stored by short name and follow the zone on their own. Manual
+records are stored as full names, so changing `private_domain` moves them:
+`printer.home.arpa.` becomes `printer.lan.example.`, and a CNAME or PTR
+pointing into the old zone is repointed with it. The Settings screen lists
+every record it would move and does nothing until you save a second time. The
+records and the setting are written in one transaction, so a rename cannot
+half-apply, and the cache is flushed because every cached name under the old
+zone is now wrong.
+
+Records outside the private zone are left alone — they are yours, not ours to
+rewrite. Clients hold the old names until their TTL expires.
 
 ### Opening `allow_query` beyond your LAN
 

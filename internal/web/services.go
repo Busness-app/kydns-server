@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -66,6 +67,27 @@ func (s *Server) servicesData(errMsg string) map[string]any {
 	return map[string]any{
 		"Title": "Services", "Nav": "services",
 		"Services": rows, "Views": views, "Error": errMsg,
+	}
+}
+
+// getHealthJSON feeds the health badges on the services page. The same data is
+// on /api/v1/health, but that one takes an API token: the browser has a session
+// cookie and no token, so the page reads it from here instead.
+func (s *Server) getHealthJSON(w http.ResponseWriter, _ *http.Request) {
+	type row struct {
+		ServiceID int64  `json:"service_id"`
+		State     string `json:"state"`
+	}
+	out := []row{}
+	if s.o.Health != nil {
+		for _, st := range s.o.Health() {
+			out = append(out, row{ServiceID: st.ServiceID, State: st.State})
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(map[string]any{"health": out}); err != nil {
+		s.o.Logger.Error("encode health", "error", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
@@ -24,6 +25,7 @@ type liveComponents struct {
 	checker       *health.Checker
 	poller        *discovery.Poller // nil when DHCP discovery is off
 	zoneHolder    *zone.Holder
+	registry      *registry.Registry
 	logger        *slog.Logger
 
 	// prevUpstreams tracks what the forwarder was last told, so a change
@@ -36,6 +38,19 @@ type liveComponents struct {
 // component. Every value here is already validated and built, so no swap
 // below can fail.
 func (l *liveComponents) Apply(s *settings.Snapshot) {
+	// The private zone first: the snapshot rebuild at the end of this function
+	// builds names under it, and the records were already moved into it by the
+	// same write that produced this snapshot.
+	if zoneChanged(l.authoritative.Zone(), s.Raw.PrivateDomain) {
+		old := l.authoritative.Zone()
+		l.authoritative.SetZone(s.Raw.PrivateDomain)
+		l.registry.SetZone(s.Raw.PrivateDomain)
+		// Cached answers are keyed by name, and every name under the old zone is
+		// now wrong. Nothing else evicts them, so they would be served until
+		// their TTL ran out.
+		l.cache.Flush()
+		l.logger.Info("private zone renamed", "from", old, "to", l.authoritative.Zone())
+	}
 	l.acl.Replace(s.AllowQuery)
 	l.forwarder.Replace(s.Upstreams)
 	flushOnUpstreamChange(l.cache, l.prevUpstreams, s.Raw.Upstreams, l.logger)

@@ -7,7 +7,7 @@
       <td>{{.Name}}</td>
       <td><span class="badge">{{.Type}}</span></td>
       <td>{{.Value}}</td>
-      <td>{{if .View}}<span class="badge accent">{{.View}}</span>{{else}}<span class="muted">all views</span>{{end}}</td>
+      <td>{{if .View}}<span class="badge accent">{{.View}}</span>{{else}}<span class="muted nowrap">all views</span>{{end}}</td>
       <td>
         <form method="post" action="/records/delete">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">

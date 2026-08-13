@@ -71,8 +71,8 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	snap := settingsHolder.Current()
 
-	// private_domain is restart-required, so the boot value is the zone for the
-	// whole process lifetime.
+	// The boot value only seeds the zone. It is editable at runtime, so every
+	// component that needs it is told again by Apply on each settings change.
 	privateFQDN := dns.Fqdn(strings.ToLower(boot.PrivateDomain))
 
 	// Declared before the holder so the source closure captures the variable;
@@ -98,9 +98,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 				leases = append(leases, zone.Lease{Hostname: l.Hostname, Address: l.IP})
 			}
 		}
+		cur := settingsHolder.Current()
 		return zone.Input{
 			Views: views, Services: svcs, Records: recs, Leases: leases,
-			Zone: privateFQDN, ReverseZones: settingsHolder.Current().ReverseZones,
+			Zone:         dns.Fqdn(strings.ToLower(cur.Raw.PrivateDomain)),
+			ReverseZones: cur.ReverseZones,
 		}, nil
 	}, logger)
 	if err := holder.Rebuild(); err != nil {
@@ -189,7 +191,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	live := &liveComponents{
 		acl: acl, forwarder: fwd, cache: cache, dnsSrv: dnsSrv,
 		authoritative: authoritative, checker: checker, poller: poller,
-		zoneHolder: holder, logger: logger, prevUpstreams: boot.Upstreams,
+		zoneHolder: holder, registry: reg, logger: logger, prevUpstreams: boot.Upstreams,
 	}
 	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
 
@@ -329,6 +331,12 @@ func warnPublicACL(v store.Settings, logger *slog.Logger) {
 // answers minted by a resolver the operator has just walked away from must not
 // keep being served for up to cache_max_ttl. An unrelated save leaves the cache
 // alone, because emptying it makes every client re-resolve.
+// zoneChanged compares a running zone against a stored private domain. Case
+// and the trailing dot are presentation, not a different zone.
+func zoneChanged(running, stored string) bool {
+	return store.ZoneSuffix(running) != store.ZoneSuffix(stored)
+}
+
 func flushOnUpstreamChange(c *dnsserver.Cache, prev, next []string, logger *slog.Logger) bool {
 	if slices.Equal(prev, next) {
 		return false
@@ -346,20 +354,18 @@ type RestartItem struct {
 	Stored  string
 }
 
-// restartPending compares the boot values of the two settings that cannot be
+// restartPending compares the boot value of the one setting that cannot be
 // applied live. There is no dirty flag to drift out of sync: the comparison
 // becomes equal on the next restart and the banner clears itself.
+//
+// private_domain used to be here. It is applied live now: the zone is an
+// atomic on the authoritative answerer and the registry, and Apply moves both.
 func restartPending(boot, cur store.Settings) []RestartItem {
 	var out []RestartItem
 	add := func(key, running, stored string) {
 		if running != stored {
 			out = append(out, RestartItem{Key: key, Running: running, Stored: stored})
 		}
-	}
-	// The zone is lowercased before use, so a change of case serves the same
-	// names and must not raise the banner. Lease paths stay case-sensitive.
-	if !strings.EqualFold(boot.PrivateDomain, cur.PrivateDomain) {
-		add("private_domain", boot.PrivateDomain, cur.PrivateDomain)
 	}
 	add("dhcp_lease_file", orOff(boot.DHCPLeaseFile), orOff(cur.DHCPLeaseFile))
 	return out

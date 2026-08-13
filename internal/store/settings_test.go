@@ -112,3 +112,87 @@ func TestSettingsMigrationOnOldDatabase(t *testing.T) {
 		t.Fatalf("settings table missing after migration: %v", err)
 	}
 }
+
+func TestRenameInZone(t *testing.T) {
+	for _, tc := range []struct {
+		name, from, to, want string
+		moved                bool
+	}{
+		{"printer.home.arpa.", "home.arpa.", "lan.example.", "printer.lan.example.", true},
+		{"home.arpa.", "home.arpa.", "lan.example.", "lan.example.", true},
+		{"deep.sub.home.arpa.", "home.arpa.", "lan.example.", "deep.sub.lan.example.", true},
+		{"PRINTER.HOME.ARPA.", "home.arpa.", "lan.example.", "printer.lan.example.", true},
+		// Outside the zone: the operator's own name, left alone.
+		{"nas.other.example.", "home.arpa.", "lan.example.", "nas.other.example.", false},
+		// A name that merely ends in the same letters is not in the zone.
+		{"nothome.arpa.", "home.arpa.", "lan.example.", "nothome.arpa.", false},
+		{"printer.home.arpa.", "home.arpa.", "home.arpa.", "printer.home.arpa.", false},
+	} {
+		got, moved := RenameInZone(tc.name, tc.from, tc.to)
+		if got != tc.want || moved != tc.moved {
+			t.Errorf("RenameInZone(%q, %q, %q) = (%q, %v), want (%q, %v)",
+				tc.name, tc.from, tc.to, got, moved, tc.want, tc.moved)
+		}
+	}
+}
+
+// Renaming the private zone moves the records with it. A record left behind
+// would be outside the zone the server serves and would answer nothing.
+func TestPutSettingsRenamingZoneMovesRecords(t *testing.T) {
+	st := open(t)
+	base := Settings{
+		PrivateDomain: "home.arpa", TTL: 60, CacheMinTTL: 5, CacheMaxTTL: 3600,
+		NegativeMaxTTL: 300, CacheEntries: 100, DiscoveryInterval: 30,
+		HealthInterval: 30, HealthTimeout: 5, HealthWorkers: 8,
+	}
+	if err := st.PutSettings(base); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []Record{
+		{Name: "printer.home.arpa.", Type: "A", Value: "10.0.0.5"},
+		{Name: "www.home.arpa.", Type: "CNAME", Value: "nas.home.arpa."},
+		{Name: "off.other.example.", Type: "A", Value: "10.0.0.6"},
+		{Name: "5.0.0.10.in-addr.arpa.", Type: "PTR", Value: "printer.home.arpa."},
+	} {
+		if _, err := st.PutRecord(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	next := base
+	next.PrivateDomain = "lan.example"
+	moved, err := st.PutSettingsRenamingZone(next, "home.arpa", "lan.example")
+	if err != nil {
+		t.Fatalf("PutSettingsRenamingZone: %v", err)
+	}
+	if moved != 3 {
+		t.Errorf("moved = %d, want the three records that were in the zone", moved)
+	}
+
+	got := map[string]string{}
+	recs, err := st.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		got[r.Name] = r.Value
+	}
+	want := map[string]string{
+		"printer.lan.example.":   "10.0.0.5",
+		"www.lan.example.":       "nas.lan.example.", // the CNAME target moved too
+		"off.other.example.":     "10.0.0.6",         // outside the zone, untouched
+		"5.0.0.10.in-addr.arpa.": "printer.lan.example.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("records after the rename =\n%v\nwant\n%v", got, want)
+	}
+
+	// The settings row and the records have to land together.
+	v, ok, err := st.Settings()
+	if err != nil || !ok {
+		t.Fatalf("Settings: %v %v", ok, err)
+	}
+	if v.PrivateDomain != "lan.example" {
+		t.Errorf("private_domain = %q, want the new domain", v.PrivateDomain)
+	}
+}

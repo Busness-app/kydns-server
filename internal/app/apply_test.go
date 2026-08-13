@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/netip"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"github.com/yoshiofthewire/kydns-server/internal/upstream"
@@ -45,8 +47,11 @@ func newLiveComponents(t *testing.T) (*liveComponents, *zone.Holder) {
 	fwd := dnsserver.NewForwarder(ups, 2*time.Second, cache)
 	authoritative := dnsserver.NewAuthoritative("home.arpa.", 300, nil)
 
+	// The snapshot reads the live zone, as Serve's closure reads it from the
+	// settings holder: a rename has to reach the snapshot too, not just the
+	// answerer's Owns check.
 	zoneHolder := zone.NewHolder(func() (zone.Input, error) {
-		return zone.Input{Zone: "home.arpa."}, nil
+		return zone.Input{Zone: authoritative.Zone()}, nil
 	}, logger)
 	if err := zoneHolder.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -60,10 +65,18 @@ func newLiveComponents(t *testing.T) (*liveComponents, *zone.Holder) {
 	checker := health.NewChecker(fakeLister{}, 30*time.Second, 5*time.Second, 4, logger)
 	poller := discovery.NewPoller(fakeSource{}, 60*time.Second, nil, logger)
 
+	st, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	reg := registry.New(st, "home.arpa.", nil)
+
 	return &liveComponents{
 		acl: acl, forwarder: fwd, cache: cache, dnsSrv: dnsSrv,
 		authoritative: authoritative, checker: checker, poller: poller,
-		zoneHolder: zoneHolder, logger: logger, prevUpstreams: []string{"udp://1.1.1.1:53"},
+		zoneHolder: zoneHolder, registry: reg, logger: logger,
+		prevUpstreams: []string{"udp://1.1.1.1:53"},
 	}, zoneHolder
 }
 
@@ -235,4 +248,56 @@ func fakeAnswer() *dns.Msg {
 	rr, _ := dns.NewRR("example.com. 300 IN A 192.0.2.1")
 	m.Answer = []dns.RR{rr}
 	return m
+}
+
+// The private domain is editable at runtime, so a save has to move the whole
+// server onto the new zone: the answerer, the registry that validates new
+// names, the snapshot that holds them, and the cache full of answers for names
+// that no longer exist.
+func TestApplyRenamesTheZoneEverywhere(t *testing.T) {
+	live, zoneHolder := newLiveComponents(t)
+
+	// A cached answer under the old zone. Nothing else evicts it.
+	live.cache.Put(fakeQuestion(1), false, fakeAnswer())
+
+	snap := validSnapshot(t)
+	snap.Raw.PrivateDomain = "lan.example"
+	live.Apply(snap)
+
+	if got := live.authoritative.Zone(); got != "lan.example." {
+		t.Errorf("answerer zone = %q, want lan.example.", got)
+	}
+	if live.authoritative.Owns("nas.home.arpa.") {
+		t.Error("still authoritative for the old zone")
+	}
+	if !live.authoritative.Owns("nas.lan.example.") {
+		t.Error("not authoritative for the new zone")
+	}
+	if got := live.registry.Zone(); got != "lan.example." {
+		t.Errorf("registry zone = %q, want lan.example.: new names would be validated against the old zone", got)
+	}
+	if got := zoneHolder.Current().Zone; got != "lan.example." {
+		t.Errorf("snapshot zone = %q, want lan.example.", got)
+	}
+	if live.cache.Len() != 0 {
+		t.Errorf("cache holds %d entries after the rename; answers for the old zone would keep being served", live.cache.Len())
+	}
+}
+
+// Every other save must leave the zone alone. Flushing the cache on each
+// unrelated settings change would throw away every cached answer for nothing.
+func TestApplyLeavesTheZoneAloneWhenTheDomainIsUnchanged(t *testing.T) {
+	live, _ := newLiveComponents(t)
+	live.cache.Put(fakeQuestion(1), false, fakeAnswer())
+
+	snap := validSnapshot(t) // PrivateDomain is home.arpa, the running zone
+	snap.Raw.Upstreams = live.prevUpstreams
+	live.Apply(snap)
+
+	if got := live.authoritative.Zone(); got != "home.arpa." {
+		t.Errorf("zone = %q, want it unchanged", got)
+	}
+	if live.cache.Len() == 0 {
+		t.Error("cache was flushed by a save that did not touch the zone")
+	}
 }

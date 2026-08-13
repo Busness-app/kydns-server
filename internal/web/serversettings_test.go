@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 // validForm is a complete, accepted settings post. Tests change one field.
@@ -257,5 +259,134 @@ func TestConfigTableHoldsOnlyFileOwnedKeys(t *testing.T) {
 		if strings.Contains(body, gone) {
 			t.Errorf("config table still shows %q, which the database owns", gone)
 		}
+	}
+}
+
+// addRecord writes a manual record straight through the registry, so a rename
+// test starts from records that really are in the store.
+func addRecord(t *testing.T, srv *Server, name, rtype, value string) {
+	t.Helper()
+	if _, err := srv.o.Registry.PutRecord(store.Record{Name: name, Type: rtype, Value: value}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Renaming the private zone rewrites the operator's records. They see what
+// will change and confirm it before anything is written.
+func TestZoneRenameAsksBeforeMovingRecords(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	addRecord(t, srv, "printer.home.arpa.", "A", "10.0.0.5")
+	addRecord(t, srv, "www.home.arpa.", "CNAME", "nas.home.arpa.")
+
+	form := validForm(csrf)
+	form.Set("private_domain", "lan.example")
+	rec := postForm(t, h, "/settings/server", form, c)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want the confirmation page: %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"printer.home.arpa.", "printer.lan.example.",
+		"nas.lan.example.", // the CNAME target moves too, and is shown
+		`name="confirm_rename"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the confirmation does not show %q", want)
+		}
+	}
+
+	// Nothing may have been written yet.
+	cur, _ := srv.o.Settings.Get()
+	if cur.PrivateDomain != "home.arpa" {
+		t.Errorf("private_domain = %q; the domain changed before it was confirmed", cur.PrivateDomain)
+	}
+	recs, err := srv.o.Registry.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		if strings.Contains(r.Name, "lan.example") {
+			t.Errorf("record %q was moved before the rename was confirmed", r.Name)
+		}
+	}
+}
+
+// Confirming applies the rename: the domain, the record names, and the CNAME
+// targets all land together.
+func TestZoneRenameMovesRecordsOnceConfirmed(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	addRecord(t, srv, "printer.home.arpa.", "A", "10.0.0.5")
+	addRecord(t, srv, "www.home.arpa.", "CNAME", "nas.home.arpa.")
+
+	form := validForm(csrf)
+	form.Set("private_domain", "lan.example")
+	form.Set("confirm_rename", "lan.example")
+	if rec := postForm(t, h, "/settings/server", form, c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d, want a redirect: %s", rec.Code, rec.Body)
+	}
+
+	cur, _ := srv.o.Settings.Get()
+	if cur.PrivateDomain != "lan.example" {
+		t.Errorf("private_domain = %q, want lan.example", cur.PrivateDomain)
+	}
+	got := map[string]string{}
+	recs, err := srv.o.Registry.Records()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		got[r.Name] = r.Value
+	}
+	if v, ok := got["printer.lan.example."]; !ok || v != "10.0.0.5" {
+		t.Errorf("records = %v, want printer moved into the new zone", got)
+	}
+	if v, ok := got["www.lan.example."]; !ok || v != "nas.lan.example." {
+		t.Errorf("records = %v, want the CNAME and its target moved", got)
+	}
+}
+
+// A confirmation for one domain must not authorize a different one.
+func TestZoneRenameConfirmationIsForOneDomain(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	addRecord(t, srv, "printer.home.arpa.", "A", "10.0.0.5")
+
+	form := validForm(csrf)
+	form.Set("private_domain", "other.example")
+	form.Set("confirm_rename", "lan.example") // stale: confirms the previous try
+	if rec := postForm(t, h, "/settings/server", form, c); rec.Code != http.StatusOK {
+		t.Fatalf("status %d, want the confirmation page again", rec.Code)
+	}
+	cur, _ := srv.o.Settings.Get()
+	if cur.PrivateDomain != "home.arpa" {
+		t.Errorf("private_domain = %q; a stale confirmation authorized a different rename", cur.PrivateDomain)
+	}
+}
+
+// With no records to move, a rename destroys nothing, so it does not stop to
+// ask. Friction with nothing behind it teaches operators to click through.
+func TestZoneRenameWithNoRecordsSavesStraightAway(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+
+	form := validForm(csrf)
+	form.Set("private_domain", "lan.example")
+	if rec := postForm(t, h, "/settings/server", form, c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d, want a redirect: %s", rec.Code, rec.Body)
+	}
+	cur, _ := srv.o.Settings.Get()
+	if cur.PrivateDomain != "lan.example" {
+		t.Errorf("private_domain = %q, want lan.example", cur.PrivateDomain)
+	}
+}
+
+// Re-saving the same domain written differently is not a rename.
+func TestZoneRenameIgnoresCaseAndTrailingDot(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	addRecord(t, srv, "printer.home.arpa.", "A", "10.0.0.5")
+
+	form := validForm(csrf)
+	form.Set("private_domain", "HOME.ARPA.")
+	if rec := postForm(t, h, "/settings/server", form, c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d, want a straight save: %s", rec.Code, rec.Body)
 	}
 }
