@@ -103,7 +103,10 @@ func TestQueryLoggingDoesNotEnableClientIP(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
 	form := validForm(csrf)
 	form.Set("log_queries", "on")
-	postForm(t, h, "/settings/server", form, c)
+	// A rejected save would leave LogClientIP false for the wrong reason.
+	if rec := postForm(t, h, "/settings/server", form, c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d, want a redirect: %s", rec.Code, rec.Body)
+	}
 	cur, _ := srv.o.Settings.Get()
 	if cur.LogClientIP {
 		t.Error("log_queries turned on client IP logging")
@@ -152,8 +155,9 @@ func TestPostServerSettingsRejectsNonNumber(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "ttl") {
 		t.Error("the error does not name the field")
 	}
-	if cur, _ := srv.o.Settings.Get(); cur.TTL == 0 {
-		t.Error("a bad number reached the store")
+	// The seeded value, unchanged: a rejected save must not write at all.
+	if cur, _ := srv.o.Settings.Get(); cur.TTL != 60 {
+		t.Errorf("a bad number reached the store: ttl = %d", cur.TTL)
 	}
 }
 
@@ -226,7 +230,9 @@ func TestRestartPendingBanner(t *testing.T) {
 		}}
 	}
 	body := page(t, h, "/settings", c)
-	for _, want := range []string{"restart", "home.arpa", "lab.example"} {
+	// "Restart to apply" is the banner's own text: "restart" and "home.arpa"
+	// appear on the page with no banner at all, from the form's labels.
+	for _, want := range []string{"Restart to apply", "home.arpa", "lab.example"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the banner does not mention %q", want)
 		}
