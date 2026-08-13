@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -16,11 +17,12 @@ type PeerStore interface {
 	Peer(nodeID string) (store.Peer, error)
 	Peers() ([]store.Peer, error)
 	PutPeer(p store.Peer) error
-	TouchPeer(nodeID string, syncedAt, version int64) error
+	TouchPeer(nodeID string, syncedAt int64, version *int64) error
 }
 
-// Source reads what a replica pulls. Snapshot returns the version and the
-// configuration together so the two can never disagree.
+// Source reads what a replica pulls. Snapshot reads the version first, so a
+// write landing mid-read ships a body newer than the version it carries and
+// the replica pulls again next tick; the other order would strand it.
 type Source interface {
 	Version() (VersionReply, error)
 	Snapshot() (Snapshot, error)
@@ -113,7 +115,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "version unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.write(w, r, v.ConfigVersion, v)
+	s.write(w, r, v)
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -122,14 +124,29 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "snapshot unavailable", http.StatusInternalServerError)
 		return
 	}
-	s.write(w, r, snap.ConfigVersion, snap)
+	s.write(w, r, snap)
 }
 
-func (s *Server) write(w http.ResponseWriter, r *http.Request, version int64, body any) {
+func (s *Server) write(w http.ResponseWriter, r *http.Request, body any) {
 	// Last-seen bookkeeping only; a failure here must not fail the pull.
 	if fp, ok := peerFingerprint(r); ok {
-		_ = s.peers.TouchPeer(fp, time.Now().Unix(), version)
+		_ = s.peers.TouchPeer(fp, time.Now().Unix(), reportedVersion(r))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// reportedVersion is the version the replica says it holds, which is the only
+// side that knows it. Nil when it said nothing, so an older replica still
+// records a last-seen time.
+func reportedVersion(r *http.Request) *int64 {
+	q := r.URL.Query().Get("version")
+	if q == "" {
+		return nil
+	}
+	v, err := strconv.ParseInt(q, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &v
 }

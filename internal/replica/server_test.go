@@ -27,9 +27,10 @@ func newIdentity(t *testing.T) *Identity {
 
 // fakePeers is the pinned set, mutable so a test can unpair mid-connection.
 type fakePeers struct {
-	mu      sync.Mutex
-	pinned  map[string]store.Peer
-	touched []string
+	mu       sync.Mutex
+	pinned   map[string]store.Peer
+	touched  []string
+	versions []*int64
 }
 
 func newFakePeers(ids ...string) *fakePeers {
@@ -67,11 +68,32 @@ func (f *fakePeers) PutPeer(p store.Peer) error {
 	return nil
 }
 
-func (f *fakePeers) TouchPeer(nodeID string, syncedAt, version int64) error {
+func (f *fakePeers) TouchPeer(nodeID string, syncedAt int64, version *int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.touched = append(f.touched, nodeID)
+	f.versions = append(f.versions, version)
 	return nil
+}
+
+func (f *fakePeers) reportedVersions() []*int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*int64(nil), f.versions...)
+}
+
+// shown renders the recorded versions readably: a failure about pointers helps
+// nobody.
+func shown(vs []*int64) string {
+	out := make([]string, len(vs))
+	for i, v := range vs {
+		if v == nil {
+			out[i] = "none"
+			continue
+		}
+		out[i] = fmt.Sprint(*v)
+	}
+	return strings.Join(out, ",")
 }
 
 func (f *fakePeers) touches() int {
@@ -239,13 +261,13 @@ func TestPinnedPeerReadsVersionAndSnapshot(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := Dial(ctx, addr, client, fp)
+	c, err := NewClient(addr, client, fp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	v, err := c.Version(ctx)
+	v, err := c.Version(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +287,42 @@ func TestPinnedPeerReadsVersionAndSnapshot(t *testing.T) {
 	}
 }
 
+// Version lag is the replica's number, not the primary's. Recording what the
+// primary just read out of its own store would make every replica look current
+// however far behind it really is.
+func TestPeerVersionIsWhatTheReplicaReports(t *testing.T) {
+	client := newIdentity(t)
+	peers := newFakePeers(client.NodeID)
+	src := &fakeSource{version: 40} // the primary is at 41 by the time it answers
+	_, addr, fp := startServer(t, peers, src)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := NewClient(addr, client, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if _, err := c.Version(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	got := peers.reportedVersions()
+	if len(got) != 1 || got[0] == nil || *got[0] != 7 {
+		t.Fatalf("recorded peer version %v, want the 7 the replica reported holding", shown(got))
+	}
+
+	// A replica that reports nothing still updates its last-seen time, and does
+	// not have its recorded version overwritten with the primary's.
+	if resp := rawDo(t, addr, client, fp, http.MethodGet, "/replica/version"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET without a version = %d, want 200", resp.StatusCode)
+	}
+	got = peers.reportedVersions()
+	if len(got) != 2 || got[1] != nil {
+		t.Fatalf("a replica reporting nothing recorded %v, want no version at all", shown(got))
+	}
+}
+
 // Unpairing has to bite on the live connection, not only on the next process.
 func TestRemovedPeerIsRefusedOnNextRequest(t *testing.T) {
 	client := newIdentity(t)
@@ -280,19 +338,19 @@ func TestRemovedPeerIsRefusedOnNextRequest(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := Dial(ctx, addr, client, fp)
+	c, err := NewClient(addr, client, fp)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
 
-	if _, err := c.Version(ctx); err != nil {
+	if _, err := c.Version(ctx, 0); err != nil {
 		t.Fatalf("Version() before unpairing: %v", err)
 	}
 	if err := db.DeletePeer(client.NodeID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Version(ctx); err == nil {
+	if _, err := c.Version(ctx, 0); err == nil {
 		t.Fatal("Version() succeeded after the peer was deleted; the pin is checked once, not per request")
 	}
 }
@@ -320,7 +378,7 @@ func TestSnapshotVersionMatchesItsBody(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, err := Dial(ctx, addr, client, fp)
+	c, err := NewClient(addr, client, fp)
 	if err != nil {
 		t.Fatal(err)
 	}

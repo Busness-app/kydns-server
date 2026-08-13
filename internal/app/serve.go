@@ -256,12 +256,15 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 
 	errs := make(chan error, 3)
-	replSrv, err := startReplication(ctx, cfg, st,
+	replSrv, puller, err := startReplication(ctx, cfg, st,
 		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
 		errs, logger)
 	if err != nil {
 		return err
 	}
+	// puller.Status() is what the replica dashboard and CLI will read; until
+	// those exist the loop reports through the log.
+	_ = puller
 	if replSrv != nil {
 		defer replSrv.Close()
 	}

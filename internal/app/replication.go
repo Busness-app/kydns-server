@@ -115,37 +115,31 @@ func (a *replicaApplier) Apply(cfg json.RawMessage) error {
 }
 
 // primaryFingerprint is the pinned key of the primary this replica follows.
-// replica_state names it once a pull has landed; before that, pairing has
-// written exactly one peer.
+// Only replica_state answers this: peers is "the replicas I serve", and a
+// demoted primary still has those rows.
 func primaryFingerprint(st *store.Store) (string, error) {
 	nodeID, _, err := st.ReplicaState()
 	if err != nil {
 		return "", err
 	}
-	if nodeID != "" {
-		return nodeID, nil
+	if nodeID == "" {
+		return "", errors.New("this node is not paired with a primary")
 	}
-	peers, err := st.Peers()
-	if err != nil {
-		return "", err
-	}
-	if len(peers) != 1 {
-		return "", fmt.Errorf("%d peers are pinned, a replica follows exactly one", len(peers))
-	}
-	return peers[0].NodeID, nil
+	return nodeID, nil
 }
 
 // startReplication starts whichever half of replication the config file asked
 // for. A standalone node does nothing here. The returned server is nil unless
-// this node is a primary.
+// this node is a primary, and the returned puller is nil unless it is a
+// replica.
 func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
-	ap replica.Applier, errs chan<- error, logger *slog.Logger) (*replica.Server, error) {
+	ap replica.Applier, errs chan<- error, logger *slog.Logger) (*replica.Server, *replica.Puller, error) {
 	if cfg.Replication.Listen == "" && cfg.Replication.Primary == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	id, err := replica.LoadOrCreateIdentity(cfg.DataDir)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// The node ID is what an operator confirms when pairing, and there is no CLI
 	// yet to print it.
@@ -159,31 +153,47 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 			logger.Warn("replication.primary is set but this node is not paired; serving the configuration it already has",
 				"primary", cfg.Replication.Primary, "reason", err,
 				"fix", "pair this node with its primary")
-			return nil, nil
+			return nil, nil, nil
 		}
-		dial := func(ctx context.Context) (replica.Primary, error) {
-			return replica.Dial(ctx, cfg.Replication.Primary, id, fp)
-		}
-		go replica.NewPuller(dial, ap, st, pullInterval, pullCeiling, time.Now).Run(ctx)
+		puller := replica.NewPuller(replica.PullerConfig{
+			Dial: func(context.Context) (replica.Primary, error) {
+				return replica.NewClient(cfg.Replication.Primary, id, fp)
+			},
+			Pinned:   fp,
+			Apply:    ap,
+			State:    st,
+			Interval: pullInterval,
+			Ceiling:  pullCeiling,
+			Now:      time.Now,
+			Logger:   logger,
+		})
+		go puller.Run(ctx)
 		logger.Info("following primary", "primary", cfg.Replication.Primary, "primary_node_id", fp)
-		return nil, nil
+		return nil, puller, nil
 	}
 
 	l, err := net.Listen("tcp", cfg.Replication.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
+		return nil, nil, fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
 	}
 	srv := replica.NewServer(id, st, &storeSource{st: st, nodeID: id.NodeID},
 		replica.NewInviteBook(inviteTTL, time.Now))
 	go func() {
+		// ponytail: errs is the process's fatal channel, so a replication
+		// listener that dies at runtime takes DNS down with it. A later task
+		// should downgrade the post-startup case to a logged error and a banner;
+		// replication failing must never make local DNS unavailable.
 		if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
 			errs <- err
 		}
 	}()
 	peers, err := st.Peers()
 	if err != nil {
-		return srv, err
+		// The caller registers its Close only on success, so this one closes here
+		// rather than leaking the listener and its goroutine.
+		srv.Close()
+		return nil, nil, err
 	}
 	logger.Info("serving replicas", "listen", cfg.Replication.Listen, "node_id", id.NodeID, "paired", len(peers))
-	return srv, nil
+	return srv, nil, nil
 }

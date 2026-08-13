@@ -93,7 +93,7 @@ func startRecordingPrimary(t *testing.T) (addr, fp string, rec *recorder) {
 	return l.Addr().String(), id.NodeID, rec
 }
 
-func acceptAny(string) (bool, error) { return true, nil }
+func acceptAny(context.Context, string) (bool, error) { return true, nil }
 
 // Pairing succeeds, and each side ends up holding the other's fingerprint.
 func TestPairingPinsBothWays(t *testing.T) {
@@ -106,7 +106,7 @@ func TestPairingPinsBothWays(t *testing.T) {
 	}
 	replica := newIdentity(t)
 
-	got, err := PairAsReplica(pairCtx(t), addr, replica, invite.Code, acceptAny)
+	got, err := PairAsReplica(pairCtx(t), addr, replica, invite.Code, acceptAny, &fakeState{})
 	if err != nil {
 		t.Fatalf("PairAsReplica: %v", err)
 	}
@@ -118,14 +118,68 @@ func TestPairingPinsBothWays(t *testing.T) {
 	}
 }
 
+// Pairing records the primary in replica_state, which is the one place that
+// means "the primary I follow". peers is the other direction and does not
+// answer this question on a node that used to be a primary.
+func TestPairingRecordsThePrimaryItFollows(t *testing.T) {
+	db := newPeerStore(t)
+	book := NewInviteBook(time.Minute, time.Now)
+	addr, primaryFP := startPairingServer(t, db, book)
+	invite, err := book.Mint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := newPeerStore(t) // the replica's own database
+
+	if _, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), invite.Code, acceptAny, state); err != nil {
+		t.Fatal(err)
+	}
+	gotID, gotVersion, err := state.ReplicaState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotID != primaryFP {
+		t.Fatalf("replica_state names %q as the primary, want %q", gotID, primaryFP)
+	}
+	if gotVersion != 0 {
+		t.Fatalf("replica_state version = %d after pairing, want 0: nothing has been pulled yet", gotVersion)
+	}
+}
+
+// The operator comparing 64 hex characters across two screens is the entire
+// reason this design was chosen. Timing that out from a network layer would
+// punish exactly the operator who read carefully.
+func TestSlowConfirmationIsNotOnAClock(t *testing.T) {
+	db := newPeerStore(t)
+	book := NewInviteBook(time.Minute, time.Now)
+	addr, _ := startPairingServer(t, db, book)
+	invite, err := book.Mint()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Waiting out a real deadline would mean sleeping, so the assertion is that
+	// there is no deadline to wait out.
+	var deadline bool
+	confirm := func(ctx context.Context, _ string) (bool, error) {
+		_, deadline = ctx.Deadline()
+		return true, nil
+	}
+	if _, err := PairAsReplica(context.Background(), addr, newIdentity(t), invite.Code, confirm, &fakeState{}); err != nil {
+		t.Fatalf("PairAsReplica: %v", err)
+	}
+	if deadline {
+		t.Fatal("the confirmer was given a deadline; an operator reading carefully would be cut off mid-comparison")
+	}
+}
+
 // The whole reason the SSH model closes the PAKE's hole: a declined
 // fingerprint must send no code at all.
 func TestDeclinedFingerprintSendsNoCode(t *testing.T) {
 	addr, _, rec := startRecordingPrimary(t)
 
-	got, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), "SECRETCODE", func(string) (bool, error) {
-		return false, nil
-	})
+	got, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), "SECRETCODE",
+		func(context.Context, string) (bool, error) { return false, nil }, &fakeState{})
 	if !errors.Is(err, ErrFingerprintRejected) {
 		t.Fatalf("PairAsReplica error = %v, want ErrFingerprintRejected", err)
 	}
@@ -149,10 +203,11 @@ func TestConfirmerSeesThePeersRealFingerprint(t *testing.T) {
 		"attacker": {attacker, attackerFP},
 	} {
 		var seen []string
-		_, _ = PairAsReplica(pairCtx(t), c.addr, newIdentity(t), "CODE", func(fp string) (bool, error) {
-			seen = append(seen, fp)
-			return false, nil
-		})
+		_, _ = PairAsReplica(pairCtx(t), c.addr, newIdentity(t), "CODE",
+			func(_ context.Context, fp string) (bool, error) {
+				seen = append(seen, fp)
+				return false, nil
+			}, &fakeState{})
 		if len(seen) != 1 || seen[0] != c.want {
 			t.Fatalf("%s: confirmer saw %q, want the fingerprint of the host that answered %q", name, seen, c.want)
 		}
@@ -168,10 +223,11 @@ func TestExplicitFingerprintMismatchFailsClosed(t *testing.T) {
 	expected := newIdentity(t).NodeID // the operator pasted a different node's fingerprint
 
 	prompts := 0
-	_, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), "SECRETCODE", func(fp string) (bool, error) {
-		prompts++
-		return fp == expected, nil
-	})
+	_, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), "SECRETCODE",
+		func(_ context.Context, fp string) (bool, error) {
+			prompts++
+			return fp == expected, nil
+		}, &fakeState{})
 	if !errors.Is(err, ErrFingerprintRejected) {
 		t.Fatalf("PairAsReplica error = %v, want ErrFingerprintRejected", err)
 	}
@@ -187,7 +243,7 @@ func TestExplicitFingerprintMismatchFailsClosed(t *testing.T) {
 // server. Expired and spent codes must be indistinguishable from it.
 func unknownCodeError(t *testing.T, addr string) string {
 	t.Helper()
-	_, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), "NOTACODE", acceptAny)
+	_, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), "NOTACODE", acceptAny, &fakeState{})
 	if err == nil {
 		t.Fatal("PairAsReplica accepted a code that was never minted")
 	}
@@ -203,7 +259,7 @@ func TestPairingRejectsWrongCode(t *testing.T) {
 	}
 	replica := newIdentity(t)
 
-	if _, err := PairAsReplica(pairCtx(t), addr, replica, "WRONGCODE", acceptAny); err == nil {
+	if _, err := PairAsReplica(pairCtx(t), addr, replica, "WRONGCODE", acceptAny, &fakeState{}); err == nil {
 		t.Fatal("PairAsReplica succeeded with a code the book never issued")
 	}
 	if _, err := db.Peer(replica.NodeID); err == nil {
@@ -219,12 +275,12 @@ func TestPairingRejectsSpentCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), invite.Code, acceptAny); err != nil {
+	if _, err := PairAsReplica(pairCtx(t), addr, newIdentity(t), invite.Code, acceptAny, &fakeState{}); err != nil {
 		t.Fatalf("first pairing: %v", err)
 	}
 
 	second := newIdentity(t)
-	_, err = PairAsReplica(pairCtx(t), addr, second, invite.Code, acceptAny)
+	_, err = PairAsReplica(pairCtx(t), addr, second, invite.Code, acceptAny, &fakeState{})
 	if err == nil {
 		t.Fatal("PairAsReplica reused a code that was already redeemed")
 	}
@@ -249,7 +305,7 @@ func TestPairingRejectsExpiredCode(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 
 	replica := newIdentity(t)
-	_, err = PairAsReplica(pairCtx(t), addr, replica, invite.Code, acceptAny)
+	_, err = PairAsReplica(pairCtx(t), addr, replica, invite.Code, acceptAny, &fakeState{})
 	if err == nil {
 		t.Fatal("PairAsReplica redeemed an expired code")
 	}
@@ -276,7 +332,7 @@ func TestUnpinnedPeerReachesPairButNotVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PairAsReplica(pairCtx(t), addr, replica, invite.Code, acceptAny); err != nil {
+	if _, err := PairAsReplica(pairCtx(t), addr, replica, invite.Code, acceptAny, &fakeState{}); err != nil {
 		t.Fatalf("PairAsReplica from an unpinned peer: %v", err)
 	}
 

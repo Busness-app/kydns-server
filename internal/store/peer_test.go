@@ -40,6 +40,30 @@ func TestDeletePeerRemovesIt(t *testing.T) {
 	}
 }
 
+// A peer that reports the version it holds records it; one that reports
+// nothing still records that it was seen, and keeps the version it last named.
+func TestTouchPeerRecordsTheReportedVersion(t *testing.T) {
+	s := open(t)
+	if err := s.PutPeer(Peer{NodeID: "fp-1"}); err != nil {
+		t.Fatal(err)
+	}
+	seven := int64(7)
+	if err := s.TouchPeer("fp-1", 100, &seven); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Peer("fp-1"); got.LastVersion != 7 || got.LastSyncAt != 100 {
+		t.Fatalf("Peer() = %+v, want version 7 seen at 100", got)
+	}
+
+	if err := s.TouchPeer("fp-1", 200, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Peer("fp-1")
+	if got.LastVersion != 7 || got.LastSyncAt != 200 {
+		t.Fatalf("Peer() = %+v after a touch reporting nothing, want version 7 seen at 200", got)
+	}
+}
+
 // The peer list is this node's own. Replicating it would make a primary
 // rewrite its replicas' trust anchors.
 func TestPeerWriteDoesNotBumpConfigVersion(t *testing.T) {

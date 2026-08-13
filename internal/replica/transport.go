@@ -104,29 +104,26 @@ type Client struct {
 	http *http.Client
 }
 
-// Dial connects to a primary and verifies its fingerprint matches want. A
-// mismatch is a failure with no fallback: the operator pinned this key.
-func Dial(ctx context.Context, address string, id *Identity, want string) (*Client, error) {
+// NewClient builds a client pinned to want. Every handshake it makes enforces
+// the pin, so a mismatch is a failed request with no fallback. Connections are
+// pooled: a five-second poll reuses one handshake rather than paying for a new
+// one each tick.
+func NewClient(address string, id *Identity, want string) (*Client, error) {
 	cfg, err := pinnedTLSConfig(id, func(fp string) bool { return fp == want })
 	if err != nil {
 		return nil, err
 	}
-	// Handshake once here so a wrong pin surfaces from Dial rather than from
-	// whatever request happens to run first.
-	conn, err := (&tls.Dialer{Config: cfg}).DialContext(ctx, "tcp", address)
-	if err != nil {
-		return nil, fmt.Errorf("dial %s: %w", address, err)
-	}
-	conn.Close()
 	return &Client{
 		base: "https://" + address,
 		http: &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}, Timeout: requestTimeout},
 	}, nil
 }
 
-func (c *Client) Version(ctx context.Context) (VersionReply, error) {
+// Version reports held so the primary can record how far behind this replica
+// is. A primary that answers without being told holds no lag figure at all.
+func (c *Client) Version(ctx context.Context, held int64) (VersionReply, error) {
 	var v VersionReply
-	err := c.get(ctx, "/replica/version", &v)
+	err := c.get(ctx, fmt.Sprintf("/replica/version?version=%d", held), &v)
 	return v, err
 }
 

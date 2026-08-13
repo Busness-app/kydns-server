@@ -95,10 +95,13 @@ func (s *Store) SetReplicaState(primaryNodeID string, version int64) error {
 	return err
 }
 
-// TouchPeer records the outcome of a successful pull.
-func (s *Store) TouchPeer(nodeID string, syncedAt, version int64) error {
+// TouchPeer records the outcome of a successful pull. version is the version
+// the peer reported holding; nil leaves the recorded one alone, so a peer that
+// reports nothing still updates its last-seen time.
+func (s *Store) TouchPeer(nodeID string, syncedAt int64, version *int64) error {
 	res, err := s.db.Exec(`
-		UPDATE peers SET last_sync_at = ?, last_version = ? WHERE node_id = ?`,
+		UPDATE peers SET last_sync_at = ?, last_version = COALESCE(?, last_version)
+		WHERE node_id = ?`,
 		syncedAt, version, nodeID)
 	if err != nil {
 		return err

@@ -17,7 +17,8 @@ import (
 )
 
 // A peer whose key changed is an impostor or a reinstalled node. Either way it
-// is refused, with no prompt and no trust-on-next-use.
+// is refused, with no prompt and no trust-on-next-use. The pin is checked on
+// every handshake, so no request ever completes.
 func TestClientRefusesPrimaryWithWrongFingerprint(t *testing.T) {
 	client := newIdentity(t)
 	_, addr, _ := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
@@ -25,13 +26,19 @@ func TestClientRefusesPrimaryWithWrongFingerprint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	wrong := newIdentity(t).NodeID
-	c, err := Dial(ctx, addr, client, wrong)
-	if err == nil {
-		c.Close()
-		t.Fatal("Dial accepted a primary whose fingerprint does not match the pin")
+	c, err := NewClient(addr, client, wrong)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if c != nil {
-		t.Fatalf("Dial returned a client alongside error %v", err)
+	defer c.Close()
+
+	for i := 0; i < 2; i++ {
+		if _, err := c.Version(ctx, 0); err == nil {
+			t.Fatal("the client read a version from a primary whose fingerprint does not match the pin")
+		}
+		if _, err := c.Snapshot(ctx); err == nil {
+			t.Fatal("the client read a snapshot from a primary whose fingerprint does not match the pin")
+		}
 	}
 }
 
@@ -128,7 +135,7 @@ func TestClientRefusesAnOversizedReply(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	c, err := Dial(ctx, addr, client, fp)
+	c, err := NewClient(addr, client, fp)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,10 +14,6 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
-// pairTimeout bounds the whole exchange. It is longer than requestTimeout
-// because a human is deciding in the middle of it.
-const pairTimeout = 30 * time.Second
-
 // maxPairBytes caps both directions of the exchange: two short strings.
 const maxPairBytes = 4 << 10
 
@@ -25,7 +21,11 @@ const maxPairBytes = 4 << 10
 // to the intended primary. An interactive caller prompts the operator; a
 // scripted caller compares against a fingerprint passed on the command line.
 // Returning false aborts pairing before anything is sent.
-type Confirmer func(fingerprint string) (bool, error)
+//
+// The context it receives carries no deadline of pairing's making: a person
+// reading 64 hex characters off two screens is the whole point of this design
+// and must not be raced by a network timeout.
+type Confirmer func(ctx context.Context, fingerprint string) (bool, error)
 
 // ErrFingerprintRejected is returned when the Confirmer declines. It is a
 // distinct error because the CLI reports it differently from a network
@@ -41,17 +41,20 @@ type pairReply struct {
 }
 
 // PairAsReplica dials address, reads the certificate the peer presents, and
-// asks confirm about its fingerprint. Only on approval does it send code.
-// It returns the primary's fingerprint.
-func PairAsReplica(ctx context.Context, address string, id *Identity, code string, confirm Confirmer) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, pairTimeout)
-	defer cancel()
-
-	fingerprint, err := peekFingerprint(ctx, address, id)
+// asks confirm about its fingerprint. Only on approval does it send code. On
+// success it records the primary as the one this node follows and returns its
+// fingerprint.
+//
+// Each dial carries its own budget; the operator's decision carries none.
+func PairAsReplica(ctx context.Context, address string, id *Identity, code string,
+	confirm Confirmer, state StateStore) (string, error) {
+	peekCtx, cancelPeek := context.WithTimeout(ctx, requestTimeout)
+	fingerprint, err := peekFingerprint(peekCtx, address, id)
+	cancelPeek()
 	if err != nil {
 		return "", err
 	}
-	ok, err := confirm(fingerprint)
+	ok, err := confirm(ctx, fingerprint)
 	if err != nil {
 		return "", err
 	}
@@ -70,7 +73,9 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+address+"/replica/pair", bytes.NewReader(body))
+	postCtx, cancelPost := context.WithTimeout(ctx, requestTimeout)
+	defer cancelPost()
+	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, "https://"+address+"/replica/pair", bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -92,6 +97,11 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	// The primary names itself; it may only name the key it proved it holds.
 	if reply.NodeID != fingerprint {
 		return "", fmt.Errorf("pair with %s: claimed node %q but holds key %s", address, reply.NodeID, fingerprint)
+	}
+	// replica_state is where "the primary I follow" lives. Version 0 because
+	// nothing has been pulled yet, which is also what re-pairing should mean.
+	if err := state.SetReplicaState(fingerprint, 0); err != nil {
+		return "", fmt.Errorf("record primary %s: %w", fingerprint, err)
 	}
 	return fingerprint, nil
 }
