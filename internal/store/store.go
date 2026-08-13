@@ -124,6 +124,88 @@ CREATE TABLE IF NOT EXISTS settings (
   health_timeout     INTEGER NOT NULL,
   health_workers     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS config_version (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  version INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO config_version(id, version) VALUES(1, 0);
+-- config_version is bumped by triggers rather than by Go, so a write path
+-- added later cannot forget to bump it. The WHEN clauses on the UPDATE
+-- triggers ARE the replicated settings split: anything absent is node-local
+-- and deliberately invisible to replicas.
+CREATE TRIGGER IF NOT EXISTS cv_views_i AFTER INSERT ON views BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_views_d AFTER DELETE ON views BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_view_subnets_i AFTER INSERT ON view_subnets BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_view_subnets_d AFTER DELETE ON view_subnets BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_services_i AFTER INSERT ON services BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_services_u AFTER UPDATE ON services BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_services_d AFTER DELETE ON services BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_service_addresses_i AFTER INSERT ON service_addresses BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_service_addresses_u AFTER UPDATE ON service_addresses BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_service_addresses_d AFTER DELETE ON service_addresses BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_aliases_i AFTER INSERT ON aliases BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_aliases_d AFTER DELETE ON aliases BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_records_i AFTER INSERT ON records BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_records_u AFTER UPDATE ON records BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_records_d AFTER DELETE ON records BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_settings_u AFTER UPDATE ON blacklist_settings BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_rules_i AFTER INSERT ON blacklist_rules BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_rules_u AFTER UPDATE ON blacklist_rules BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_rules_d AFTER DELETE ON blacklist_rules BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+-- Definition columns only. A refresh writes snapshot, etag, last_modified and
+-- the counters on every poll; those are node-local and must not look like a
+-- configuration change.
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_lists_i AFTER INSERT ON blacklist_lists BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_lists_d AFTER DELETE ON blacklist_lists BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_lists_u AFTER UPDATE ON blacklist_lists
+WHEN old.name IS NOT new.name
+  OR old.url IS NOT new.url
+  OR old.format IS NOT new.format
+  OR old.description IS NOT new.description
+  OR old.enabled IS NOT new.enabled
+  OR old.builtin IS NOT new.builtin
+  OR old.interval_seconds IS NOT new.interval_seconds
+BEGIN UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+-- Replicated settings columns only. dhcp_lease_file, discovery_interval,
+-- log_queries and log_client_ip are absent on purpose: they are node-local.
+CREATE TRIGGER IF NOT EXISTS cv_settings_i AFTER INSERT ON settings BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_settings_u AFTER UPDATE ON settings
+WHEN old.private_domain IS NOT new.private_domain
+  OR old.reverse_zones IS NOT new.reverse_zones
+  OR old.upstreams IS NOT new.upstreams
+  OR old.allow_query IS NOT new.allow_query
+  OR old.allow_tailscale IS NOT new.allow_tailscale
+  OR old.ttl IS NOT new.ttl
+  OR old.cache_min_ttl IS NOT new.cache_min_ttl
+  OR old.cache_max_ttl IS NOT new.cache_max_ttl
+  OR old.negative_max_ttl IS NOT new.negative_max_ttl
+  OR old.cache_entries IS NOT new.cache_entries
+  OR old.health_interval IS NOT new.health_interval
+  OR old.health_timeout IS NOT new.health_timeout
+  OR old.health_workers IS NOT new.health_workers
+BEGIN UPDATE config_version SET version = version + 1 WHERE id = 1; END;
 `
 
 // migrations run in order on a database whose user_version is below their
