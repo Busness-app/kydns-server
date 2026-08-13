@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"gopkg.in/yaml.v3"
 )
@@ -180,4 +181,30 @@ func (c *Config) EffectiveAllowQuery() ([]netip.Prefix, error) {
 		out = append(out, p.Masked())
 	}
 	return out, nil
+}
+
+// SeedSettings is the config file's contribution to a fresh database: every
+// key that has moved into the store, with defaults already applied. It is read
+// once, on the first run. After that the database owns these values and edits
+// to the file do nothing.
+func (c *Config) SeedSettings() store.Settings {
+	return store.Settings{
+		PrivateDomain:     c.DNS.PrivateDomain,
+		ReverseZones:      append([]string(nil), c.DNS.ReverseZones...),
+		Upstreams:         append([]string(nil), c.DNS.Upstreams...),
+		AllowQuery:        append([]string(nil), c.DNS.AllowQuery...),
+		AllowTailscale:    c.DNS.AllowTailscale,
+		TTL:               c.DNS.TTL,
+		CacheMinTTL:       c.DNS.CacheMinTTL,
+		CacheMaxTTL:       c.DNS.CacheMaxTTL,
+		NegativeMaxTTL:    c.DNS.NegativeMaxTTL,
+		CacheEntries:      c.DNS.CacheEntries,
+		LogQueries:        c.DNS.LogQueries,
+		LogClientIP:       c.DNS.LogClientIP,
+		DHCPLeaseFile:     c.Discovery.DHCPLeaseFile,
+		DiscoveryInterval: c.Discovery.Interval,
+		HealthInterval:    c.Health.Interval,
+		HealthTimeout:     c.Health.Timeout,
+		HealthWorkers:     c.Health.Workers,
+	}
 }

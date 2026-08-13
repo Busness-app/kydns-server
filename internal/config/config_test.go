@@ -3,8 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 func write(t *testing.T, body string) string {
@@ -143,5 +146,77 @@ func TestEffectiveAllowQueryAddsCGNATOnlyWhenEnabled(t *testing.T) {
 	}
 	if !found {
 		t.Error("CGNAT range missing with allow_tailscale on")
+	}
+}
+
+// The file seeds the database on first run, so every moved key has to survive
+// the trip. A key missing here is a setting that silently reverts to its
+// default the first time an operator upgrades.
+func TestSeedSettingsCarriesEveryMovedKey(t *testing.T) {
+	path := write(t, `
+data_dir: /tmp/kydns
+dns:
+  private_domain: lab.example
+  reverse_zones: ["192.168.1.0/24"]
+  upstreams: ["tls://9.9.9.9:853"]
+  allow_query: ["192.168.0.0/16"]
+  allow_tailscale: true
+  ttl: 90
+  cache_min_ttl: 10
+  cache_max_ttl: 1800
+  negative_max_ttl: 120
+  cache_entries: 500
+  log_queries: true
+  log_client_ip: true
+discovery:
+  dhcp_lease_file: /var/lib/misc/dnsmasq.leases
+  interval: 15
+health:
+  interval: 45
+  timeout: 3
+  workers: 4
+`)
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := c.SeedSettings()
+	want := store.Settings{
+		PrivateDomain:     "lab.example",
+		ReverseZones:      []string{"192.168.1.0/24"},
+		Upstreams:         []string{"tls://9.9.9.9:853"},
+		AllowQuery:        []string{"192.168.0.0/16"},
+		AllowTailscale:    true,
+		TTL:               90,
+		CacheMinTTL:       10,
+		CacheMaxTTL:       1800,
+		NegativeMaxTTL:    120,
+		CacheEntries:      500,
+		LogQueries:        true,
+		LogClientIP:       true,
+		DHCPLeaseFile:     "/var/lib/misc/dnsmasq.leases",
+		DiscoveryInterval: 15,
+		HealthInterval:    45,
+		HealthTimeout:     3,
+		HealthWorkers:     4,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("seed differs\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// A file with nothing but data_dir must seed the same defaults the code
+// applies, so a bare install and a documented install agree.
+func TestSeedSettingsUsesDefaults(t *testing.T) {
+	c, err := Load(write(t, "data_dir: /tmp/kydns\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := c.SeedSettings()
+	if got.PrivateDomain != "home.arpa" || got.TTL != 60 || got.HealthWorkers != 8 {
+		t.Errorf("defaults did not reach the seed: %+v", got)
+	}
+	if len(got.Upstreams) == 0 || len(got.AllowQuery) == 0 {
+		t.Error("the seeded upstreams or ACL are empty, which would refuse every query")
 	}
 }
