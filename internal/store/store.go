@@ -216,6 +216,15 @@ CREATE TABLE IF NOT EXISTS peers (
   last_sync_at INTEGER NOT NULL DEFAULT 0,
   last_version INTEGER NOT NULL DEFAULT 0
 );
+-- The primary's version as this replica last applied it. Node-local
+-- bookkeeping, so no config_version trigger: this node's own counter moves
+-- every time a snapshot lands and says nothing about the primary.
+CREATE TABLE IF NOT EXISTS replica_state (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  primary_node_id TEXT NOT NULL DEFAULT '',
+  last_version    INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO replica_state(id) VALUES(1);
 `
 
 // migrations run in order on a database whose user_version is below their

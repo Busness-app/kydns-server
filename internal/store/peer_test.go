@@ -59,3 +59,38 @@ func TestPeerWriteDoesNotBumpConfigVersion(t *testing.T) {
 		t.Fatalf("ConfigVersion() = %d after a peer write, want %d", after, before)
 	}
 }
+
+func TestReplicaStateRoundTrip(t *testing.T) {
+	s := open(t)
+	nodeID, version, err := s.ReplicaState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeID != "" || version != 0 {
+		t.Fatalf("ReplicaState() = %q/%d on a fresh database, want empty/0", nodeID, version)
+	}
+	if err := s.SetReplicaState("fp-primary", 42); err != nil {
+		t.Fatal(err)
+	}
+	nodeID, version, err = s.ReplicaState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeID != "fp-primary" || version != 42 {
+		t.Fatalf("ReplicaState() = %q/%d, want fp-primary/42", nodeID, version)
+	}
+}
+
+// Re-pairing zeroes the peer row; the applied version must not go with it.
+func TestReplicaStateSurvivesRePairing(t *testing.T) {
+	s := open(t)
+	if err := s.SetReplicaState("fp-primary", 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutPeer(Peer{NodeID: "fp-primary", Address: "10.0.0.2:8443"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, version, _ := s.ReplicaState(); version != 42 {
+		t.Fatalf("ReplicaState() version = %d after a re-pair, want 42", version)
+	}
+}

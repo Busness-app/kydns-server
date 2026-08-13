@@ -72,6 +72,29 @@ func (s *Store) DeletePeer(nodeID string) error {
 	return nil
 }
 
+// ReplicaState is the primary's version this node last applied. It is kept
+// apart from peers because re-pairing rewrites that row, and apart from
+// config_version because applying a snapshot bumps this node's own counter.
+func (s *Store) ReplicaState() (string, int64, error) {
+	var nodeID string
+	var version int64
+	err := s.db.QueryRow(`SELECT primary_node_id, last_version FROM replica_state WHERE id = 1`).
+		Scan(&nodeID, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, nil
+	}
+	return nodeID, version, err
+}
+
+func (s *Store) SetReplicaState(primaryNodeID string, version int64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO replica_state(id, primary_node_id, last_version) VALUES(1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET primary_node_id = excluded.primary_node_id,
+		                              last_version = excluded.last_version`,
+		primaryNodeID, version)
+	return err
+}
+
 // TouchPeer records the outcome of a successful pull.
 func (s *Store) TouchPeer(nodeID string, syncedAt, version int64) error {
 	res, err := s.db.Exec(`
