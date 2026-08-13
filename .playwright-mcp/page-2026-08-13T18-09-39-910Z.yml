@@ -1,0 +1,6 @@
+- generic [ref=f3e2]:
+  - heading "Sign in" [level=2] [ref=f3e3]
+  - generic [ref=f3e4]:
+    - generic [ref=f3e5]: Password
+    - textbox "Password" [active] [ref=f3e6]
+    - button "Sign in" [ref=f3e7] [cursor=pointer]

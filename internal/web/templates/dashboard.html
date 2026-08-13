@@ -9,18 +9,69 @@
 {{end}}
 
 <div class="card stat-row">
+  <div class="stat"><div class="value" data-stat="total">{{.Queries.Total}}</div><div class="label">Queries</div></div>
+  <div class="stat"><div class="value" data-stat="blocked">{{.Queries.Blocked}}</div><div class="label">Blocked</div></div>
+  <div class="stat"><div class="value"><span data-stat="hit_rate">{{.CacheHitRate}}</span>%</div><div class="label">Cache hit rate</div></div>
+  <div class="stat"><div class="value"><span data-stat="avg_ms">{{.AvgMS}}</span>ms</div><div class="label">Avg response</div></div>
+  <div class="stat"><div class="value" data-stat="uptime">{{.Uptime}}</div><div class="label">Uptime</div></div>
+</div>
+
+<div class="card">
+  <noscript><p class="muted">Charts need JavaScript. Every number they draw is also in the counters above and the table below.</p></noscript>
+  <figure class="chart" id="chart-queries" data-chart="queries">
+    <figcaption>
+      Queries per minute <span class="muted">— last hour</span>
+      <span class="legend">
+        <span class="key" data-series="authoritative">Local <b>0</b></span>
+        <span class="key" data-series="forwarded">Forwarded <b>0</b></span>
+        <span class="key" data-series="blocked">Blocked <b>0</b></span>
+      </span>
+    </figcaption>
+    <svg viewBox="0 0 640 150" role="img" aria-label="Queries per minute for the last hour, split into local, forwarded and blocked"></svg>
+  </figure>
+  <div class="chart-pair">
+    <figure class="chart" id="chart-cache" data-chart="cache">
+      <figcaption>Cache hit rate <span class="muted">— last hour</span></figcaption>
+      <svg viewBox="0 0 320 110" role="img" aria-label="Cache hit rate percentage for the last hour"></svg>
+    </figure>
+    <figure class="chart" id="chart-latency" data-chart="latency">
+      <figcaption>Response time <span class="muted">— last hour</span></figcaption>
+      <svg viewBox="0 0 320 110" role="img" aria-label="Average response time in milliseconds for the last hour"></svg>
+    </figure>
+  </div>
+</div>
+
+<div class="card stat-row">
   <div class="stat"><div class="value">{{.Services}}</div><div class="label">Services</div></div>
   <div class="stat"><div class="value">{{.Records}}</div><div class="label">Records</div></div>
   <div class="stat"><div class="value">{{.Views}}</div><div class="label">Views</div></div>
-  <div class="stat"><div class="value">{{.CacheEntries}}</div><div class="label">Cached</div></div>
+  <div class="stat"><div class="value" data-stat="cache_entries">{{.CacheEntries}}</div><div class="label">Cached</div></div>
 </div>
 
 <div class="card">
   <table class="grid">
     <tr><th>Metric</th><th>Value</th></tr>
-    <tr><td>Refused queries (total)</td><td>{{.RefusedTotal}}</td></tr>
-    <tr><td>Refused from Tailscale range</td><td>{{.RefusedCGNAT}}</td></tr>
+    <tr><td>Answered locally</td><td data-stat="authoritative">{{.Queries.Authoritative}}</td></tr>
+    <tr><td>Forwarded</td><td data-stat="forwarded">{{.Queries.Forwarded}}</td></tr>
+    <tr><td>Blocked by policy</td><td data-stat="blocked">{{.Queries.Blocked}}</td></tr>
+    <tr><td>NXDOMAIN / SERVFAIL</td><td><span data-stat="nxdomain">{{.Queries.NXDomain}}</span> / <span data-stat="servfail">{{.Queries.ServFail}}</span></td></tr>
+    <tr><td>Last query</td><td data-stat="last_query">{{.LastQuery}}</td></tr>
+    <tr><td>Refused queries (total)</td><td data-stat="refused_total">{{.RefusedTotal}}</td></tr>
+    <tr><td>Refused from Tailscale range</td><td data-stat="refused_cgnat">{{.RefusedCGNAT}}</td></tr>
     <tr><td>Upstreams</td><td>{{range .Upstreams}}<span class="badge{{if or (not .Secure) .LastError}} warn{{end}}">{{.Spec}}</span> {{else}}<span class="muted">none</span>{{end}}</td></tr>
   </table>
 </div>
+
+{{with .TopBlocked}}
+<div class="card">
+  <h3>Most blocked names</h3>
+  <p class="muted">What this network asked for and did not get. Anyone who can open this page can read it.</p>
+  <table class="grid">
+    <tr><th>Name</th><th>Blocked</th></tr>
+    {{range .}}<tr><td>{{.Name}}</td><td>{{.Count}}</td></tr>{{end}}
+  </table>
+</div>
+{{end}}
+<script src="/static/charts.js" defer></script>
+<script src="/static/live.js" defer></script>
 {{end}}

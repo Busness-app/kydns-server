@@ -39,6 +39,7 @@ type Options struct {
 
 type Server struct {
 	o           Options
+	metrics     *Metrics
 	logQueries  atomic.Bool
 	logClientIP atomic.Bool
 	mu          sync.Mutex
@@ -49,10 +50,13 @@ func New(o Options) *Server {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
-	s := &Server{o: o}
+	s := &Server{o: o, metrics: NewMetrics()}
 	s.SetLogging(o.LogQueries, o.LogClientIP)
 	return s
 }
+
+// Metrics is the read side of the query counters, mirroring ACL.Stats.
+func (s *Server) Metrics() *Metrics { return s.metrics }
 
 // SetLogging changes both logging opt-ins. The client IP stays a separate
 // choice from query logging: turning on one must never turn on the other.
@@ -79,7 +83,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		if err := w.WriteMsg(m); err != nil {
 			s.o.Logger.Warn("write reply", "error", writeErrText(err, s.logClientIP.Load()))
 		}
-		s.logQuery(r, m, w, source, view, policy, time.Since(start))
+		d := time.Since(start)
+		s.metrics.Record(source, m.Rcode, d)
+		s.logQuery(r, m, w, source, view, policy, d)
 	}
 	fail := func(rcode int, source string) {
 		m := new(dns.Msg)

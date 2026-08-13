@@ -1,0 +1,132 @@
+- generic [ref=f4e2]:
+  - navigation [ref=f4e3]:
+    - heading "KyDNS" [level=1] [ref=f4e4]
+    - link "Dashboard" [ref=f4e5] [cursor=pointer]:
+      - /url: /
+    - link "Services" [ref=f4e6] [cursor=pointer]:
+      - /url: /services
+    - link "Records" [ref=f4e7] [cursor=pointer]:
+      - /url: /records
+    - link "Discovered" [ref=f4e8] [cursor=pointer]:
+      - /url: /discovered
+    - link "Blacklists" [ref=f4e9] [cursor=pointer]:
+      - /url: /blacklists
+    - link "Settings" [ref=f4e10] [cursor=pointer]:
+      - /url: /settings
+    - button "Sign out" [ref=f4e12] [cursor=pointer]
+    - button "© 2026 · Licensed under AGPL v3" [ref=f4e14] [cursor=pointer]
+  - main [ref=f4e15]:
+    - heading "Dashboard" [level=2] [ref=f4e16]
+    - generic [ref=f4e17]:
+      - generic [ref=f4e18]:
+        - generic [ref=f4e19]: "91"
+        - generic [ref=f4e20]: Queries
+      - generic [ref=f4e21]:
+        - generic [ref=f4e22]: "19"
+        - generic [ref=f4e23]: Blocked
+      - generic [ref=f4e24]:
+        - generic [ref=f4e25]: 50%
+        - generic [ref=f4e26]: Cache hit rate
+      - generic [ref=f4e27]:
+        - generic [ref=f4e28]: 1ms
+        - generic [ref=f4e29]: Avg response
+      - generic [ref=f4e30]:
+        - generic [ref=f4e31]: 18s
+        - generic [ref=f4e32]: Uptime
+    - generic [ref=f4e33]:
+      - figure "Queries per minute — last hour Local 54 Forwarded 18 Blocked 19" [ref=f4e34]:
+        - generic [ref=f4e35]:
+          - text: Queries per minute
+          - generic [ref=f4e36]: — last hour
+          - generic [ref=f4e37]:
+            - generic [ref=f4e38]:
+              - text: Local
+              - generic [ref=f4e39]: "54"
+            - generic [ref=f4e40]:
+              - text: Forwarded
+              - generic [ref=f4e41]: "18"
+            - generic [ref=f4e42]:
+              - text: Blocked
+              - generic [ref=f4e43]: "19"
+        - img "Queries per minute for the last hour, split into local, forwarded and blocked" [ref=f4e44]:
+          - generic [ref=f4e45]: "0"
+          - generic [ref=f4e46]: "50"
+          - generic [ref=f4e47]: "100"
+      - generic [ref=f4e55]:
+        - figure "Cache hit rate — last hour" [ref=f4e56]:
+          - generic [ref=f4e57]:
+            - text: Cache hit rate
+            - generic [ref=f4e58]: — last hour
+          - img "Cache hit rate percentage for the last hour" [ref=f4e59]:
+            - generic [ref=f4e60]: 0%
+            - generic [ref=f4e61]: 50%
+            - generic [ref=f4e62]: 100%
+        - figure "Response time — last hour" [ref=f4e64]:
+          - generic [ref=f4e65]:
+            - text: Response time
+            - generic [ref=f4e66]: — last hour
+          - img "Average response time in milliseconds for the last hour" [ref=f4e67]:
+            - generic [ref=f4e68]: 0ms
+            - generic [ref=f4e69]: 1ms
+            - generic [ref=f4e70]: 2ms
+    - generic [ref=f4e72]:
+      - generic [ref=f4e73]:
+        - generic [ref=f4e74]: "3"
+        - generic [ref=f4e75]: Services
+      - generic [ref=f4e76]:
+        - generic [ref=f4e77]: "0"
+        - generic [ref=f4e78]: Records
+      - generic [ref=f4e79]:
+        - generic [ref=f4e80]: "0"
+        - generic [ref=f4e81]: Views
+      - generic [ref=f4e82]:
+        - generic [ref=f4e83]: "6"
+        - generic [ref=f4e84]: Cached
+    - table [ref=f4e86]:
+      - rowgroup [ref=f4e87]:
+        - row [ref=f4e88]:
+          - columnheader "Metric" [ref=f4e89]
+          - columnheader "Value" [ref=f4e90]
+        - row [ref=f4e91]:
+          - cell "Answered locally" [ref=f4e92]
+          - cell "54" [ref=f4e93]
+        - row [ref=f4e94]:
+          - cell "Forwarded" [ref=f4e95]
+          - cell "18" [ref=f4e96]
+        - row [ref=f4e97]:
+          - cell "Blocked by policy" [ref=f4e98]
+          - cell "19" [ref=f4e99]
+        - row [ref=f4e100]:
+          - cell "NXDOMAIN / SERVFAIL" [ref=f4e101]
+          - cell "19 / 0" [ref=f4e102]
+        - row [ref=f4e103]:
+          - cell "Last query" [ref=f4e104]
+          - cell "12s ago" [ref=f4e105]
+        - row [ref=f4e106]:
+          - cell "Refused queries (total)" [ref=f4e107]
+          - cell "0" [ref=f4e108]
+        - row [ref=f4e109]:
+          - cell "Refused from Tailscale range" [ref=f4e110]
+          - cell "0" [ref=f4e111]
+        - row [ref=f4e112]:
+          - cell "Upstreams" [ref=f4e113]
+          - cell "tls://1.1.1.1:853 tls://9.9.9.9:853" [ref=f4e114]:
+            - generic [ref=f4e115]: tls://1.1.1.1:853
+            - generic [ref=f4e116]: tls://9.9.9.9:853
+    - generic [ref=f4e117]:
+      - heading "Most blocked names" [level=3] [ref=f4e118]
+      - paragraph [ref=f4e119]: What this network asked for and did not get. Anyone who can open this page can read it.
+      - table [ref=f4e120]:
+        - rowgroup [ref=f4e121]:
+          - row [ref=f4e122]:
+            - columnheader "Name" [ref=f4e123]
+            - columnheader "Blocked" [ref=f4e124]
+          - row [ref=f4e125]:
+            - cell "doubleclick.net" [ref=f4e126]
+            - cell "11" [ref=f4e127]
+          - row [ref=f4e128]:
+            - cell "ads.yahoo.com" [ref=f4e129]
+            - cell "4" [ref=f4e130]
+          - row [ref=f4e131]:
+            - cell "googleadservices.com" [ref=f4e132]
+            - cell "4" [ref=f4e133]

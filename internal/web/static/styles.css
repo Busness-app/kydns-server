@@ -40,6 +40,14 @@
   --line: #1e293b;
   --glow: rgba(77, 238, 234, 0.22);
 
+  /* Chart series, in fixed order: local, forwarded, blocked. --accent is too
+     light to be a data mark on --panel, so these are their own steps, checked
+     against the panel for colorblind separation and contrast rather than
+     picked by eye. Never cycle them: a fourth series folds into "other". */
+  --series-1: #00a49c;
+  --series-2: #cf7a3c;
+  --series-3: #8377dc;
+
   --font-display: "Space Grotesk", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 

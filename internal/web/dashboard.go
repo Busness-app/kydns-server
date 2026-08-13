@@ -58,5 +58,17 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 	if s.o.Cache != nil {
 		data["CacheEntries"] = s.o.Cache.Len()
 	}
+
+	// The traffic numbers are rendered server-side as well as polled, so the
+	// page tells the whole story before any script runs.
+	m := s.o.Metrics.Snapshot()
+	data["Queries"] = m
+	data["AvgMS"] = m.AvgMS()
+	data["CacheHitRate"] = m.CacheHitRate()
+	data["Uptime"] = shortDuration(time.Duration(m.UptimeSeconds) * time.Second)
+	data["LastQuery"] = sinceText(m.LastQuery, time.Now())
+	if s.o.Policy != nil {
+		data["TopBlocked"] = s.o.Policy.TopBlocked(topBlockedShown)
+	}
 	s.render(w, r, "dashboard.html", data)
 }

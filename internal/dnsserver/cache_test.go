@@ -87,6 +87,43 @@ func TestCacheExpires(t *testing.T) {
 	}
 }
 
+func TestCacheCountsHitsAndMisses(t *testing.T) {
+	c := NewCache(10, 5, 3600, 300)
+	m := NewMetrics()
+	c.SetMetrics(m)
+
+	c.Get(question("a.example.com."), false) // miss
+	c.Put(question("a.example.com."), false, reply("a.example.com.", 30))
+	c.Get(question("a.example.com."), false) // hit
+	c.Get(question("a.example.com."), false) // hit
+
+	s := m.Snapshot()
+	if s.CacheHits != 2 || s.CacheMisses != 1 {
+		t.Errorf("hits/misses = %d/%d, want 2/1", s.CacheHits, s.CacheMisses)
+	}
+	if got := s.CacheHitRate(); got != 66 {
+		t.Errorf("CacheHitRate() = %d, want 66", got)
+	}
+}
+
+// An expired entry is a miss. Counting it as a hit would report a healthy hit
+// rate on a cache that is actually forwarding every query.
+func TestCacheExpiredLookupCountsAsMiss(t *testing.T) {
+	c := NewCache(10, 5, 3600, 300)
+	m := NewMetrics()
+	c.SetMetrics(m)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	c.Put(question("a.example.com."), false, reply("a.example.com.", 30))
+
+	now = now.Add(31 * time.Second)
+	c.Get(question("a.example.com."), false)
+
+	if s := m.Snapshot(); s.CacheHits != 0 || s.CacheMisses != 1 {
+		t.Errorf("hits/misses = %d/%d, want 0/1", s.CacheHits, s.CacheMisses)
+	}
+}
+
 // RFC 2308: negative answers are cached using the SOA MINIMUM, clamped by
 // negMaxTTL.
 func TestNegativeCachingUsesSOAMinimum(t *testing.T) {

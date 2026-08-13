@@ -204,8 +204,15 @@ func (s *Service) Test(name string) (Decision, error) {
 	return s.h.Current().Decide(n), nil
 }
 
+// Decide implements dnsserver.PolicyDecider, so the DNS pipeline consults the
+// same façade the screens do rather than reaching past it to the holder.
+func (s *Service) Decide(name string) (bool, string, uint32) { return s.h.Decide(name) }
+
 // Counters reports blocked totals and counts by list. Never by client.
 func (s *Service) Counters() (uint64, map[string]uint64) { return s.h.Counters() }
+
+// TopBlocked reports the most-blocked names. Never by client.
+func (s *Service) TopBlocked(n int) []NameCount { return s.h.TopBlocked(n) }
 
 // ReplacePolicy validates every list and rule before writing any of them, then
 // writes them all in the one transaction store.ReplaceBlacklist opens and

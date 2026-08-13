@@ -53,6 +53,36 @@
                line-height: 1.1; color: var(--ink-strong); }
 .stat .label { font-family: var(--font-mono); font-size: .72rem; color: var(--ink); text-transform: uppercase; }
 
+.chart { margin: 0 0 .9rem; position: relative; }
+.chart:last-child { margin-bottom: 0; }
+.chart figcaption { font-family: var(--font-mono); font-size: .72rem; text-transform: uppercase;
+                    color: var(--ink-strong); display: flex; align-items: baseline;
+                    gap: .5rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart-pair { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.chart-pair .chart { flex: 1 1 16rem; margin-bottom: 0; }
+
+/* The value sits in the legend rather than beside the line: three labels at the
+   right edge collide the moment two series are close. */
+.legend { margin-left: auto; display: flex; gap: .9rem; }
+.legend .key { color: var(--ink); display: inline-flex; align-items: center; gap: .35rem; }
+.legend .key b { color: var(--ink-strong); font-weight: 500; }
+.legend .key::before { content: ""; width: .55rem; height: .55rem; border-radius: 2px; background: var(--series-1); }
+.legend .key[data-series="forwarded"]::before { background: var(--series-2); }
+.legend .key[data-series="blocked"]::before { background: var(--series-3); }
+
+.chart .axis { fill: var(--ink); font-family: var(--font-mono); font-size: 10px; }
+.chart .gridline { stroke: var(--line); stroke-width: 1; }
+.chart .crosshair { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .tip { position: absolute; top: 1.5rem; pointer-events: none; z-index: 2;
+              background: var(--bg); border: 1px solid var(--line); border-radius: 5px;
+              padding: .35rem .5rem; font-family: var(--font-mono); font-size: .72rem;
+              color: var(--ink-strong); white-space: nowrap; }
+.chart .tip .k::before { content: ""; display: inline-block; width: .5rem; height: .5rem;
+                         border-radius: 2px; margin-right: .3rem; background: var(--series-1); }
+.chart .tip .k[data-series="forwarded"]::before { background: var(--series-2); }
+.chart .tip .k[data-series="blocked"]::before { background: var(--series-3); }
+
 table.grid { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .85rem; }
 table.grid th { text-align: left; color: var(--ink); font-weight: 500; text-transform: uppercase;
                 font-size: .7rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line);
