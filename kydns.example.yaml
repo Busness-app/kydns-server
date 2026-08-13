@@ -4,26 +4,40 @@
 # Every setting below shows its default, so a file containing nothing but
 # data_dir is a valid configuration.
 #
-# This file is read once at startup. Changing it requires restarting KyDNS.
-# Services, records, views, and API tokens are NOT here — they live in the
-# database and are edited through the web UI or the kydns CLI.
+# Two kinds of setting live here.
+#
+# Three of them are owned by this file: data_dir, dns.listen, and
+# admin.listen. KyDNS needs them before it has a database or a web UI, so they
+# are read at every start and changing them means restarting.
+#
+# Everything else seeds the database on the first run and is then ignored.
+# Edit those under Settings in the web UI, with `kydns settings set`, or over
+# the API. Changing them here after the first start does nothing, which is why
+# each one carries a "first-run seed" marker.
+#
+# Services, records, views, and API tokens were never here — they have always
+# lived in the database and are edited through the web UI or the kydns CLI.
 
-# The only required setting. Holds kydns.db plus the bootstrap and setup
-# tokens. Back this directory up.
+# Owned by this file. The only required setting, and the one KyDNS needs before
+# it can open anything: it holds kydns.db plus the bootstrap and setup tokens.
+# Back this directory up.
 data_dir: /var/lib/kydns
 
 dns:
-  # Address for the DNS server. Both UDP and TCP are bound.
+  # Owned by this file. Address for the DNS server. Both UDP and TCP are bound.
   # Use 0.0.0.0:53 to serve the whole LAN; :53 needs root or CAP_NET_BIND_SERVICE.
   listen: ":53"
 
   # Your private zone. home.arpa is reserved for exactly this purpose
   # (RFC 8375) and will never collide with a public name.
+  # A first-run seed. Changing it later takes a restart, so the Settings screen
+  # saves it and then asks you to restart.
   private_domain: home.arpa
 
   # Networks you want reverse (PTR) lookups for. Records are derived
   # automatically from service and lease addresses that fall inside them;
   # you never author PTRs by hand.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   reverse_zones: []
   # reverse_zones: ["192.168.1.0/24", "fd00::/64"]
 
@@ -41,12 +55,21 @@ dns:
   # With only encrypted upstreams, a query fails with SERVFAIL rather than
   # falling back to plain DNS. That is deliberate. Adding a udp:// entry is the
   # escape hatch, and it gives up authentication for every answer it serves.
+  #
+  # A first-run seed; edit it under Settings, where it applies immediately and
+  # flushes the cache so nothing the old resolver minted is still served.
   upstreams: ["tls://1.1.1.1:853", "tls://9.9.9.9:853"]
   # upstreams: ["tls://1.1.1.1:853", "udp://192.168.1.1:53"]
 
   # Who may query. Default-closed: anything not listed gets REFUSED, so a
   # KyDNS accidentally exposed to the internet is not an open resolver.
   # Defaults to loopback plus RFC1918 and ULA.
+  #
+  # A first-run seed; edit it under Settings, where it applies immediately.
+  # A range that reaches beyond loopback, RFC1918, ULA, link-local or CGNAT has
+  # to be confirmed there by retyping it. A public range seeded from this file
+  # is honoured rather than refused, but it logs a warning naming the prefix at
+  # every start and the UI carries a standing banner until you remove it.
   allow_query:
     - 127.0.0.0/8
     - ::1/128
@@ -63,42 +86,52 @@ dns:
   # range a standing exposure on a WAN-facing interface.
   #
   # While this is false, tailnet clients get REFUSED and the dashboard says so.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   allow_tailscale: false
 
   # TTL on every authoritative answer. Low by default because homelab
   # addresses move, and because a split-horizon client roaming between LAN
   # and tailnet should re-resolve quickly.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   ttl: 60
 
   # Cache bounds for forwarded answers. Upstream TTLs are clamped into
   # [cache_min_ttl, cache_max_ttl]; negative answers use the SOA MINIMUM
   # clamped by negative_max_ttl. Authoritative answers are never cached —
   # they already live in memory.
-  cache_min_ttl: 5
-  cache_max_ttl: 3600
-  negative_max_ttl: 300
-  cache_entries: 10000
+  # All four are seeds; edit them under Settings, where they apply immediately.
+  cache_min_ttl: 5        # first-run seed
+  cache_max_ttl: 3600     # first-run seed
+  negative_max_ttl: 300   # first-run seed
+  cache_entries: 10000    # first-run seed
 
   # Query logging is off by default. When on, each query logs its name, type,
   # rcode, matched view, and duration.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   log_queries: false
   # The client IP is a second, separate opt-in: turning on query logging alone
   # does not record who asked.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   log_client_ip: false
 
 admin:
-  # The web UI and JSON API. Bound to loopback by default. If you expose this,
-  # put it behind a TLS-terminating reverse proxy — KyDNS speaks plain HTTP.
+  # Owned by this file. The web UI and JSON API, which have to be listening
+  # before anyone can edit anything, so this one can only come from here.
+  # Bound to loopback by default. If you expose it, put it behind a
+  # TLS-terminating reverse proxy — KyDNS speaks plain HTTP.
   listen: "127.0.0.1:8053"
 
 discovery:
   # DHCP lease discovery is off until you point at a lease file. KyDNS does
   # not guess the path. dnsmasq is the supported format today.
+  # A first-run seed. Changing it later takes a restart, so the Settings screen
+  # saves it and then asks you to restart.
   dhcp_lease_file: ""
   # dhcp_lease_file: /var/lib/misc/dnsmasq.leases
 
   # How often to re-read it, in seconds. The zone is only rebuilt when the
   # lease set actually changed.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   interval: 30
 
 health:
@@ -106,7 +139,9 @@ health:
   # service in the UI or with `kydns service add --check`.
   # Status is informational only: an unhealthy service is still resolved,
   # so DNS stays deterministic.
-  interval: 30
-  timeout: 5
+  # All three below are seeds; edit them under Settings, where they apply
+  # immediately.
+  interval: 30   # first-run seed
+  timeout: 5     # first-run seed
   # Concurrent probes. A large registry will not spawn one goroutine each.
-  workers: 8
+  workers: 8     # first-run seed

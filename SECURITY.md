@@ -31,6 +31,12 @@ impact, reproduction steps, and any suggested mitigation.
   file is equivalent to administrative access.
 - Query history is sensitive operational data. Query logging is off by default,
   and logging client IPs is a separate opt-in.
+- Server settings live in the database and are changed only by an authenticated
+  administrator, through the web UI, `PATCH /api/v1/settings`, or
+  `kydns settings set`. All three go through one validation and write path, and
+  a change either validates, persists, and applies in full or does none of
+  those. The config file seeds those settings on the first run and is ignored
+  afterwards, so a file an attacker edits on a running install changes nothing.
 
 ## Required protections
 
@@ -44,6 +50,53 @@ impact, reproduction steps, and any suggested mitigation.
 - Fetch blacklist sources only over verified HTTPS, without sending query or
   client identity data to list providers. Send a fixed `User-Agent: kydns`
   header and no other identifying headers.
+
+## The `allow_query` guardrail
+
+`allow_query` is the list of ranges KyDNS answers at all; everything else gets
+`REFUSED`. Widening it past the operator's own network is the one settings
+change that can turn a homelab resolver into an open resolver, so it is the one
+change that is not a single click.
+
+**What counts as private.** A prefix is private when it sits wholly inside
+loopback (`127.0.0.0/8`, `::1/128`), RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`,
+`192.168.0.0/16`), ULA (`fc00::/7`), link-local (`169.254.0.0/16`, `fe80::/10`),
+or CGNAT (`100.64.0.0/10`, which is what Tailscale uses). Containment, not
+overlap: `0.0.0.0/0` overlaps every one of those ranges without being any of
+them, and is public.
+
+**Adding a public prefix takes a confirmation.** The exact canonical, masked
+form of the prefix has to be retyped in the same request — the confirmation box
+in the settings form, `confirm_public` on `PATCH /api/v1/settings`, or
+`--confirm-public` on `kydns settings set`. Canonical form is the point: an
+entry written as `192.168.1.99/0` behaves as `0.0.0.0/0` while reading as a LAN
+address, so the operator confirms what the prefix actually matches, not what it
+looks like. The confirmation is never derived from the value being saved, is
+never stored, and is never returned.
+
+**Only new exposure is confirmed.** A public prefix already stored counts as
+already accepted, so changing an unrelated setting, or narrowing the list, never
+asks again. Removing a prefix and re-adding it does ask, because by then it is
+no longer in the stored list.
+
+**Exposure stays visible.** For as long as any public prefix is configured, the
+dashboard and the Settings screen carry a standing banner naming it, and KyDNS
+logs a warning naming it at every start. Neither can be dismissed; removing the
+prefix is what clears them.
+
+**A public prefix in an existing config file is grandfathered.** Upgrading a
+deployment whose `kydns.yaml` already sets a public `allow_query` seeds that
+value and starts. It is not refused. Refusing to start would take a working
+household's DNS offline over a file that was legal when it was written, which
+trades a real outage for a risk the operator already chose to run. The warning
+and the banner are what keep that choice visible instead of silent.
+
+**Import cannot introduce one.** There is no place to type a confirmation in an
+import document, so a document whose `allow_query` carries a public prefix the
+server is not already serving is refused. In replace mode that check runs before
+the destructive replacement, so a rejected import leaves the existing registry
+and settings exactly as they were. Restore the backup without the prefix, then
+add it with a confirmation.
 
 ## Known limitations
 

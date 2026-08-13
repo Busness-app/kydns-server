@@ -15,9 +15,17 @@ replication failures, and replication conflicts join that list. Query logs must
 be configurable, minimized by default, and retained by the operator's logging
 platform rather than KyDNS.
 
-Query logging is off by default (`dns.log_queries`), and recording the client
-IP is a separate opt-in (`dns.log_client_ip`), so turning on query logging does
-not by itself record who asked.
+Query logging is off by default (`log_queries`), and recording the client IP is
+a separate opt-in (`log_client_ip`), so turning on query logging does not by
+itself record who asked. Both are server settings, edited under Settings in the
+web UI, with `kydns settings set`, or over the API, and each takes effect on the
+next query — there is no restart, and turning one on never turns on the other.
+
+Settings changes are administrative actions and are logged: `settings applied`
+when a change takes effect, `upstreams changed, cache flushed` when the upstream
+list moved, `seeded settings from the config file` on a first run, and a warning
+naming any `allow_query` prefix that reaches beyond the operator's network, at
+every start for as long as it is configured. None of these carry credentials.
 
 Blacklist lifecycle events are `blacklist list refreshed`, `blacklist list
 refresh failed` (with a reason, no response body), and `blacklist list

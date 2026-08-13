@@ -22,7 +22,7 @@ replication is designed here but deferred to a later release.
 
 ## System shape
 
-Each KyDNS installation contains six logical parts, one Go package each:
+Each KyDNS installation contains seven logical parts, one Go package each:
 
 1. **DNS server** (`internal/dnsserver`, `internal/upstream`) — the query ACL,
    the authoritative answer path, the cache, and the DoT/DoH forwarder.
@@ -35,7 +35,9 @@ Each KyDNS installation contains six logical parts, one Go package each:
    `internal/auth`) — authenticates operators and applies changes.
 5. **Discovery and health** (`internal/discovery`, `internal/health`) — reads
    DHCP leases and probes service check URLs.
-6. **Replication agent** — *deferred.* Would exchange authenticated
+6. **Settings** (`internal/settings`) — the process configuration that lives in
+   the database, and the single path by which it changes.
+7. **Replication agent** — *deferred.* Would exchange authenticated
    configuration changes with linked KyDNS peers.
 
 The DNS server reads from the local registry, so local name resolution does not
@@ -80,8 +82,15 @@ truth for the server's current view and contains:
   snapshot of each list's entries.
 
 Reverse records are derived from service addresses and the configured reverse
-zones rather than stored. The private domain and reverse zones come from the
-config file, which is read once at startup: changing it requires a restart.
+zones rather than stored.
+
+The store also holds the server's own settings — the private domain, reverse
+zones, upstreams, the query ACL, TTL and cache bounds, the logging opt-ins, and
+the discovery and health intervals. The config file owns exactly three keys
+(`data_dir`, `dns.listen`, `admin.listen`), because the process needs them
+before it has a database or a listening UI. Every other key the file carries
+seeds the database on the first run and is ignored from then on: the database
+wins, and an edit to the file after that start changes nothing.
 
 List contents are data, not executable configuration: a downloaded list can
 only add or remove blocked names, never run code or change how the server
@@ -92,8 +101,9 @@ They are held in memory, re-derived from the lease source and health probes
 after a restart, and kept out of backups. A discovered lease is persisted only
 when an operator promotes it to a service.
 
-Exports use YAML or JSON. Exports must omit upstream credentials, private keys,
-and other secrets. A blacklist list URL may never embed credentials, so a
+Exports use YAML or JSON and carry the settings block alongside the registry,
+so a restored backup brings back the server's configuration too. Exports must
+omit upstream credentials, private keys, and other secrets. A blacklist list URL may never embed credentials, so a
 blacklist export, which carries list definitions and rules verbatim but never
 the downloaded list bodies, cannot leak any either.
 
@@ -140,6 +150,24 @@ but do not make the local DNS server unavailable.
 2. The API validates the domain, record type, address, and permissions.
 3. The local store commits the change before acknowledging success.
 4. The DNS server picks up a fresh zone snapshot, so the next query sees it.
+
+Three holders publish that state to the query path: the zone holder
+(`internal/zone`), the policy holder (`internal/policy`), and the settings
+holder (`internal/settings`). Each owns one immutable snapshot behind an atomic
+pointer. A reader on the DNS hot path loads the pointer and never blocks; a
+writer builds a complete new snapshot, and only swaps it in once the whole
+snapshot exists. A change that fails to parse or validate therefore fails
+before anything is published, and a query is answered from either the old
+snapshot or the new one, never a half-applied mixture.
+
+A settings change is validated, persisted, and applied in that order, all or
+nothing, from whichever surface asked for it. Almost every setting takes effect
+on the next query. Two cannot change in a running process — the private domain,
+which defines the authoritative zone, and the DHCP lease file, which the
+discovery poller is opened against. Those are still stored, and the UI names the
+running value and the saved one until the operator restarts. There is no dirty
+flag: the banner is the boot values compared against the stored ones, so it
+cannot drift and it clears itself on restart.
 
 Query logs remain local and configurable.
 

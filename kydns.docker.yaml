@@ -1,9 +1,15 @@
 # The configuration baked into the container image at /etc/kydns/kydns.yaml.
 #
-# It differs from kydns.example.yaml in exactly two settings, both of which are
-# wrong for a container at their defaults. Everything else is left out on
-# purpose, so the code's defaults stay the single source of truth — see
-# kydns.example.yaml for what they are and how to change them.
+# It sets exactly two settings, both wrong for a container at their defaults
+# and both owned by the config file — KyDNS needs them before it has a database
+# or a web UI, so there is nowhere else they could come from. The third
+# file-owned setting, dns.listen, is already right at its default.
+#
+# Everything else is left out on purpose. Those keys seed the database on the
+# first run and are edited afterwards under Settings in the web UI, with
+# `kydns settings set`, or over the API — putting them here would only change
+# what a brand-new container starts with. See kydns.example.yaml for the
+# defaults and the reasoning behind them.
 #
 # Mount your own file over /etc/kydns/kydns.yaml to replace this one.
 
