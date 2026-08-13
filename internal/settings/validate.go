@@ -27,10 +27,19 @@ func bad(field, format string, args ...any) error {
 	return FieldError{Field: field, Msg: fmt.Sprintf(format, args...)}
 }
 
-// Validate reports whether v may be stored. Both the first-run seed and every
-// later write call it, so nothing can reach the database that could not have
-// been in the config file.
+// Validate is the write path: every rule, plus the guardrail that new exposure
+// beyond the private ranges must be confirmed by retyping it in confirmPublic.
 func Validate(v store.Settings, confirmPublic string) error {
+	if err := ValidateStored(v); err != nil {
+		return err
+	}
+	return confirmPublicPrefixes(v.AllowQuery, confirmPublic)
+}
+
+// ValidateStored is the startup path: every rule Validate applies except the
+// public-prefix confirmation, so an ACL that is already configured is honoured
+// and warned about rather than refused on an upgrade.
+func ValidateStored(v store.Settings) error {
 	if strings.TrimSpace(v.PrivateDomain) == "" {
 		return bad("private_domain", "must not be empty")
 	}
@@ -48,7 +57,7 @@ func Validate(v store.Settings, confirmPublic string) error {
 	if _, err := upstream.ParseAll(v.Upstreams); err != nil {
 		return bad("upstreams", "%s", err)
 	}
-	if err := validateAllowQuery(v.AllowQuery, confirmPublic); err != nil {
+	if err := validateAllowQuery(v.AllowQuery); err != nil {
 		return err
 	}
 	positives := []struct {
@@ -146,9 +155,10 @@ func PublicPrefixes(list []string) []string {
 	return out
 }
 
-// validateAllowQuery enforces the guardrail: a prefix outside the private
-// ranges is refused unless the same request retypes it in confirmPublic.
-func validateAllowQuery(list []string, confirmPublic string) error {
+// validateAllowQuery holds the rules both paths apply: the list must be
+// non-empty, because an empty one refuses every query, and every entry must
+// parse.
+func validateAllowQuery(list []string) error {
 	if len(list) == 0 {
 		return bad("allow_query", "must list at least one range, or every query is refused")
 	}
@@ -157,6 +167,12 @@ func validateAllowQuery(list []string, confirmPublic string) error {
 			return bad("allow_query", "%q is not a CIDR prefix", c)
 		}
 	}
+	return nil
+}
+
+// confirmPublicPrefixes enforces the guardrail: a prefix outside the private
+// ranges is refused unless the same request retypes it in confirmPublic.
+func confirmPublicPrefixes(list []string, confirmPublic string) error {
 	for _, c := range PublicPrefixes(list) {
 		if c == confirmPublic {
 			continue

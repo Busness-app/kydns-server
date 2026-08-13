@@ -155,11 +155,6 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	acl := dnsserver.NewACL(snap.AllowQuery)
 	logger.Info("query acl", "ranges", boot.AllowQuery, "allow_tailscale", boot.AllowTailscale)
-	for _, p := range settings.PublicPrefixes(boot.AllowQuery) {
-		logger.Warn("query ACL reaches beyond your LAN; KyDNS is an open resolver for this range",
-			"prefix", p,
-			"fix", "remove it under Settings, Server settings, allow_query")
-	}
 	warnUnreachableViews(st, boot.AllowTailscale, logger)
 
 	cache := dnsserver.NewCache(boot.CacheEntries, boot.CacheMinTTL, boot.CacheMaxTTL, boot.NegativeMaxTTL)
@@ -296,15 +291,14 @@ func ensureSettings(st *store.Store, cfg *config.Config, logger *slog.Logger) (s
 	if ok {
 		// Validate what we load: a database edited by hand, or written by an
 		// older version, must not start a half-configured server.
-		if err := settings.Validate(cur, publicConfirmation(cur)); err != nil {
+		if err := settings.ValidateStored(cur); err != nil {
 			return store.Settings{}, fmt.Errorf("stored settings: %w", err)
 		}
+		warnPublicACL(cur, logger)
 		return cur, nil
 	}
-	// The seed confirms nothing: a config file cannot retype a public prefix,
-	// so an open-resolver ACL fails here instead of becoming the stored default.
 	seed := cfg.SeedSettings()
-	if err := settings.Validate(seed, ""); err != nil {
+	if err := settings.ValidateStored(seed); err != nil {
 		return store.Settings{}, fmt.Errorf("seed from config file: %w", err)
 	}
 	if err := st.PutSettings(seed); err != nil {
@@ -312,19 +306,21 @@ func ensureSettings(st *store.Store, cfg *config.Config, logger *slog.Logger) (s
 	}
 	logger.Info("seeded settings from the config file",
 		"note", "later edits to those keys are ignored; use the web UI")
+	warnPublicACL(seed, logger)
 	return seed, nil
 }
 
-// publicConfirmation re-confirms what is already stored. A prefix that got past
-// the guardrail once must not block startup forever, and the standing warning
-// is what keeps it visible. Only the first is re-confirmed, so a second public
-// prefix still refuses to start: reaching that state needs two separate
-// confirmed saves.
-func publicConfirmation(v store.Settings) string {
-	if pub := settings.PublicPrefixes(v.AllowQuery); len(pub) > 0 {
-		return pub[0]
+// warnPublicACL is the standing signal for an ACL that reaches past the LAN.
+// Startup honours what is already configured rather than refusing to run, so
+// this warning is the only thing that keeps a grandfathered open resolver
+// visible to the operator. It reports the canonical, masked prefix: an entry of
+// 192.168.1.99/0 matches everything while reading as a LAN address.
+func warnPublicACL(v store.Settings, logger *slog.Logger) {
+	for _, p := range settings.PublicPrefixes(v.AllowQuery) {
+		logger.Warn("query ACL reaches beyond your LAN; KyDNS is an open resolver for this range",
+			"prefix", p,
+			"fix", "remove "+p+" from allow_query under Settings, Server settings")
 	}
-	return ""
 }
 
 // RestartItem is one setting whose stored value differs from the one the

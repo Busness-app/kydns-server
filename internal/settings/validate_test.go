@@ -34,6 +34,28 @@ func TestValidateAcceptsDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateStoredAcceptsDefaults(t *testing.T) {
+	if err := ValidateStored(valid()); err != nil {
+		t.Fatalf("the shipped defaults must validate: %v", err)
+	}
+}
+
+// The startup path waives the confirmation and nothing else: an ACL that was
+// legal when the operator wrote it must not take their resolver offline on an
+// upgrade.
+func TestValidateStoredHonoursAPublicPrefix(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"192.168.0.0/16", "0.0.0.0/0"}
+	if err := ValidateStored(v); err != nil {
+		t.Fatalf("an already-configured public range must start: %v", err)
+	}
+	// The write path is unchanged: new exposure still needs confirming.
+	if err := Validate(v, ""); err == nil {
+		t.Fatal("the write-path guardrail regressed")
+	}
+}
+
+// Every rule below runs through both entry points, so the two cannot drift.
 func TestValidateRejects(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -58,22 +80,28 @@ func TestValidateRejects(t *testing.T) {
 		// A probe that outlives its own cycle stacks up forever.
 		{"health timeout not below interval", func(s *store.Settings) { s.HealthTimeout = 30 }, "health.timeout"},
 	}
+	paths := map[string]func(store.Settings) error{
+		"Validate":       func(v store.Settings) error { return Validate(v, "") },
+		"ValidateStored": ValidateStored,
+	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			v := valid()
-			tc.mut(&v)
-			err := Validate(v, "")
-			if err == nil {
-				t.Fatal("accepted a value it must reject")
-			}
-			var fe FieldError
-			if !errors.As(err, &fe) {
-				t.Fatalf("error is not a FieldError, so no input can be highlighted: %v", err)
-			}
-			if fe.Field != tc.field {
-				t.Errorf("blamed %q, want %q", fe.Field, tc.field)
-			}
-		})
+		for name, check := range paths {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				v := valid()
+				tc.mut(&v)
+				err := check(v)
+				if err == nil {
+					t.Fatal("accepted a value it must reject")
+				}
+				var fe FieldError
+				if !errors.As(err, &fe) {
+					t.Fatalf("error is not a FieldError, so no input can be highlighted: %v", err)
+				}
+				if fe.Field != tc.field {
+					t.Errorf("blamed %q, want %q", fe.Field, tc.field)
+				}
+			})
+		}
 	}
 }
 
