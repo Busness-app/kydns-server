@@ -47,12 +47,15 @@ type entry struct {
 }
 
 type Checker struct {
-	lister   Lister
+	lister Lister
+	logger *slog.Logger
+	now    func() time.Time
+
+	cfgMu    sync.RWMutex
 	interval time.Duration
 	timeout  time.Duration
 	workers  int
-	logger   *slog.Logger
-	now      func() time.Time
+	changed  chan struct{} // buffered 1; wakes a Run blocked on the old interval
 
 	mu      sync.RWMutex
 	entries map[int64]*entry
@@ -62,24 +65,51 @@ func NewChecker(lister Lister, interval, timeout time.Duration, workers int, log
 	if logger == nil {
 		logger = slog.Default()
 	}
+	c := &Checker{lister: lister, logger: logger, now: time.Now, entries: map[int64]*entry{}, changed: make(chan struct{}, 1)}
+	c.Reconfigure(interval, timeout, workers)
+	return c
+}
+
+// Reconfigure changes the probe schedule. A Run already in flight picks the
+// new interval up immediately rather than at the next restart.
+func (c *Checker) Reconfigure(interval, timeout time.Duration, workers int) {
 	if workers < 1 {
 		workers = 8
 	}
-	return &Checker{
-		lister: lister, interval: interval, timeout: timeout, workers: workers,
-		logger: logger, now: time.Now, entries: map[int64]*entry{},
+	c.cfgMu.Lock()
+	c.interval, c.timeout, c.workers = interval, timeout, workers
+	c.cfgMu.Unlock()
+	select {
+	case c.changed <- struct{}{}:
+	default:
 	}
 }
 
+// Config returns the live schedule.
+func (c *Checker) Config() (interval, timeout time.Duration, workers int) {
+	c.cfgMu.RLock()
+	defer c.cfgMu.RUnlock()
+	return c.interval, c.timeout, c.workers
+}
+
 func (c *Checker) Run(ctx context.Context) {
-	t := time.NewTicker(c.interval)
+	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
 		c.CheckOnce(ctx)
+		interval, _, _ := c.Config()
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+		t.Reset(interval)
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		case <-c.changed:
 		}
 	}
 }
@@ -105,9 +135,10 @@ func (c *Checker) CheckOnce(ctx context.Context) {
 	}
 	c.mu.Unlock()
 
+	_, _, workers := c.Config()
 	jobs := make(chan store.Service)
 	var wg sync.WaitGroup
-	for i := 0; i < c.workers; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -182,7 +213,8 @@ func (c *Checker) record(svc store.Service, forced string, probeErr error) {
 // redirects are not followed; for tcp a completed connection is healthy and
 // nothing is read or written.
 func (c *Checker) probe(ctx context.Context, target string, insecure bool) error {
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	_, timeout, _ := c.Config()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	if addr, ok := strings.CutPrefix(target, "tcp://"); ok {

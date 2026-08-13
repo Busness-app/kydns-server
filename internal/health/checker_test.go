@@ -2,9 +2,11 @@ package health
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -242,4 +244,68 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run() did not return after cancellation")
 	}
+}
+
+func TestCheckerReconfigure(t *testing.T) {
+	c := NewChecker(&fakeLister{}, 30*time.Second, 5*time.Second, 8, slog.Default())
+	c.Reconfigure(10*time.Second, 2*time.Second, 3)
+
+	i, to, w := c.Config()
+	if i != 10*time.Second || to != 2*time.Second || w != 3 {
+		t.Errorf("got %v/%v/%d, want 10s/2s/3", i, to, w)
+	}
+}
+
+// Zero workers would mean no probes ever run, so the floor NewChecker applies
+// has to apply here too.
+func TestCheckerReconfigureFloorsWorkers(t *testing.T) {
+	c := NewChecker(&fakeLister{}, 30*time.Second, 5*time.Second, 8, slog.Default())
+	c.Reconfigure(10*time.Second, 2*time.Second, 0)
+	if _, _, w := c.Config(); w < 1 {
+		t.Errorf("workers dropped to %d, which would stop every probe", w)
+	}
+}
+
+// A shortened interval must be observed by a Run already in flight, not only
+// after a restart.
+func TestCheckerRunObservesNewInterval(t *testing.T) {
+	lister := &countingLister{}
+	c := NewChecker(lister, time.Hour, time.Second, 1, slog.Default())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Run(ctx)
+
+	waitFor(t, func() bool { return lister.Calls() >= 1 }) // the immediate first cycle
+	c.Reconfigure(5*time.Millisecond, time.Millisecond, 1)
+	waitFor(t, func() bool { return lister.Calls() >= 3 })
+}
+
+type countingLister struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingLister) Services() ([]store.Service, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return nil, nil
+}
+
+func (c *countingLister) Calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition not met within two seconds")
 }

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -190,4 +191,48 @@ func TestPollerConcurrentReads(t *testing.T) {
 		p.Poll(context.Background())
 	}
 	wg.Wait()
+}
+
+func TestPollerSetInterval(t *testing.T) {
+	src := &countingSource{}
+	p := NewPoller(src, time.Hour, nil, slog.Default())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	waitForPolls(t, src, 1) // the immediate first cycle
+	p.SetInterval(5 * time.Millisecond)
+	waitForPolls(t, src, 3)
+}
+
+type countingSource struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingSource) Name() string { return "counting" }
+
+func (c *countingSource) Leases(context.Context) ([]dhcp.Lease, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return nil, nil
+}
+
+func (c *countingSource) Calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+func waitForPolls(t *testing.T, src *countingSource, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if src.Calls() >= n {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("condition not met within two seconds")
 }
