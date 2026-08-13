@@ -583,14 +583,17 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("mode") == "replace" {
-		// Settings apply first: it is the step most likely to fail (the
-		// exposure guardrail rejects a document restored from a moment the
-		// server was open, which is the common case for a bare-metal
-		// restore), and ReplaceAll below is destructive. A document that
-		// cannot be fully applied must be rejected before anything is wiped.
-		if err := a.applySettingsDoc(doc.Settings); err != nil {
-			writeSettingsErr(w, err)
-			return
+		// Check the settings block before ReplaceAll below, which is
+		// destructive: a document that cannot be applied must be rejected
+		// with the registry untouched, not discovered only after it is
+		// already gone. This only checks; it does not write or apply
+		// anything, so the running server is untouched either way until the
+		// applySettingsDoc call after ReplaceAll succeeds.
+		if doc.Settings != nil && a.settings != nil {
+			if err := a.settings.CheckWrite(fromSettingsDTO(*doc.Settings), ""); err != nil {
+				writeSettingsErr(w, err)
+				return
+			}
 		}
 		views := make([]store.View, 0, len(doc.Views))
 		for _, v := range doc.Views {
@@ -610,6 +613,10 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := a.applyBlacklistDoc(doc.Blacklist, true); err != nil {
 			writeRegistryErr(w, err)
+			return
+		}
+		if err := a.applySettingsDoc(doc.Settings); err != nil {
+			writeSettingsErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "replace"})

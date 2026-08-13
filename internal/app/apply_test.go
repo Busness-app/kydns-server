@@ -146,14 +146,21 @@ func TestApplyFansOutToEveryLiveComponent(t *testing.T) {
 		t.Error("dnsSrv logging flags were not applied")
 	}
 
-	// 6: authoritative TTL.
-	if live.authoritative.TTL() != 120 {
-		t.Errorf("authoritative TTL = %d, want 120", live.authoritative.TTL())
+	// 6 & 7: authoritative TTL and reverse zones, checked together through the
+	// same public path a real query takes. A PTR question inside the new
+	// reverse zone (192.168.1.0/24) only gets an authoritative answer at all
+	// if SetReverseZones landed (Owns must return true), and the synthesized
+	// SOA in that answer carries the TTL SetTTL applied.
+	ptrQ := dns.Question{Name: "5.1.168.192.in-addr.arpa.", Qtype: dns.TypePTR, Qclass: dns.ClassINET}
+	m := live.authoritative.Answer(live.zoneHolder.Current(), "", ptrQ)
+	if m == nil {
+		t.Fatal("authoritative reverse zones were not applied: the new reverse zone is not owned")
 	}
-
-	// 7: authoritative reverse zones.
-	if !live.authoritative.Owns("5.1.168.192.in-addr.arpa.") {
-		t.Error("authoritative reverse zones were not applied: the new reverse zone is not owned")
+	if len(m.Ns) != 1 {
+		t.Fatalf("expected a synthesized SOA for an unknown PTR name, got %+v", m)
+	}
+	if ttl := m.Ns[0].Header().Ttl; ttl != 120 {
+		t.Errorf("authoritative TTL = %d, want 120", ttl)
 	}
 
 	// 8: health checker reconfigured.
@@ -171,6 +178,19 @@ func TestApplyFansOutToEveryLiveComponent(t *testing.T) {
 	if zoneHolder.Generation() == genBefore {
 		t.Error("zone snapshot was not rebuilt after the settings change")
 	}
+}
+
+// TestApplyDoesNotPanicWithDiscoveryOff is the default deployment: DHCP
+// discovery off, poller nil. A settings save must not crash the server that
+// most installs actually run. This is not a hypothetical: the `if l.poller
+// != nil` guard existing but the assignment inside it firing unconditionally
+// would compile, pass every other test in this file, and panic on a nil
+// receiver the first time anyone saves settings with discovery off.
+func TestApplyDoesNotPanicWithDiscoveryOff(t *testing.T) {
+	live, _ := newLiveComponents(t)
+	live.poller = nil
+
+	live.Apply(validSnapshot(t))
 }
 
 // TestApplyFlushesCacheOnlyWhenUpstreamsChange guards call 3 specifically:

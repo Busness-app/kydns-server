@@ -36,9 +36,6 @@ func NewAuthoritative(zone string, ttl uint32, reverse []netip.Prefix) *Authorit
 // answers that start after it lands.
 func (a *Authoritative) SetTTL(ttl uint32) { a.ttl.Store(ttl) }
 
-// TTL reports the current authoritative TTL, the read side of SetTTL.
-func (a *Authoritative) TTL() uint32 { return a.ttl.Load() }
-
 // SetReverseZones changes which networks get derived PTR records.
 func (a *Authoritative) SetReverseZones(z []netip.Prefix) {
 	masked := make([]netip.Prefix, 0, len(z))

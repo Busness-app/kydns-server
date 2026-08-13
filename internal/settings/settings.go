@@ -141,6 +141,25 @@ func (s *Service) Get() (store.Settings, error) {
 	return store.Settings{}, errors.New("settings are not loaded yet")
 }
 
+// CheckWrite reports whether v would be accepted by Set, without writing or
+// applying anything: the same rule check and the same constructibility check
+// (Build), against the same running baseline. It exists for a caller that
+// must know a settings write will succeed before committing to a separate,
+// unrelated destructive step (an import replacing the registry, say) — never
+// use it in place of Set, since nothing it checks is still true by the time a
+// later Set actually runs.
+func (s *Service) CheckWrite(v store.Settings, confirmPublic string) error {
+	var prev store.Settings
+	if cur := s.h.Current(); cur != nil {
+		prev = cur.Raw
+	}
+	if err := ValidateWrite(v, prev, confirmPublic); err != nil {
+		return err
+	}
+	_, err := Build(v)
+	return err
+}
+
 // Set validates, builds, persists, then publishes the built snapshot. Nothing
 // is stored or applied unless every step before it succeeded, and once the
 // write succeeds nothing after it can fail: the snapshot is already built, and

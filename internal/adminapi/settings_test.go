@@ -327,6 +327,44 @@ func TestImportReplaceRejectsUnconfirmedPublicACLWithoutWipingServices(t *testin
 	}
 }
 
+// The other half of the same guarantee: a valid settings block alongside an
+// invalid registry payload must not leave the live server running someone
+// else's settings while the request itself reports failure. Settings are
+// checked, not applied, before ReplaceAll; they are only actually written
+// after the registry replace (and the blacklist doc) have both succeeded.
+func TestImportReplaceRejectsInvalidRegistryWithoutChangingSettings(t *testing.T) {
+	srv, svc := testAPIWithSettings(t)
+	before, _ := svc.Get()
+
+	doc := `{"views":[],"services":[{"name":"bad name!!","addresses":[{"address":"192.168.1.30"}]}],
+		"records":[],"settings":{
+		"private_domain":"lab.arpa","reverse_zones":["192.168.1.0/24"],
+		"upstreams":["udp://9.9.9.9:53"],"allow_query":["192.168.0.0/16"],
+		"ttl":111,"cache_min_ttl":1,"cache_max_ttl":3600,"negative_max_ttl":60,
+		"cache_entries":1000,"discovery_interval":60,"health_interval":30,
+		"health_timeout":5,"health_workers":4}}`
+	rec := srv.do(t, "POST", "/api/v1/import?mode=replace", doc)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "label_charset") {
+		t.Errorf("body = %s, want the registry validation error", rec.Body)
+	}
+
+	after, _ := svc.Get()
+	if after.TTL != before.TTL {
+		t.Errorf("a rejected replace-mode import still changed the live TTL: %d, want %d", after.TTL, before.TTL)
+	}
+	if after.PrivateDomain != before.PrivateDomain {
+		t.Errorf("a rejected replace-mode import still changed the live private_domain: %q, want %q",
+			after.PrivateDomain, before.PrivateDomain)
+	}
+	if len(after.Upstreams) != 1 || after.Upstreams[0] != before.Upstreams[0] {
+		t.Errorf("a rejected replace-mode import still changed the live upstreams: %v, want %v",
+			after.Upstreams, before.Upstreams)
+	}
+}
+
 // This is the end-to-end proof that the API's PATCH actually reaches a live
 // component, not merely that Set returned nil: a real settings.Service is
 // wired with an onApply that mirrors what Serve does for the ACL, and the
