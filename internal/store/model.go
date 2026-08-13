@@ -80,3 +80,26 @@ type BlacklistRule struct {
 	Kind   string
 	Domain string
 }
+
+// Settings is the process configuration that lives in the database rather than
+// the config file. data_dir and the two listen addresses are not here: they are
+// needed before the database is open.
+type Settings struct {
+	PrivateDomain     string
+	ReverseZones      []string
+	Upstreams         []string
+	AllowQuery        []string
+	AllowTailscale    bool
+	TTL               int
+	CacheMinTTL       int
+	CacheMaxTTL       int
+	NegativeMaxTTL    int
+	CacheEntries      int
+	LogQueries        bool
+	LogClientIP       bool
+	DHCPLeaseFile     string
+	DiscoveryInterval int
+	HealthInterval    int
+	HealthTimeout     int
+	HealthWorkers     int
+}

@@ -104,6 +104,26 @@ CREATE TABLE IF NOT EXISTS blacklist_rules (
   kind   TEXT NOT NULL,
   domain TEXT NOT NULL UNIQUE
 );
+CREATE TABLE IF NOT EXISTS settings (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  private_domain     TEXT NOT NULL,
+  reverse_zones      TEXT NOT NULL,
+  upstreams          TEXT NOT NULL,
+  allow_query        TEXT NOT NULL,
+  allow_tailscale    INTEGER NOT NULL,
+  ttl                INTEGER NOT NULL,
+  cache_min_ttl      INTEGER NOT NULL,
+  cache_max_ttl      INTEGER NOT NULL,
+  negative_max_ttl   INTEGER NOT NULL,
+  cache_entries      INTEGER NOT NULL,
+  log_queries        INTEGER NOT NULL,
+  log_client_ip      INTEGER NOT NULL,
+  dhcp_lease_file    TEXT NOT NULL,
+  discovery_interval INTEGER NOT NULL,
+  health_interval    INTEGER NOT NULL,
+  health_timeout     INTEGER NOT NULL,
+  health_workers     INTEGER NOT NULL
+);
 `
 
 // migrations run in order on a database whose user_version is below their
@@ -113,6 +133,26 @@ CREATE TABLE IF NOT EXISTS blacklist_rules (
 var migrations = []string{
 	`ALTER TABLE services ADD COLUMN proxy_address TEXT NOT NULL DEFAULT '';
 	 ALTER TABLE services ADD COLUMN route_via_proxy INTEGER NOT NULL DEFAULT 0;`,
+	`CREATE TABLE IF NOT EXISTS settings (
+	   id                 INTEGER PRIMARY KEY CHECK (id = 1),
+	   private_domain     TEXT NOT NULL,
+	   reverse_zones      TEXT NOT NULL,
+	   upstreams          TEXT NOT NULL,
+	   allow_query        TEXT NOT NULL,
+	   allow_tailscale    INTEGER NOT NULL,
+	   ttl                INTEGER NOT NULL,
+	   cache_min_ttl      INTEGER NOT NULL,
+	   cache_max_ttl      INTEGER NOT NULL,
+	   negative_max_ttl   INTEGER NOT NULL,
+	   cache_entries      INTEGER NOT NULL,
+	   log_queries        INTEGER NOT NULL,
+	   log_client_ip      INTEGER NOT NULL,
+	   dhcp_lease_file    TEXT NOT NULL,
+	   discovery_interval INTEGER NOT NULL,
+	   health_interval    INTEGER NOT NULL,
+	   health_timeout     INTEGER NOT NULL,
+	   health_workers     INTEGER NOT NULL
+	 );`,
 }
 
 // migrate runs against a transaction Open already holds, so a crash
