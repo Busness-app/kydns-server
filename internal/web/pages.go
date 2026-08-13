@@ -17,6 +17,7 @@ func (s *Server) pageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /license", s.getLicense)
 
 	mux.HandleFunc("GET /", s.requireSession(s.getDashboard))
+	mux.HandleFunc("GET /stats.json", s.requireSessionJSON(s.getStatsJSON))
 
 	mux.HandleFunc("GET /services", s.requireSession(s.getServices))
 	mux.HandleFunc("GET /services/health.json", s.requireSessionJSON(s.getHealthJSON))

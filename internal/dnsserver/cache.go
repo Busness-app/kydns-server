@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -34,7 +35,12 @@ type Cache struct {
 	maxTTL     uint32
 	negMaxTTL  uint32
 	now        func() time.Time
+	metrics    atomic.Pointer[Metrics]
 }
+
+// SetMetrics attaches the counters the hit rate is drawn from. It is optional:
+// a cache with no metrics still caches.
+func (c *Cache) SetMetrics(m *Metrics) { c.metrics.Store(m) }
 
 func NewCache(maxEntries, minTTL, maxTTL, negMaxTTL int) *Cache {
 	return &Cache{
@@ -52,8 +58,15 @@ func keyFor(q dns.Question, do bool) cacheKey {
 	return cacheKey{name: strings.ToLower(dns.Fqdn(q.Name)), qtype: q.Qtype, do: do}
 }
 
-// Get returns a copy of the cached message with TTLs decremented by age.
+// Get returns a copy of the cached message with TTLs decremented by age, and
+// counts the lookup. An expired entry is a miss.
 func (c *Cache) Get(q dns.Question, do bool) (*dns.Msg, bool) {
+	m, hit := c.lookup(q, do)
+	c.metrics.Load().RecordCache(hit)
+	return m, hit
+}
+
+func (c *Cache) lookup(q dns.Question, do bool) (*dns.Msg, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el, ok := c.entries[keyFor(q, do)]

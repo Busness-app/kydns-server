@@ -19,6 +19,9 @@ type Decision struct {
 	Blocked bool
 	Policy  string
 	TTL     uint32
+	// Name is the normalized query name, empty when it could not be normalized.
+	// It exists so the block counters can key on it without normalizing twice.
+	Name string
 }
 
 type namedSet struct {
@@ -75,15 +78,15 @@ func (s *Snapshot) Decide(name string) Decision {
 		return Decision{Policy: PolicyForwarded}
 	}
 	if s.deny.Match(n) {
-		return Decision{Blocked: true, Policy: PolicyDeny, TTL: s.ttl}
+		return Decision{Blocked: true, Policy: PolicyDeny, TTL: s.ttl, Name: n}
 	}
 	if s.allow.Match(n) {
-		return Decision{Policy: PolicyAllow}
+		return Decision{Policy: PolicyAllow, Name: n}
 	}
 	for _, l := range s.lists {
 		if l.set.Match(n) {
-			return Decision{Blocked: true, Policy: l.name, TTL: s.ttl}
+			return Decision{Blocked: true, Policy: l.name, TTL: s.ttl, Name: n}
 		}
 	}
-	return Decision{Policy: PolicyForwarded}
+	return Decision{Policy: PolicyForwarded, Name: n}
 }

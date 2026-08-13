@@ -31,6 +31,17 @@ type API struct {
 	health   func() []health.Status
 	policy   *policy.Service
 	settings *settings.Service
+	metrics  *dnsserver.Metrics
+}
+
+// topBlockedShown is how many blocked names /api/v1/stats lists.
+const topBlockedShown = 10
+
+// WithMetrics attaches the query counters. It is optional, so the API still
+// constructs where the DNS side is not running.
+func (a *API) WithMetrics(m *dnsserver.Metrics) *API {
+	a.metrics = m
+	return a
 }
 
 func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) *API {
@@ -717,6 +728,17 @@ func (a *API) listHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (a *API) stats(w http.ResponseWriter, _ *http.Request) {
 	out := map[string]any{}
+	if a.metrics != nil {
+		m := a.metrics.Snapshot()
+		out["queries"] = map[string]any{
+			"total": m.Total, "authoritative": m.Authoritative, "forwarded": m.Forwarded,
+			"blocked": m.Blocked, "refused": m.Refused, "errors": m.Errors,
+			"noerror": m.NoError, "nxdomain": m.NXDomain, "servfail": m.ServFail,
+			"avg_ms": m.AvgMS(), "last_query": m.LastQuery,
+		}
+		out["uptime_seconds"] = m.UptimeSeconds
+		out["history"] = m.History
+	}
 	if a.acl != nil {
 		s := a.acl.Stats()
 		out["refusals"] = map[string]any{
@@ -724,11 +746,18 @@ func (a *API) stats(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	if a.cache != nil {
-		out["cache"] = map[string]any{"entries": a.cache.Len()}
+		c := map[string]any{"entries": a.cache.Len()}
+		if a.metrics != nil {
+			m := a.metrics.Snapshot()
+			c["hits"], c["misses"], c["hit_rate"] = m.CacheHits, m.CacheMisses, m.CacheHitRate()
+		}
+		out["cache"] = c
 	}
 	if a.policy != nil {
 		total, byList := a.policy.Counters()
-		out["blocked"] = map[string]any{"total": total, "by_list": byList}
+		out["blocked"] = map[string]any{
+			"total": total, "by_list": byList, "top": a.policy.TopBlocked(topBlockedShown),
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }

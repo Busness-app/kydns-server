@@ -28,6 +28,7 @@ type Options struct {
 	Backoff    *auth.Backoff
 	ACL        *dnsserver.ACL
 	Cache      *dnsserver.Cache
+	Metrics    *dnsserver.Metrics
 	SetupToken string
 	Logger     *slog.Logger
 

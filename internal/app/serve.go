@@ -177,11 +177,14 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Holder: holder, ACL: acl,
 		Auth:        authoritative,
 		Forwarder:   fwd,
-		Policy:      policyHolder,
+		Policy:      policySvc,
 		LogQueries:  boot.LogQueries,
 		LogClientIP: boot.LogClientIP,
 		Logger:      logger,
 	})
+	// The cache reports its hits through the same counters as the query
+	// pipeline, so the dashboard's hit rate and query totals cannot disagree.
+	cache.SetMetrics(dnsSrv.Metrics())
 
 	checker := health.NewChecker(reg,
 		time.Duration(boot.HealthInterval)*time.Second,
@@ -204,7 +207,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc).WithSettings(settingsSvc)
+	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc).WithSettings(settingsSvc).WithMetrics(dnsSrv.Metrics())
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
@@ -218,6 +221,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Backoff:    auth.NewBackoff(),
 		ACL:        acl,
 		Cache:      cache,
+		Metrics:    dnsSrv.Metrics(),
 		Policy:     policySvc,
 		Settings:   settingsSvc,
 		Upstreams:  fwd.Status,

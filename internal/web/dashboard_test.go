@@ -102,6 +102,66 @@ func TestDashboardQuietWhenUpstreamsAreHealthy(t *testing.T) {
 	}
 }
 
+// The complaint this answers: a working server showed only configuration
+// counts, so success was invisible. The traffic numbers have to be on the page
+// server-side, not only in the JSON the charts poll.
+func TestDashboardShowsTrafficCounters(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+	setAllowTailscale(t, srv, true)
+	withMetrics(srv)
+
+	body := get(t, h, "/", c).Body.String()
+	for _, want := range []string{"Queries", "Cache hit rate", "Avg response", "Uptime"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard is missing the %q stat", want)
+		}
+	}
+	if !strings.Contains(body, `data-stat="total"`) {
+		t.Error("no data-stat hook for the live refresh to update")
+	}
+	if !strings.Contains(body, ">3<") {
+		t.Errorf("the query count was not rendered server-side:\n%s", body)
+	}
+}
+
+func TestDashboardMountsTheCharts(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+	setAllowTailscale(t, srv, true)
+	withMetrics(srv)
+
+	body := get(t, h, "/", c).Body.String()
+	for _, id := range []string{"chart-queries", "chart-cache", "chart-latency"} {
+		if !strings.Contains(body, id) {
+			t.Errorf("dashboard has no mount point for %s", id)
+		}
+	}
+	// With scripting off the charts cannot draw, and the page has to say so
+	// rather than show three empty boxes.
+	if !strings.Contains(body, "<noscript>") {
+		t.Error("charts have no no-JavaScript fallback text")
+	}
+}
+
+func TestDashboardListsTopBlockedNames(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+	setAllowTailscale(t, srv, true)
+	if _, err := srv.o.Policy.AddRule("deny", "ads.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	srv.o.Policy.Decide("ads.example.com.")
+
+	body := get(t, h, "/", c).Body.String()
+	if !strings.Contains(body, "ads.example.com") {
+		t.Errorf("the blocked name is not on the dashboard:\n%s", body)
+	}
+}
+
 func TestDashboardCountsEntities(t *testing.T) {
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
