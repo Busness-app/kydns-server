@@ -27,6 +27,8 @@ type Config struct {
 	Health    HealthConfig    `yaml:"health"`
 	DataDir   string          `yaml:"data_dir"`
 
+	Replication ReplicationConfig `yaml:"replication"`
+
 	// explicitEmptyDomain records that the operator wrote an empty
 	// private_domain, which must fail rather than silently defaulting.
 	explicitEmptyDomain bool
@@ -50,6 +52,14 @@ type DNSConfig struct {
 
 type AdminConfig struct {
 	Listen string `yaml:"listen"`
+}
+
+// ReplicationConfig is file-owned because it is needed before the database is
+// usable, like data_dir and the two listen addresses. Both keys empty means
+// standalone.
+type ReplicationConfig struct {
+	Listen  string `yaml:"listen"`  // primary: the TLS replication listener
+	Primary string `yaml:"primary"` // replica: the primary to follow
 }
 
 // DiscoveryConfig is off unless DHCPLeaseFile is set: KyDNS does not guess at
@@ -141,6 +151,20 @@ func (c *Config) validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
 		return fmt.Errorf("admin.listen %q: %w", c.Admin.Listen, err)
+	}
+	if c.Replication.Listen != "" && c.Replication.Primary != "" {
+		return errors.New("replication.listen and replication.primary are mutually " +
+			"exclusive: a node is a primary or a replica, never both")
+	}
+	if c.Replication.Listen != "" {
+		if _, _, err := net.SplitHostPort(c.Replication.Listen); err != nil {
+			return fmt.Errorf("replication.listen %q: %w", c.Replication.Listen, err)
+		}
+	}
+	if c.Replication.Primary != "" {
+		if _, _, err := net.SplitHostPort(c.Replication.Primary); err != nil {
+			return fmt.Errorf("replication.primary %q: %w", c.Replication.Primary, err)
+		}
 	}
 	return nil
 }

@@ -37,8 +37,8 @@ Each KyDNS installation contains seven logical parts, one Go package each:
    DHCP leases and probes service check URLs.
 6. **Settings** (`internal/settings`) — the process configuration that lives in
    the database, and the single path by which it changes.
-7. **Replication agent** — *deferred.* Would exchange authenticated
-   configuration changes with linked KyDNS peers.
+7. **Replication agent** (`internal/replica`) — *deferred.* Would pull
+   configuration snapshots from a linked primary over an authenticated link.
 
 The DNS server reads from the local registry, so local name resolution does not
 depend on any network beyond the host.
@@ -113,32 +113,55 @@ None of this section is implemented. It is recorded so the shipped design does
 not foreclose it: the store keeps a single write chokepoint, so the change log
 can be added without restructuring.
 
-Servers form an explicitly configured replication group. A peer is identified
-by its node ID and endpoint, and must be authenticated before it can exchange
-data.
+Servers form an explicitly configured replication group with exactly one
+primary. The primary accepts administrative writes; every other node is a
+read-only replica that serves DNS from the configuration it last pulled. A
+node is a primary, a replica, or standalone, decided by configuration rather
+than inferred, and it never changes role on its own.
 
-Every administrative or discovered configuration change is recorded as an
-immutable change with:
+A peer is identified by an Ed25519 key generated on first start; its node ID
+is that key's fingerprint. Peers are enrolled by a single-use, short-lived
+pairing code, exchanged as a PAKE shared secret rather than sent as a bearer
+token, after which each side pins the other's fingerprint permanently. The
+replication transport is a dedicated TLS listener authenticated on those
+pinned fingerprints alone. A mismatch is refused outright — no prompt, no
+trust-on-next-use.
 
-- a globally unique change ID;
-- the originating node ID;
-- the affected resource and operation;
-- the resulting resource value;
-- an ordering value and schema version.
+The primary keeps a `config_version` that is incremented in the same
+transaction as any write to replicated state. A replica polls that version
+and, when it differs, pulls the whole configuration as one document and
+applies it in a single transaction. The configuration is kilobytes, so
+shipping all of it is cheaper than the machinery needed to ship part of it,
+and a replica that has been offline or has drifted converges on its next poll
+with no catch-up path to get wrong.
 
-Peers exchange changes by ID, apply each change idempotently, and acknowledge
-the highest contiguous set they have stored. Retried delivery is safe, and
-offline peers catch up after reconnecting.
+Replicated: views, services, aliases, addresses, manual records, blacklist
+list definitions and rules, and shared settings. Not replicated: API tokens
+and the admin account, which stay node-local so a compromised replica does
+not surrender the group's credentials; blacklist list bodies, which each node
+downloads itself; per-node settings such as the DHCP lease file and query
+logging; and DNS query history, ever. Health status replicates as operational
+metadata, outside the configuration version.
 
-The replication transport must use encrypted, mutually authenticated links.
-Replication must never include DNS query history by default.
+An invalid or truncated snapshot leaves a replica's previous configuration
+intact, so a bad pull degrades a replica to stale and never to broken.
 
-### Conflicts
+### Roles and failover
 
-The initial design uses deterministic last-write-wins for the same resource:
-the ordering value wins, with node ID as the tie-breaker. A losing update is
-retained in the change log for audit and troubleshooting. Future versions may
-add operator-selected authority for resources that should not be multi-writer.
+A replica whose primary is unreachable keeps serving its last configuration
+indefinitely and says so in the UI. It never promotes itself: clients already
+list both servers, so an unreachable primary costs administration, not
+resolution.
+
+Promotion is a deliberate operator action, and the old primary must be
+demoted or rebuilt before it returns. Two primaries serving the same replicas
+is the one state this design cannot detect or reconcile, which is why nothing
+here creates one automatically. Demotion re-pairs a former primary as a
+replica and replaces its local configuration wholesale.
+
+Because there is a single writer, there are no concurrent writes and so no
+conflicts to resolve. An administrative audit log remains worth building, but
+as its own feature rather than as a side effect of the replication transport.
 
 Replication failures are visible in the administration UI and structured logs,
 but do not make the local DNS server unavailable.

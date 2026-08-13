@@ -215,6 +215,91 @@ func (s *Store) DeleteBlacklistRule(id int64) error {
 	return nil
 }
 
+// replaceBlacklistDefinitions writes a snapshot's blacklist policy against an
+// already-open transaction. Lists are matched to existing rows by name so a
+// locally downloaded body survives; only the definition columns are written.
+func replaceBlacklistDefinitions(tx *sql.Tx, set BlacklistSettings, lists []BlacklistList, rules []BlacklistRule) error {
+	if _, err := tx.Exec(`
+		INSERT INTO blacklist_settings(id, enabled, block_ttl) VALUES(1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled,
+		                              block_ttl = excluded.block_ttl`, set.Enabled, set.BlockTTL); err != nil {
+		return err
+	}
+
+	existing := map[string]string{} // name -> url
+	rows, err := tx.Query(`SELECT name, url FROM blacklist_lists`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name, url string
+		if err := rows.Scan(&name, &url); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = url
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	incoming := map[string]bool{}
+	for _, l := range lists {
+		incoming[l.Name] = true
+		if oldURL, ok := existing[l.Name]; ok {
+			// The body belongs to the URL, not the name: a repointed list must
+			// not keep serving the old source's downloaded content or ETag.
+			if oldURL != l.URL {
+				if _, err := tx.Exec(`
+					UPDATE blacklist_lists
+					SET url = ?, format = ?, description = ?, enabled = ?, builtin = ?, interval_seconds = ?,
+					    snapshot = '', entry_count = 0, skipped_count = 0, etag = '', last_modified = '',
+					    last_attempt_at = 0, last_ok_at = 0, last_error = ''
+					WHERE name = ?`,
+					l.URL, l.Format, l.Description, l.Enabled, l.Builtin, l.IntervalSeconds, l.Name); err != nil {
+					return err
+				}
+				continue
+			}
+			if _, err := tx.Exec(`
+				UPDATE blacklist_lists
+				SET url = ?, format = ?, description = ?, enabled = ?, builtin = ?, interval_seconds = ?
+				WHERE name = ?`,
+				l.URL, l.Format, l.Description, l.Enabled, l.Builtin, l.IntervalSeconds, l.Name); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO blacklist_lists(name, url, format, description, enabled, builtin, interval_seconds)
+			VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			l.Name, l.URL, l.Format, l.Description, l.Enabled, l.Builtin, l.IntervalSeconds); err != nil {
+			return err
+		}
+	}
+	for name := range existing {
+		if !incoming[name] {
+			if _, err := tx.Exec(`DELETE FROM blacklist_lists WHERE name = ?`, name); err != nil {
+				return err
+			}
+		}
+	}
+
+	if _, err := tx.Exec(`DELETE FROM blacklist_rules`); err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if _, err := tx.Exec(`INSERT INTO blacklist_rules(kind, domain) VALUES(?, ?)`, r.Kind, r.Domain); err != nil {
+			if isUnique(err, "blacklist_rules.domain") {
+				return fmt.Errorf("%w: a rule for %s already exists", ErrDuplicateName, r.Domain)
+			}
+			return err
+		}
+	}
+	return nil
+}
+
 // ReplaceBlacklist writes a whole imported policy in one transaction. A list
 // whose URL survives the import keeps its downloaded body, so restoring a
 // backup does not force every source to re-download.

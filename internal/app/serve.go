@@ -255,7 +255,19 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
+	replSrv, puller, err := startReplication(ctx, cfg, st,
+		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
+		errs, logger)
+	if err != nil {
+		return err
+	}
+	// puller.Status() is what the replica dashboard and CLI will read; until
+	// those exist the loop reports through the log.
+	_ = puller
+	if replSrv != nil {
+		defer replSrv.Close()
+	}
 	go func() { errs <- dnsSrv.ListenAndServe(cfg.DNS.Listen) }()
 	go func() {
 		if err := adminSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

@@ -124,6 +124,107 @@ CREATE TABLE IF NOT EXISTS settings (
   health_timeout     INTEGER NOT NULL,
   health_workers     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS config_version (
+  id      INTEGER PRIMARY KEY CHECK (id = 1),
+  version INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO config_version(id, version) VALUES(1, 0);
+-- config_version is bumped by triggers rather than by Go, so a write path
+-- added later cannot forget to bump it. The WHEN clauses on the UPDATE
+-- triggers ARE the replicated settings split: anything absent is node-local
+-- and deliberately invisible to replicas.
+CREATE TRIGGER IF NOT EXISTS cv_views_i AFTER INSERT ON views BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_views_d AFTER DELETE ON views BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_view_subnets_i AFTER INSERT ON view_subnets BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_view_subnets_d AFTER DELETE ON view_subnets BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_services_i AFTER INSERT ON services BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_services_u AFTER UPDATE ON services BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_services_d AFTER DELETE ON services BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_service_addresses_i AFTER INSERT ON service_addresses BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_service_addresses_u AFTER UPDATE ON service_addresses BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_service_addresses_d AFTER DELETE ON service_addresses BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_aliases_i AFTER INSERT ON aliases BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_aliases_d AFTER DELETE ON aliases BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_records_i AFTER INSERT ON records BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_records_u AFTER UPDATE ON records BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_records_d AFTER DELETE ON records BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_settings_u AFTER UPDATE ON blacklist_settings BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_rules_i AFTER INSERT ON blacklist_rules BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_rules_u AFTER UPDATE ON blacklist_rules BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_rules_d AFTER DELETE ON blacklist_rules BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+-- Definition columns only. A refresh writes snapshot, etag, last_modified and
+-- the counters on every poll; those are node-local and must not look like a
+-- configuration change.
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_lists_i AFTER INSERT ON blacklist_lists BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_lists_d AFTER DELETE ON blacklist_lists BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_blacklist_lists_u AFTER UPDATE ON blacklist_lists
+WHEN old.name IS NOT new.name
+  OR old.url IS NOT new.url
+  OR old.format IS NOT new.format
+  OR old.description IS NOT new.description
+  OR old.enabled IS NOT new.enabled
+  OR old.builtin IS NOT new.builtin
+  OR old.interval_seconds IS NOT new.interval_seconds
+BEGIN UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+-- Replicated settings columns only. dhcp_lease_file, discovery_interval,
+-- log_queries and log_client_ip are absent on purpose: they are node-local.
+CREATE TRIGGER IF NOT EXISTS cv_settings_i AFTER INSERT ON settings BEGIN
+  UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+CREATE TRIGGER IF NOT EXISTS cv_settings_u AFTER UPDATE ON settings
+WHEN old.private_domain IS NOT new.private_domain
+  OR old.reverse_zones IS NOT new.reverse_zones
+  OR old.upstreams IS NOT new.upstreams
+  OR old.allow_query IS NOT new.allow_query
+  OR old.allow_tailscale IS NOT new.allow_tailscale
+  OR old.ttl IS NOT new.ttl
+  OR old.cache_min_ttl IS NOT new.cache_min_ttl
+  OR old.cache_max_ttl IS NOT new.cache_max_ttl
+  OR old.negative_max_ttl IS NOT new.negative_max_ttl
+  OR old.cache_entries IS NOT new.cache_entries
+  OR old.health_interval IS NOT new.health_interval
+  OR old.health_timeout IS NOT new.health_timeout
+  OR old.health_workers IS NOT new.health_workers
+BEGIN UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+-- Node-local trust anchors: no config_version trigger. A peer list must
+-- never arrive from a peer.
+CREATE TABLE IF NOT EXISTS peers (
+  node_id      TEXT PRIMARY KEY,
+  label        TEXT NOT NULL DEFAULT '',
+  address      TEXT NOT NULL DEFAULT '',
+  paired_at    INTEGER NOT NULL DEFAULT 0,
+  last_sync_at INTEGER NOT NULL DEFAULT 0,
+  last_version INTEGER NOT NULL DEFAULT 0
+);
+-- The primary's version as this replica last applied it. Node-local
+-- bookkeeping, so no config_version trigger: this node's own counter moves
+-- every time a snapshot lands and says nothing about the primary.
+CREATE TABLE IF NOT EXISTS replica_state (
+  id              INTEGER PRIMARY KEY CHECK (id = 1),
+  primary_node_id TEXT NOT NULL DEFAULT '',
+  last_version    INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO replica_state(id) VALUES(1);
 `
 
 // migrations run in order on a database whose user_version is below their
@@ -621,6 +722,15 @@ func (s *Store) ReplaceAll(views []View, services []Service, records []Record) e
 		return err
 	}
 	defer tx.Rollback()
+	if err := replaceAll(tx, views, services, records); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// replaceAll does the work of ReplaceAll against an already-open transaction,
+// so ApplySnapshot can write the registry as part of one larger transaction.
+func replaceAll(tx *sql.Tx, views []View, services []Service, records []Record) error {
 	for _, q := range []string{
 		`DELETE FROM records`, `DELETE FROM aliases`,
 		`DELETE FROM service_addresses`, `DELETE FROM services`,
@@ -646,6 +756,57 @@ func (s *Store) ReplaceAll(views []View, services []Service, records []Record) e
 		if _, err := putRecord(tx, r); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// SnapshotInput is a primary's replicated configuration, as pulled by a
+// replica and applied with ApplySnapshot.
+type SnapshotInput struct {
+	Views     []View
+	Services  []Service
+	Records   []Record
+	Settings  Settings
+	Blacklist BlacklistSettings
+	Lists     []BlacklistList
+	Rules     []BlacklistRule
+}
+
+// ApplySnapshot replaces all replicated state in one transaction. A replica
+// applying a bad document must be left exactly as it was, so nothing here is
+// allowed to commit independently. Tokens, the admin account, and list
+// bodies are node-local and untouched.
+func (s *Store) ApplySnapshot(in SnapshotInput) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := replaceAll(tx, in.Views, in.Services, in.Records); err != nil {
+		return err
+	}
+	// dhcp_lease_file, discovery_interval, log_queries and log_client_ip are
+	// node-local and never replicated. Enforced here rather than trusted to
+	// the caller, so a later caller that forwards a pulled Settings verbatim
+	// cannot wipe them out.
+	settings := in.Settings
+	var dhcpLeaseFile string
+	var discoveryInterval int
+	var logQueries, logClientIP bool
+	err = tx.QueryRow(`SELECT dhcp_lease_file, discovery_interval, log_queries, log_client_ip FROM settings WHERE id = 1`).
+		Scan(&dhcpLeaseFile, &discoveryInterval, &logQueries, &logClientIP)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil {
+		settings.DHCPLeaseFile, settings.DiscoveryInterval = dhcpLeaseFile, discoveryInterval
+		settings.LogQueries, settings.LogClientIP = logQueries, logClientIP
+	}
+	if err := putSettings(tx, settings); err != nil {
+		return err
+	}
+	if err := replaceBlacklistDefinitions(tx, in.Blacklist, in.Lists, in.Rules); err != nil {
+		return err
 	}
 	return tx.Commit()
 }
