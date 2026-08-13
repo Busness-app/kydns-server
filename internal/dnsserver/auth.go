@@ -30,8 +30,10 @@ func NewAuthoritative(zone string, ttl uint32, reverse []netip.Prefix) *Authorit
 	return a
 }
 
-// SetTTL changes the TTL on authoritative answers. Answers already in flight
-// keep the value they started with, which is one query's worth of staleness.
+// SetTTL changes the TTL on authoritative answers. Answer snapshots the TTL
+// once at the start of each call, so one in-flight answer never mixes two
+// TTL values across its own records; a concurrent SetTTL only ever affects
+// answers that start after it lands.
 func (a *Authoritative) SetTTL(ttl uint32) { a.ttl.Store(ttl) }
 
 // SetReverseZones changes which networks get derived PTR records.
@@ -56,7 +58,11 @@ func (a *Authoritative) Owns(qname string) bool {
 		if !ok {
 			return false
 		}
-		for _, p := range *a.reverseZones.Load() {
+		zones := a.reverseZones.Load()
+		if zones == nil { // zero-value Authoritative, never given a constructor call
+			return false
+		}
+		for _, p := range *zones {
 			if p.Contains(addr) {
 				return true
 			}
@@ -68,21 +74,27 @@ func (a *Authoritative) Owns(qname string) bool {
 // SOA synthesizes the apex SOA. The serial is the snapshot generation, so it
 // advances on every rebuild for free.
 func (a *Authoritative) SOA(serial uint32) *dns.SOA {
+	return a.soa(serial, a.ttl.Load())
+}
+
+func (a *Authoritative) soa(serial, ttl uint32) *dns.SOA {
 	return &dns.SOA{
-		Hdr:     dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: a.ttl.Load()},
+		Hdr:     dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
 		Ns:      "ns." + a.Zone,
 		Mbox:    "hostmaster." + a.Zone,
 		Serial:  serial,
-		Refresh: 3600, Retry: 600, Expire: 604800, Minttl: a.ttl.Load(),
+		Refresh: 3600, Retry: 600, Expire: 604800, Minttl: ttl,
 	}
 }
 
 // Answer builds the authoritative reply, or returns nil when the name is not
-// ours and the caller should forward.
+// ours and the caller should forward. The TTL is read once at the top, so a
+// concurrent SetTTL cannot split one message across two TTL values.
 func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question) *dns.Msg {
 	if snap == nil || !a.Owns(q.Name) {
 		return nil
 	}
+	ttl := a.ttl.Load()
 	m := new(dns.Msg)
 	m.Authoritative = true
 	m.Question = []dns.Question{q}
@@ -91,14 +103,14 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 	if name == a.Zone {
 		switch q.Qtype {
 		case dns.TypeSOA:
-			m.Answer = []dns.RR{a.SOA(snap.Generation)}
+			m.Answer = []dns.RR{a.soa(snap.Generation, ttl)}
 		case dns.TypeNS:
 			m.Answer = []dns.RR{&dns.NS{
-				Hdr: dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: a.ttl.Load()},
+				Hdr: dns.RR_Header{Name: a.Zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
 				Ns:  "ns." + a.Zone,
 			}}
 		default:
-			m.Ns = []dns.RR{a.SOA(snap.Generation)}
+			m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
 		}
 		return m
 	}
@@ -106,45 +118,45 @@ func (a *Authoritative) Answer(snap *zone.Snapshot, view string, q dns.Question)
 	if q.Qtype == dns.TypePTR {
 		if target := snap.LookupPTR(view, name); target != "" {
 			m.Answer = []dns.RR{&dns.PTR{
-				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: a.ttl.Load()},
+				Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypePTR, Class: dns.ClassINET, Ttl: ttl},
 				Ptr: dns.Fqdn(target),
 			}}
 			return m
 		}
 		m.Rcode = dns.RcodeNameError
-		m.Ns = []dns.RR{a.SOA(snap.Generation)}
+		m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
 		return m
 	}
 
 	rrs := snap.Lookup(view, name)
 	if len(rrs) == 0 {
 		m.Rcode = dns.RcodeNameError
-		m.Ns = []dns.RR{a.SOA(snap.Generation)}
+		m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
 		return m
 	}
 
 	// A CNAME is the only record at its name, so this branch is exclusive.
 	if rrs[0].Type == "CNAME" {
-		m.Answer = a.chase(snap, view, name, rrs[0].Value, q.Qtype, 0)
+		m.Answer = a.chase(snap, view, name, rrs[0].Value, q.Qtype, 0, ttl)
 		return m
 	}
 
 	for _, rr := range rrs {
-		if converted := a.toRR(rr, q.Qtype); converted != nil {
+		if converted := a.toRR(rr, q.Qtype, ttl); converted != nil {
 			m.Answer = append(m.Answer, converted)
 		}
 	}
 	if len(m.Answer) == 0 { // name exists, type does not: NODATA
-		m.Ns = []dns.RR{a.SOA(snap.Generation)}
+		m.Ns = []dns.RR{a.soa(snap.Generation, ttl)}
 	}
 	return m
 }
 
 // chase follows in-zone CNAME targets so the client gets one complete answer.
 // Out-of-zone targets are returned alone for the client's resolver to continue.
-func (a *Authoritative) chase(snap *zone.Snapshot, view, name, target string, qtype uint16, depth int) []dns.RR {
+func (a *Authoritative) chase(snap *zone.Snapshot, view, name, target string, qtype uint16, depth int, ttl uint32) []dns.RR {
 	cname := &dns.CNAME{
-		Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: a.ttl.Load()},
+		Hdr:    dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: ttl},
 		Target: dns.Fqdn(target),
 	}
 	if depth >= cnameChaseDepth || qtype == dns.TypeCNAME || !a.Owns(target) {
@@ -154,18 +166,18 @@ func (a *Authoritative) chase(snap *zone.Snapshot, view, name, target string, qt
 	next := snap.Lookup(view, dns.Fqdn(target))
 	for _, rr := range next {
 		if rr.Type == "CNAME" {
-			return append(out, a.chase(snap, view, dns.Fqdn(target), rr.Value, qtype, depth+1)...)
+			return append(out, a.chase(snap, view, dns.Fqdn(target), rr.Value, qtype, depth+1, ttl)...)
 		}
-		if converted := a.toRR(rr, qtype); converted != nil {
+		if converted := a.toRR(rr, qtype, ttl); converted != nil {
 			out = append(out, converted)
 		}
 	}
 	return out
 }
 
-func (a *Authoritative) toRR(rr zone.RR, qtype uint16) dns.RR {
+func (a *Authoritative) toRR(rr zone.RR, qtype uint16, ttl uint32) dns.RR {
 	hdr := func(t uint16) dns.RR_Header {
-		return dns.RR_Header{Name: rr.Name, Rrtype: t, Class: dns.ClassINET, Ttl: a.ttl.Load()}
+		return dns.RR_Header{Name: rr.Name, Rrtype: t, Class: dns.ClassINET, Ttl: ttl}
 	}
 	switch rr.Type {
 	case "A":

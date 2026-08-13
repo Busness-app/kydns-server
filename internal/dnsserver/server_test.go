@@ -3,6 +3,7 @@ package dnsserver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -455,13 +456,20 @@ func TestAuthoritativeAnswerNeverCarriesAD(t *testing.T) {
 // address, so the caller can inspect logger output right after the call
 // returns without racing the goroutine a real listener would use.
 type fakeResponseWriter struct {
-	remote net.Addr
-	msg    *dns.Msg
+	remote   net.Addr
+	msg      *dns.Msg
+	writeErr error // returned from WriteMsg instead of storing msg, to simulate a write failure
 }
 
-func (f *fakeResponseWriter) LocalAddr() net.Addr         { return &net.UDPAddr{IP: net.ParseIP("127.0.0.1")} }
-func (f *fakeResponseWriter) RemoteAddr() net.Addr        { return f.remote }
-func (f *fakeResponseWriter) WriteMsg(m *dns.Msg) error   { f.msg = m; return nil }
+func (f *fakeResponseWriter) LocalAddr() net.Addr  { return &net.UDPAddr{IP: net.ParseIP("127.0.0.1")} }
+func (f *fakeResponseWriter) RemoteAddr() net.Addr { return f.remote }
+func (f *fakeResponseWriter) WriteMsg(m *dns.Msg) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
+	f.msg = m
+	return nil
+}
 func (f *fakeResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
 func (f *fakeResponseWriter) Close() error                { return nil }
 func (f *fakeResponseWriter) TsigStatus() error           { return nil }
@@ -518,5 +526,61 @@ func TestSetLogging(t *testing.T) {
 	s.query(t, "nas.home.arpa.", "192.168.1.5")
 	if !strings.Contains(buf.String(), "192.168.1.5") {
 		t.Error("the client IP was not logged with log_client_ip on")
+	}
+}
+
+// A WriteMsg failure (EMSGSIZE, an ICMP-induced connection error, a
+// mid-reply TCP hangup) is logged unconditionally, unlike the query log
+// line — that path is not gated by log_queries or log_client_ip. A
+// *net.OpError's Error() embeds the peer address, so this path must not be
+// allowed to leak the client IP when log_client_ip is off; LOGGING.md
+// promises no client IP is logged by default.
+func TestWriteErrorNeverLeaksClientIPWhenOff(t *testing.T) {
+	h := zone.NewHolder(func() (zone.Input, error) { return zone.Input{Zone: "home.arpa."}, nil }, nil)
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	newSrv := func(buf *bytes.Buffer) *Server {
+		return New(Options{
+			Holder: h,
+			ACL:    NewACL(prefixes(t, "0.0.0.0/0")),
+			Auth:   NewAuthoritative("home.arpa.", 60, nil),
+			Logger: slog.New(slog.NewTextHandler(buf, nil)),
+		})
+	}
+	writeErr := &net.OpError{
+		Op:   "write",
+		Net:  "udp4",
+		Addr: &net.UDPAddr{IP: net.ParseIP("192.168.1.5"), Port: 12345},
+		Err:  errors.New("sendmsg: message too long"),
+	}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+
+	var buf bytes.Buffer
+	srv := newSrv(&buf)
+	w := &fakeResponseWriter{remote: &net.UDPAddr{IP: net.ParseIP("192.168.1.5"), Port: 12345}, writeErr: writeErr}
+	srv.ServeDNS(w, m)
+
+	out := buf.String()
+	if out == "" {
+		t.Fatal("a write failure was not logged at all")
+	}
+	if strings.Contains(out, "192.168.1.5") {
+		t.Error("the write-error log line leaked the client IP with log_client_ip off")
+	}
+	if !strings.Contains(out, "sendmsg: message too long") {
+		t.Errorf("write-error log line = %q, want it to still describe the failure", out)
+	}
+
+	// With log_client_ip on, the address is expected: that flag means the
+	// operator opted in to seeing it.
+	buf.Reset()
+	srv2 := newSrv(&buf)
+	srv2.SetLogging(false, true)
+	w2 := &fakeResponseWriter{remote: &net.UDPAddr{IP: net.ParseIP("192.168.1.5"), Port: 12345}, writeErr: writeErr}
+	srv2.ServeDNS(w2, m)
+	if !strings.Contains(buf.String(), "192.168.1.5") {
+		t.Error("the write-error log line dropped the client IP with log_client_ip on")
 	}
 }

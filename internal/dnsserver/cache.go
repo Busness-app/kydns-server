@@ -153,11 +153,14 @@ func clamp(v, lo, hi uint32) uint32 {
 // an operator lowering the entry count is reclaiming memory now, not next time
 // something is cached.
 func (c *Cache) Retune(maxEntries, minTTL, maxTTL, negMaxTTL int) {
+	if maxEntries < 1 { // the loop below assumes a positive ceiling; a non-positive one spins forever
+		maxEntries = 1
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.maxEntries = maxEntries
 	c.minTTL, c.maxTTL, c.negMaxTTL = uint32(minTTL), uint32(maxTTL), uint32(negMaxTTL)
-	for c.maxEntries > 0 && c.order.Len() > c.maxEntries {
+	for c.order.Len() > c.maxEntries {
 		c.removeLocked(c.order.Back())
 	}
 }

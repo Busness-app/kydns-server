@@ -72,7 +72,7 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			m.Truncate(clientUDPSize(r))
 		}
 		if err := w.WriteMsg(m); err != nil {
-			s.o.Logger.Warn("write reply", "error", err)
+			s.o.Logger.Warn("write reply", "error", writeErrText(err, s.logClientIP.Load()))
 		}
 		s.logQuery(r, m, w, source, view, policy, time.Since(start))
 	}
@@ -169,6 +169,22 @@ func sourceAddr(w dns.ResponseWriter) netip.Addr {
 		return netip.Addr{}
 	}
 	return a.Unmap()
+}
+
+// writeErrText renders a WriteMsg error for logging. A *net.OpError's
+// Error() embeds the peer address (net.OpError.Addr), which would leak the
+// client IP through an ungated path — the same information log_client_ip
+// exists to gate. Unless that flag is already on, the op and the underlying
+// error are reported without it.
+func writeErrText(err error, includeAddr bool) string {
+	if includeAddr {
+		return err.Error()
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return opErr.Op + ": " + opErr.Err.Error()
+	}
+	return err.Error()
 }
 
 // clientUDPSize is the datagram budget the client advertised. A client that

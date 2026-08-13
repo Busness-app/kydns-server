@@ -271,3 +271,26 @@ func TestCacheRetuneChangesClamp(t *testing.T) {
 		t.Errorf("TTL %d exceeds the new maximum of 10", got.Answer[0].Header().Ttl)
 	}
 }
+
+// Put's eviction loop assumes maxEntries is positive: with a non-positive
+// value, order.Len() > maxEntries never goes false, and Put spins forever.
+// Retune is the first API that can set maxEntries at runtime, so it must
+// clamp rather than trust the caller.
+func TestCacheRetuneClampsNonPositiveMaxEntries(t *testing.T) {
+	c := NewCache(10, 1, 3600, 300)
+	c.Retune(-1, 1, 3600, 300)
+
+	done := make(chan struct{})
+	go func() {
+		c.Put(question("a.example."), false, reply("a.example.", 60))
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Put did not return after Retune(-1, ...): the eviction loop is spinning")
+	}
+	if c.Len() != 1 {
+		t.Errorf("cache holds %d after Retune(-1, ...) and one Put, want 1", c.Len())
+	}
+}

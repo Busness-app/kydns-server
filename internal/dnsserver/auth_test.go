@@ -260,3 +260,15 @@ func TestAuthoritativeConcurrentSetAndAnswer(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// Zone stays exported (private_domain is restart-required), so
+// &Authoritative{Zone: "..."} still compiles from any package and skips
+// NewAuthoritative entirely. Owns must not panic on the resulting
+// zero-value reverseZones — a nil-pointer deref here takes the whole
+// process down, since the dns package does not recover handler panics.
+func TestOwnsOnZeroValueAuthoritative(t *testing.T) {
+	a := &Authoritative{Zone: "home.arpa."}
+	if got := a.Owns("20.1.168.192.in-addr.arpa."); got {
+		t.Errorf("Owns(%q) = true on a zero-value Authoritative, want false", "20.1.168.192.in-addr.arpa.")
+	}
+}
