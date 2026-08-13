@@ -206,6 +206,16 @@ WHEN old.private_domain IS NOT new.private_domain
   OR old.health_timeout IS NOT new.health_timeout
   OR old.health_workers IS NOT new.health_workers
 BEGIN UPDATE config_version SET version = version + 1 WHERE id = 1; END;
+-- Node-local trust anchors: no config_version trigger. A peer list must
+-- never arrive from a peer.
+CREATE TABLE IF NOT EXISTS peers (
+  node_id      TEXT PRIMARY KEY,
+  label        TEXT NOT NULL DEFAULT '',
+  address      TEXT NOT NULL DEFAULT '',
+  paired_at    INTEGER NOT NULL DEFAULT 0,
+  last_sync_at INTEGER NOT NULL DEFAULT 0,
+  last_version INTEGER NOT NULL DEFAULT 0
+);
 `
 
 // migrations run in order on a database whose user_version is below their
