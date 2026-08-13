@@ -170,3 +170,35 @@ func TestPublicPrefixes(t *testing.T) {
 		}
 	}
 }
+
+// A prefix with set host bits, like 192.168.1.99/0, matches as 0.0.0.0/0 but
+// reads as a LAN address. The rejection must name what it actually matches.
+func TestValidateRejectsHostBitsFormReportedCanonically(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"192.168.1.99/0"}
+
+	err := Validate(v, "")
+	if err == nil {
+		t.Fatal("a /0 disguised as a LAN address was accepted with no confirmation")
+	}
+	if !strings.Contains(err.Error(), "0.0.0.0/0") {
+		t.Errorf("the message does not name the canonical prefix: %v", err)
+	}
+	if strings.Contains(err.Error(), "192.168.1.99/0") {
+		t.Errorf("the message must not echo the misleading host-bits form: %v", err)
+	}
+}
+
+// Confirming the canonical form is what works; the raw host-bits form the
+// operator typed is not itself a valid confirmation.
+func TestValidateAcceptsHostBitsFormWithCanonicalConfirmation(t *testing.T) {
+	v := valid()
+	v.AllowQuery = []string{"192.168.1.99/0"}
+
+	if err := Validate(v, "0.0.0.0/0"); err != nil {
+		t.Fatalf("confirming the canonical form must be accepted: %v", err)
+	}
+	if err := Validate(v, "192.168.1.99/0"); err == nil {
+		t.Fatal("confirming the raw host-bits form must not be accepted")
+	}
+}

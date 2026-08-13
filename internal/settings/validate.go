@@ -128,9 +128,12 @@ func IsPrivatePrefix(p netip.Prefix) bool {
 	return false
 }
 
-// PublicPrefixes returns the entries of an allow list that reach beyond the
-// private ranges. Unparseable entries are skipped: Validate rejects those with
-// a better message. Callers use this for the standing exposure warning.
+// PublicPrefixes returns the masked, canonical form of the entries in an
+// allow list that reach beyond the private ranges. Masking matters: a form
+// like "192.168.1.99/0" behaves as 0.0.0.0/0 but reads as a LAN address, and
+// the operator must see what the prefix actually matches. Unparseable
+// entries are skipped: Validate rejects those with a better message.
+// Callers use this for the standing exposure warning.
 func PublicPrefixes(list []string) []string {
 	var out []string
 	for _, c := range list {
@@ -138,7 +141,7 @@ func PublicPrefixes(list []string) []string {
 		if err != nil || IsPrivatePrefix(p) {
 			continue
 		}
-		out = append(out, c)
+		out = append(out, p.Masked().String())
 	}
 	return out
 }
