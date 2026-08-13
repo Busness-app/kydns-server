@@ -41,7 +41,13 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 - A web UI, a JSON API, and a CLI that talks to the API.
 - Server settings — upstreams, the query ACL, TTLs, cache bounds, logging,
   discovery and health — edited from any of the three and applied without a
-  restart. Only three keys are still in a config file.
+  restart. Only five keys are still in a config file.
+- Linked-server replication: a replica follows a primary over its own pinned
+  TLS listener and keeps answering when the primary is down. It is config file
+  and API territory today — the `replication` keys start it, but pairing and
+  promotion have no CLI or web UI yet, so setting a replica up means writing
+  the peer records yourself. Editing configuration on a replica is not blocked
+  yet either; the next pull overwrites it.
 - Built-in and custom DNS blacklists, one-off allow/deny rules, and a one-button
   filtering toggle. Filtering is enabled by default and never overrides local
   records.

@@ -255,7 +255,16 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
+	replSrv, err := startReplication(ctx, cfg, st,
+		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
+		errs, logger)
+	if err != nil {
+		return err
+	}
+	if replSrv != nil {
+		defer replSrv.Close()
+	}
 	go func() { errs <- dnsSrv.ListenAndServe(cfg.DNS.Listen) }()
 	go func() {
 		if err := adminSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
