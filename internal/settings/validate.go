@@ -27,13 +27,15 @@ func bad(field, format string, args ...any) error {
 	return FieldError{Field: field, Msg: fmt.Sprintf(format, args...)}
 }
 
-// Validate is the write path: every rule, plus the guardrail that new exposure
+// ValidateWrite is the write path: every rule, plus the guardrail that exposure
 // beyond the private ranges must be confirmed by retyping it in confirmPublic.
-func Validate(v store.Settings, confirmPublic string) error {
-	if err := ValidateStored(v); err != nil {
+// Only exposure that is new relative to prev needs confirming — re-litigating a
+// prefix the operator already accepted would block every unrelated save.
+func ValidateWrite(next, prev store.Settings, confirmPublic string) error {
+	if err := ValidateStored(next); err != nil {
 		return err
 	}
-	return confirmPublicPrefixes(v.AllowQuery, confirmPublic)
+	return confirmPublicPrefixes(next.AllowQuery, prev.AllowQuery, confirmPublic)
 }
 
 // ValidateStored is the startup path: every rule Validate applies except the
@@ -172,9 +174,16 @@ func validateAllowQuery(list []string) error {
 
 // confirmPublicPrefixes enforces the guardrail: a prefix outside the private
 // ranges is refused unless the same request retypes it in confirmPublic.
-func confirmPublicPrefixes(list []string, confirmPublic string) error {
+// Prefixes already present in prev are pre-confirmed, so narrowing the list or
+// changing an unrelated setting never asks again. Re-adding a removed prefix
+// does, because by then it is no longer in prev.
+func confirmPublicPrefixes(list, prev []string, confirmPublic string) error {
+	stored := make(map[string]bool)
+	for _, c := range PublicPrefixes(prev) {
+		stored[c] = true
+	}
 	for _, c := range PublicPrefixes(list) {
-		if c == confirmPublic {
+		if c == confirmPublic || stored[c] {
 			continue
 		}
 		return bad("allow_query",

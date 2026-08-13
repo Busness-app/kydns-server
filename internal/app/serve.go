@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -154,7 +155,9 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 
 	acl := dnsserver.NewACL(snap.AllowQuery)
-	logger.Info("query acl", "ranges", boot.AllowQuery, "allow_tailscale", boot.AllowTailscale)
+	// Logged from the snapshot, not the raw list: that is what the ACL enforces,
+	// masked and with the CGNAT range already added.
+	logger.Info("query acl", "ranges", snap.AllowQuery, "allow_tailscale", boot.AllowTailscale)
 	warnUnreachableViews(st, boot.AllowTailscale, logger)
 
 	cache := dnsserver.NewCache(boot.CacheEntries, boot.CacheMinTTL, boot.CacheMaxTTL, boot.NegativeMaxTTL)
@@ -183,10 +186,16 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		time.Duration(boot.HealthTimeout)*time.Second,
 		boot.HealthWorkers, logger)
 
+	// prevUpstreams tracks what the forwarder was last told. Only apply touches
+	// it, and Service.Set serializes apply.
+	prevUpstreams := boot.Upstreams
+
 	// Every value here is already validated and built, so no swap can fail.
 	apply := func(s *settings.Snapshot) {
 		acl.Replace(s.AllowQuery)
 		fwd.Replace(s.Upstreams)
+		flushOnUpstreamChange(cache, prevUpstreams, s.Raw.Upstreams, logger)
+		prevUpstreams = s.Raw.Upstreams
 		cache.Retune(s.Raw.CacheEntries, s.Raw.CacheMinTTL, s.Raw.CacheMaxTTL, s.Raw.NegativeMaxTTL)
 		dnsSrv.SetLogging(s.Raw.LogQueries, s.Raw.LogClientIP)
 		authoritative.SetTTL(uint32(s.Raw.TTL))
@@ -323,6 +332,19 @@ func warnPublicACL(v store.Settings, logger *slog.Logger) {
 	}
 }
 
+// flushOnUpstreamChange empties the cache when the upstream list changed:
+// answers minted by a resolver the operator has just walked away from must not
+// keep being served for up to cache_max_ttl. An unrelated save leaves the cache
+// alone, because emptying it makes every client re-resolve.
+func flushOnUpstreamChange(c *dnsserver.Cache, prev, next []string, logger *slog.Logger) bool {
+	if slices.Equal(prev, next) {
+		return false
+	}
+	c.Flush()
+	logger.Info("upstreams changed, cache flushed", "upstreams", next)
+	return true
+}
+
 // RestartItem is one setting whose stored value differs from the one the
 // process is running.
 type RestartItem struct {
@@ -341,7 +363,11 @@ func restartPending(boot, cur store.Settings) []RestartItem {
 			out = append(out, RestartItem{Key: key, Running: running, Stored: stored})
 		}
 	}
-	add("dns.private_domain", boot.PrivateDomain, cur.PrivateDomain)
+	// The zone is lowercased before use, so a change of case serves the same
+	// names and must not raise the banner. Lease paths stay case-sensitive.
+	if !strings.EqualFold(boot.PrivateDomain, cur.PrivateDomain) {
+		add("dns.private_domain", boot.PrivateDomain, cur.PrivateDomain)
+	}
 	add("discovery.dhcp_lease_file", orOff(boot.DHCPLeaseFile), orOff(cur.DHCPLeaseFile))
 	return out
 }

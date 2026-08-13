@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"strings"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"github.com/yoshiofthewire/kydns-server/internal/upstream"
@@ -157,12 +156,6 @@ func (c *Config) validate() error {
 		return errors.New("dns.cache_min_ttl exceeds dns.cache_max_ttl")
 	}
 	return nil
-}
-
-// PrivateFQDN returns the private domain as a lowercased FQDN with a trailing
-// dot, the form miekg/dns uses throughout.
-func (c *Config) PrivateFQDN() string {
-	return strings.ToLower(c.DNS.PrivateDomain) + "."
 }
 
 // SeedSettings is the config file's contribution to a fresh database: every

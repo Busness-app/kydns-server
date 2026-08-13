@@ -3,13 +3,17 @@ package app
 import (
 	"bytes"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/miekg/dns"
+
 	"github.com/yoshiofthewire/kydns-server/internal/config"
+	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -117,6 +121,11 @@ func TestEnsureSettingsGrandfathersAPublicSeed(t *testing.T) {
 }
 
 // Grandfathering waives the confirmation and nothing else.
+//
+// The first two arms are refused by config.Load before ensureSettings sees
+// them; they are here to pin that a broken file cannot start the process at
+// all. The last two — negative ttl and the relative lease path — are values the
+// loader accepts, so those are the arms that exercise the seed validator.
 func TestEnsureSettingsRejectsAnInvalidSeed(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"malformed cidr", "dns:\n  allow_query: [\"192.168.0.0\"]\n"},
@@ -231,5 +240,56 @@ func TestRestartPending(t *testing.T) {
 	live.LogQueries = true
 	if got := restartPending(boot, live); len(got) != 0 {
 		t.Errorf("a live-applied change raised the restart banner: %+v", got)
+	}
+
+	// The zone is lowercased before it is served, so a change of case is the
+	// same zone and must not ask for a restart that would change nothing.
+	recased := boot
+	recased.PrivateDomain = "HOME.ARPA"
+	if got := restartPending(boot, recased); len(got) != 0 {
+		t.Errorf("a case-only change raised the restart banner: %+v", got)
+	}
+}
+
+// An operator who walks away from an upstream they no longer trust must not
+// keep being served that resolver's answers for up to cache_max_ttl.
+func TestFlushOnUpstreamChange(t *testing.T) {
+	q := dns.Question{Name: "kypost.home.arpa.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	answer := func() *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion(q.Name, dns.TypeA)
+		m.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+			A:   net.ParseIP("192.168.1.20"),
+		}}
+		return m
+	}
+
+	prev := []string{"tls://1.1.1.1:853"}
+	for _, tc := range []struct {
+		name      string
+		next      []string
+		wantFlush bool
+	}{
+		{"a changed upstream flushes", []string{"tls://9.9.9.9:853"}, true},
+		{"an added upstream flushes", []string{"tls://1.1.1.1:853", "tls://9.9.9.9:853"}, true},
+		{"an unrelated save keeps the cache", []string{"tls://1.1.1.1:853"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := dnsserver.NewCache(10, 5, 3600, 300)
+			c.Put(q, false, answer())
+			if c.Len() != 1 {
+				t.Fatalf("the fixture did not cache: %d entries", c.Len())
+			}
+			if got := flushOnUpstreamChange(c, prev, tc.next, slog.Default()); got != tc.wantFlush {
+				t.Errorf("flushed = %v, want %v", got, tc.wantFlush)
+			}
+			if want := 0; tc.wantFlush && c.Len() != want {
+				t.Errorf("cache still holds %d entries after an upstream change", c.Len())
+			}
+			if !tc.wantFlush && c.Len() != 1 {
+				t.Error("an unrelated save emptied the cache, making every client re-resolve")
+			}
+		})
 	}
 }

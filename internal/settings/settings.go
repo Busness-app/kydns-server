@@ -142,7 +142,13 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	if err := Validate(v, confirmPublic); err != nil {
+	// The running values are the baseline for the exposure guardrail, and the
+	// holder already has them: no extra read.
+	var prev store.Settings
+	if cur := s.h.Current(); cur != nil {
+		prev = cur.Raw
+	}
+	if err := ValidateWrite(v, prev, confirmPublic); err != nil {
 		return err
 	}
 	snap, err := Build(v)

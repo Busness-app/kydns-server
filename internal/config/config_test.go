@@ -44,16 +44,6 @@ func TestLoadAppliesDefaults(t *testing.T) {
 	}
 }
 
-func TestPrivateFQDN(t *testing.T) {
-	c, err := Load(write(t, "data_dir: /tmp/x\ndns:\n  private_domain: lab.internal\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := c.PrivateFQDN(); got != "lab.internal." {
-		t.Errorf("PrivateFQDN() = %q, want lab.internal.", got)
-	}
-}
-
 func TestLoadRejects(t *testing.T) {
 	for name, body := range map[string]string{
 		"no data dir":      "dns:\n  listen: \":53\"\n",

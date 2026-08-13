@@ -132,6 +132,32 @@ func TestServiceSetPersistsRebuildsAndApplies(t *testing.T) {
 	}
 }
 
+// Two stored public prefixes cannot both be retyped in one confirmation field,
+// so re-confirming them on every save would lock the operator out of their own
+// settings for good. Set takes the baseline from the running snapshot.
+func TestServiceSetDoesNotReConfirmStoredExposure(t *testing.T) {
+	w, svc, applied := newTestService(t)
+	w.cur.AllowQuery = []string{"0.0.0.0/0", "8.8.8.0/24"}
+	if err := svc.Holder().Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	v := w.cur
+	v.TTL = 120
+	if err := svc.Set(v, ""); err != nil {
+		t.Fatalf("an unrelated save was blocked by an already-stored ACL: %v", err)
+	}
+	if len(*applied) != 1 || (*applied)[0].Raw.TTL != 120 {
+		t.Fatalf("apply did not see the new snapshot: %v", *applied)
+	}
+
+	// The guardrail still gates what is actually new.
+	v.AllowQuery = append(append([]string(nil), v.AllowQuery...), "9.9.9.0/24")
+	if err := svc.Set(v, ""); err == nil {
+		t.Fatal("a newly added public range was saved with no confirmation")
+	}
+}
+
 // A rejected save must leave both the database and the running server alone.
 func TestServiceSetRejectsBeforeWriting(t *testing.T) {
 	w, svc, applied := newTestService(t)

@@ -8,6 +8,12 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
+// validateFresh is the write path with nothing stored yet: every prefix in v is
+// new, which is how the guardrail cases below are framed.
+func validateFresh(v store.Settings, confirmPublic string) error {
+	return ValidateWrite(v, store.Settings{}, confirmPublic)
+}
+
 // valid is a settings value every test starts from, so each case changes
 // exactly one thing and the failure names itself.
 func valid() store.Settings {
@@ -29,7 +35,7 @@ func valid() store.Settings {
 }
 
 func TestValidateAcceptsDefaults(t *testing.T) {
-	if err := Validate(valid(), ""); err != nil {
+	if err := validateFresh(valid(), ""); err != nil {
 		t.Fatalf("the shipped defaults must validate: %v", err)
 	}
 }
@@ -50,7 +56,7 @@ func TestValidateStoredHonoursAPublicPrefix(t *testing.T) {
 		t.Fatalf("an already-configured public range must start: %v", err)
 	}
 	// The write path is unchanged: new exposure still needs confirming.
-	if err := Validate(v, ""); err == nil {
+	if err := validateFresh(v, ""); err == nil {
 		t.Fatal("the write-path guardrail regressed")
 	}
 }
@@ -81,7 +87,7 @@ func TestValidateRejects(t *testing.T) {
 		{"health timeout not below interval", func(s *store.Settings) { s.HealthTimeout = 30 }, "health.timeout"},
 	}
 	paths := map[string]func(store.Settings) error{
-		"Validate":       func(v store.Settings) error { return Validate(v, "") },
+		"ValidateWrite":  func(v store.Settings) error { return validateFresh(v, "") },
 		"ValidateStored": ValidateStored,
 	}
 	for _, tc := range cases {
@@ -110,7 +116,7 @@ func TestValidateRejects(t *testing.T) {
 func TestValidateRejectsRelativeLeasePath(t *testing.T) {
 	v := valid()
 	v.DHCPLeaseFile = "leases"
-	err := Validate(v, "")
+	err := validateFresh(v, "")
 	if err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("relative lease path accepted: %v", err)
 	}
@@ -120,7 +126,7 @@ func TestValidateRejectsRelativeLeasePath(t *testing.T) {
 func TestValidateAllowsDiscoveryOff(t *testing.T) {
 	v := valid()
 	v.DHCPLeaseFile = ""
-	if err := Validate(v, ""); err != nil {
+	if err := validateFresh(v, ""); err != nil {
 		t.Fatalf("discovery off must validate: %v", err)
 	}
 }
@@ -131,7 +137,7 @@ func TestValidateRejectsPublicPrefixWithoutConfirmation(t *testing.T) {
 	v := valid()
 	v.AllowQuery = []string{"192.168.0.0/16", "0.0.0.0/0"}
 
-	err := Validate(v, "")
+	err := validateFresh(v, "")
 	if err == nil {
 		t.Fatal("a public range was accepted with no confirmation")
 	}
@@ -149,7 +155,7 @@ func TestValidateRejectsPublicPrefixWithoutConfirmation(t *testing.T) {
 func TestValidateAcceptsPublicPrefixWithMatchingConfirmation(t *testing.T) {
 	v := valid()
 	v.AllowQuery = []string{"192.168.0.0/16", "0.0.0.0/0"}
-	if err := Validate(v, "0.0.0.0/0"); err != nil {
+	if err := validateFresh(v, "0.0.0.0/0"); err != nil {
 		t.Fatalf("a confirmed public range must be accepted: %v", err)
 	}
 }
@@ -157,7 +163,7 @@ func TestValidateAcceptsPublicPrefixWithMatchingConfirmation(t *testing.T) {
 func TestValidateRejectsMismatchedConfirmation(t *testing.T) {
 	v := valid()
 	v.AllowQuery = []string{"8.8.8.0/24"}
-	if err := Validate(v, "0.0.0.0/0"); err == nil {
+	if err := validateFresh(v, "0.0.0.0/0"); err == nil {
 		t.Fatal("a confirmation for a different prefix was accepted")
 	}
 }
@@ -166,7 +172,7 @@ func TestValidateRejectsMismatchedConfirmation(t *testing.T) {
 func TestValidateRejectsSecondUnconfirmedPublicPrefix(t *testing.T) {
 	v := valid()
 	v.AllowQuery = []string{"0.0.0.0/0", "8.8.8.0/24"}
-	err := Validate(v, "0.0.0.0/0")
+	err := validateFresh(v, "0.0.0.0/0")
 	if err == nil || !strings.Contains(err.Error(), "8.8.8.0/24") {
 		t.Fatalf("the unconfirmed second prefix passed: %v", err)
 	}
@@ -180,9 +186,94 @@ func TestPrivatePrefixesNeedNoConfirmation(t *testing.T) {
 	} {
 		v := valid()
 		v.AllowQuery = []string{c}
-		if err := Validate(v, ""); err != nil {
+		if err := validateFresh(v, ""); err != nil {
 			t.Errorf("%s is a private range and must need no confirmation: %v", c, err)
 		}
+	}
+}
+
+// The guardrail gates new exposure. Re-litigating a prefix the operator already
+// accepted would mean no save ever succeeds again while it is stored — and with
+// two of them, no single confirmation could satisfy both.
+func TestValidateWriteAgainstStoredPublicPrefixes(t *testing.T) {
+	withACL := func(acl ...string) store.Settings {
+		v := valid()
+		v.AllowQuery = acl
+		return v
+	}
+	cases := []struct {
+		name    string
+		next    store.Settings
+		prev    store.Settings
+		confirm string
+		wantErr bool
+	}{
+		{
+			name: "an unrelated save with one public prefix stored",
+			next: func() store.Settings {
+				v := withACL("192.168.0.0/16", "0.0.0.0/0")
+				v.TTL = 120
+				return v
+			}(),
+			prev: withACL("192.168.0.0/16", "0.0.0.0/0"),
+		},
+		{
+			name: "an unrelated save with two public prefixes stored",
+			next: func() store.Settings {
+				v := withACL("0.0.0.0/0", "8.8.8.0/24")
+				v.TTL = 120
+				return v
+			}(),
+			prev: withACL("0.0.0.0/0", "8.8.8.0/24"),
+		},
+		{
+			name:    "adding a public prefix unconfirmed",
+			next:    withACL("192.168.0.0/16", "8.8.8.0/24"),
+			prev:    withACL("192.168.0.0/16"),
+			wantErr: true,
+		},
+		{
+			name:    "adding a public prefix confirmed",
+			next:    withACL("192.168.0.0/16", "8.8.8.0/24"),
+			prev:    withACL("192.168.0.0/16"),
+			confirm: "8.8.8.0/24",
+		},
+		{
+			name:    "adding a second public prefix beside a stored one",
+			next:    withACL("0.0.0.0/0", "8.8.8.0/24"),
+			prev:    withACL("0.0.0.0/0"),
+			wantErr: true,
+		},
+		{
+			name: "removing a public prefix needs no confirmation",
+			next: withACL("192.168.0.0/16"),
+			prev: withACL("192.168.0.0/16", "0.0.0.0/0"),
+		},
+		{
+			// The removal took it out of prev, so it is new again.
+			name:    "re-adding a removed public prefix",
+			next:    withACL("192.168.0.0/16", "0.0.0.0/0"),
+			prev:    withACL("192.168.0.0/16"),
+			wantErr: true,
+		},
+		{
+			// Pre-confirmation is by canonical form, so the misleading host-bits
+			// spelling of a stored prefix does not smuggle anything new in.
+			name: "a stored prefix respelled with host bits",
+			next: withACL("192.168.1.99/0"),
+			prev: withACL("0.0.0.0/0"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateWrite(tc.next, tc.prev, tc.confirm)
+			if tc.wantErr && err == nil {
+				t.Fatal("new exposure was accepted with no confirmation")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("an already-accepted exposure blocked the save: %v", err)
+			}
+		})
 	}
 }
 
@@ -205,7 +296,7 @@ func TestValidateRejectsHostBitsFormReportedCanonically(t *testing.T) {
 	v := valid()
 	v.AllowQuery = []string{"192.168.1.99/0"}
 
-	err := Validate(v, "")
+	err := validateFresh(v, "")
 	if err == nil {
 		t.Fatal("a /0 disguised as a LAN address was accepted with no confirmation")
 	}
@@ -223,10 +314,10 @@ func TestValidateAcceptsHostBitsFormWithCanonicalConfirmation(t *testing.T) {
 	v := valid()
 	v.AllowQuery = []string{"192.168.1.99/0"}
 
-	if err := Validate(v, "0.0.0.0/0"); err != nil {
+	if err := validateFresh(v, "0.0.0.0/0"); err != nil {
 		t.Fatalf("confirming the canonical form must be accepted: %v", err)
 	}
-	if err := Validate(v, "192.168.1.99/0"); err == nil {
+	if err := validateFresh(v, "192.168.1.99/0"); err == nil {
 		t.Fatal("confirming the raw host-bits form must not be accepted")
 	}
 }
