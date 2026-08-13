@@ -1,0 +1,295 @@
+package replica
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/yoshiofthewire/kydns-server/internal/store"
+)
+
+func newIdentity(t *testing.T) *Identity {
+	t.Helper()
+	id, err := LoadOrCreateIdentity(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// fakePeers is the pinned set, mutable so a test can unpair mid-connection.
+type fakePeers struct {
+	mu      sync.Mutex
+	pinned  map[string]store.Peer
+	touched []string
+}
+
+func newFakePeers(ids ...string) *fakePeers {
+	f := &fakePeers{pinned: map[string]store.Peer{}}
+	for _, id := range ids {
+		f.pinned[id] = store.Peer{NodeID: id}
+	}
+	return f
+}
+
+func (f *fakePeers) Peer(nodeID string) (store.Peer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	p, ok := f.pinned[nodeID]
+	if !ok {
+		return store.Peer{}, fmt.Errorf("%w: peer %s", store.ErrNotFound, nodeID)
+	}
+	return p, nil
+}
+
+func (f *fakePeers) Peers() ([]store.Peer, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := []store.Peer{}
+	for _, p := range f.pinned {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (f *fakePeers) TouchPeer(nodeID string, syncedAt, version int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.touched = append(f.touched, nodeID)
+	return nil
+}
+
+func (f *fakePeers) touches() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.touched)
+}
+
+// fakeSource bumps its version on every read, so a server that reads the
+// version and the body in separate calls ships a mismatched pair.
+type fakeSource struct {
+	mu      sync.Mutex
+	version int64
+}
+
+func (f *fakeSource) next() int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.version++
+	return f.version
+}
+
+func (f *fakeSource) Version() (VersionReply, error) {
+	return VersionReply{SchemaVersion: SchemaVersion, ConfigVersion: f.next(), NodeID: "primary"}, nil
+}
+
+func (f *fakeSource) Snapshot() (Snapshot, error) {
+	v := f.next()
+	return Snapshot{
+		SchemaVersion: SchemaVersion,
+		ConfigVersion: v,
+		NodeID:        "primary",
+		Config:        json.RawMessage(fmt.Sprintf(`{"n":%d}`, v)),
+	}, nil
+}
+
+func startServer(t *testing.T, peers PeerStore, src Source) (addr, primaryFP string) {
+	t.Helper()
+	id := newIdentity(t)
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(id, peers, src, NewInviteBook(time.Minute, time.Now))
+	go srv.Serve(l)
+	t.Cleanup(func() { srv.Close() })
+	return l.Addr().String(), id.NodeID
+}
+
+// rawDo speaks to the server without the client wrapper, so a test can assert
+// on the status code rather than on an error string.
+func rawDo(t *testing.T, addr string, id *Identity, want, method, path string) *http.Response {
+	t.Helper()
+	cfg, err := pinnedTLSConfig(id, func(fp string) bool { return fp == want })
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}, Timeout: 10 * time.Second}
+	defer c.CloseIdleConnections()
+	req, err := http.NewRequest(method, "https://"+addr+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+// An unpinned peer is a stranger. It gets a refusal, not a snapshot.
+func TestServerRefusesUnpinnedPeer(t *testing.T) {
+	peers := newFakePeers()
+	addr, fp := startServer(t, peers, &fakeSource{})
+
+	resp := rawDo(t, addr, newIdentity(t), fp, http.MethodGet, "/replica/version")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("GET /replica/version status = %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "config_version") {
+		t.Fatalf("refused peer still received a version reply: %s", body)
+	}
+	if peers.touches() != 0 {
+		t.Fatalf("TouchPeer called %d times for an unpinned peer, want 0", peers.touches())
+	}
+}
+
+func TestPinnedPeerReadsVersionAndSnapshot(t *testing.T) {
+	client := newIdentity(t)
+	peers := newFakePeers(client.NodeID)
+	addr, fp := startServer(t, peers, &fakeSource{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, addr, client, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	v, err := c.Version(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.SchemaVersion != SchemaVersion || v.ConfigVersion == 0 {
+		t.Fatalf("Version() = %+v, want schema %d and a non-zero config version", v, SchemaVersion)
+	}
+
+	s, err := c.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.SchemaVersion != SchemaVersion || len(s.Config) == 0 {
+		t.Fatalf("Snapshot() = %+v, want schema %d and a config body", s, SchemaVersion)
+	}
+	if peers.touches() != 2 {
+		t.Fatalf("TouchPeer called %d times, want one per served request (2)", peers.touches())
+	}
+}
+
+// Unpairing has to bite on the live connection, not only on the next process.
+func TestRemovedPeerIsRefusedOnNextRequest(t *testing.T) {
+	client := newIdentity(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.PutPeer(store.Peer{NodeID: client.NodeID, Label: "replica"}); err != nil {
+		t.Fatal(err)
+	}
+	addr, fp := startServer(t, db, &fakeSource{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, addr, client, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if _, err := c.Version(ctx); err != nil {
+		t.Fatalf("Version() before unpairing: %v", err)
+	}
+	if err := db.DeletePeer(client.NodeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Version(ctx); err == nil {
+		t.Fatal("Version() succeeded after the peer was deleted; the pin is checked once, not per request")
+	}
+}
+
+// Replication is read-only. A write method must not be a way in.
+func TestServerRejectsNonGETMethods(t *testing.T) {
+	client := newIdentity(t)
+	addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
+
+	for _, path := range []string{"/replica/version", "/replica/snapshot"} {
+		for _, method := range []string{http.MethodPost, http.MethodDelete, http.MethodPut} {
+			resp := rawDo(t, addr, client, fp, method, path)
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s status = %d, want %d", method, path, resp.StatusCode, http.StatusMethodNotAllowed)
+			}
+		}
+	}
+}
+
+// A version reply must never describe a different configuration than the
+// snapshot shipped with it.
+func TestSnapshotVersionMatchesItsBody(t *testing.T) {
+	client := newIdentity(t)
+	addr, fp := startServer(t, newFakePeers(client.NodeID), &fakeSource{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := Dial(ctx, addr, client, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	for i := 0; i < 3; i++ {
+		s, err := c.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			N int64 `json:"n"`
+		}
+		if err := json.Unmarshal(s.Config, &body); err != nil {
+			t.Fatalf("config %s: %v", s.Config, err)
+		}
+		if body.N != s.ConfigVersion {
+			t.Fatalf("snapshot reports version %d but carries the config read at %d", s.ConfigVersion, body.N)
+		}
+	}
+}
+
+// The server must ask for a client certificate: the peer's key is the only
+// credential in this design.
+func TestServerRequiresAClientCertificate(t *testing.T) {
+	addr, fp := startServer(t, newFakePeers(), &fakeSource{})
+
+	cfg, err := pinnedTLSConfig(newIdentity(t), func(got string) bool { return got == fp })
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Certificates = nil // present no client certificate at all
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+addr+"/replica/version", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatalf("server answered %d with no client certificate presented", resp.StatusCode)
+	}
+}
