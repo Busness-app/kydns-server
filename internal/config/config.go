@@ -165,24 +165,6 @@ func (c *Config) PrivateFQDN() string {
 	return strings.ToLower(c.DNS.PrivateDomain) + "."
 }
 
-// EffectiveAllowQuery is AllowQuery plus the CGNAT range when AllowTailscale
-// is on. Parsing here means callers never re-parse strings.
-func (c *Config) EffectiveAllowQuery() ([]netip.Prefix, error) {
-	list := append([]string(nil), c.DNS.AllowQuery...)
-	if c.DNS.AllowTailscale {
-		list = append(list, TailscaleCGNAT)
-	}
-	out := make([]netip.Prefix, 0, len(list))
-	for _, s := range list {
-		p, err := netip.ParsePrefix(s)
-		if err != nil {
-			return nil, fmt.Errorf("allow_query %q: %w", s, err)
-		}
-		out = append(out, p.Masked())
-	}
-	return out, nil
-}
-
 // SeedSettings is the config file's contribution to a fresh database: every
 // key that has moved into the store, with defaults already applied. It is read
 // once, on the first run. After that the database owns these values and edits

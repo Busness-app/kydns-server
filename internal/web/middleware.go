@@ -15,6 +15,7 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -30,6 +31,9 @@ type Options struct {
 	AllowTailscale bool
 	SetupToken     string
 	Logger         *slog.Logger
+
+	// Settings is the single write path for the settings the database owns.
+	Settings *settings.Service
 
 	// Leases, Health and Upstreams are nil when the corresponding subsystem is
 	// off, which the screens render as "not enabled" rather than as empty.

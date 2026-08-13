@@ -115,40 +115,6 @@ func TestUpstreamValidation(t *testing.T) {
 	}
 }
 
-func TestEffectiveAllowQueryAddsCGNATOnlyWhenEnabled(t *testing.T) {
-	off, err := Load(write(t, "data_dir: /tmp/x\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err := off.EffectiveAllowQuery()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range list {
-		if p.String() == TailscaleCGNAT {
-			t.Error("CGNAT range present with allow_tailscale off")
-		}
-	}
-
-	on, err := Load(write(t, "data_dir: /tmp/x\ndns:\n  allow_tailscale: true\n"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	list, err = on.EffectiveAllowQuery()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var found bool
-	for _, p := range list {
-		if p.String() == TailscaleCGNAT {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("CGNAT range missing with allow_tailscale on")
-	}
-}
-
 // The file seeds the database on first run, so every moved key has to survive
 // the trip. A key missing here is a setting that silently reverts to its
 // default the first time an operator upgrades.
