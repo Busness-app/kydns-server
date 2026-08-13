@@ -81,9 +81,11 @@ type puller interface {
 
 // replicaStatus renders the current role. p is nil unless this node is a
 // replica, and a nil p (or the literal nil interface value) means no
-// primary fields are populated.
-func replicaStatus(role Role, primaryAddr string, p puller) ReplicaStatus {
-	rs := ReplicaStatus{Role: role}
+// primary fields are populated. nodeID is this node's own fingerprint, empty
+// on a node with no replication configured: it is what an operator confirms
+// when pairing, so every invite and every status reads it from here.
+func replicaStatus(role Role, primaryAddr, nodeID string, p puller) ReplicaStatus {
+	rs := ReplicaStatus{Role: role, NodeID: nodeID}
 	// Only a replica follows a primary, and the config still names the old one
 	// after a promotion. Set before the puller check, because an unpaired
 	// replica has no puller and still has to name the box to go to.

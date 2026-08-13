@@ -145,7 +145,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// No address: replication is a pull, so the primary never dials this peer.
-	if err := s.peers.PutPeer(store.Peer{NodeID: fp, Label: fp[:12], PairedAt: time.Now().Unix()}); err != nil {
+	if err := s.peers.PairPeer(store.Peer{NodeID: fp, Label: fp[:12], PairedAt: time.Now().Unix()}); err != nil {
 		http.Error(w, "pairing failed", http.StatusInternalServerError)
 		return
 	}

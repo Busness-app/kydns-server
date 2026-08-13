@@ -16,7 +16,7 @@ import (
 type PeerStore interface {
 	Peer(nodeID string) (store.Peer, error)
 	Peers() ([]store.Peer, error)
-	PutPeer(p store.Peer) error
+	PairPeer(p store.Peer) error
 	TouchPeer(nodeID string, syncedAt int64, version *int64) error
 }
 
@@ -76,6 +76,11 @@ func (s *Server) Serve(l net.Listener) error {
 }
 
 func (s *Server) Close() error { return s.http.Close() }
+
+// Mint issues a pairing code on this server's own book, so a code the admin
+// API hands an operator is one /replica/pair here will redeem. A second book
+// would mint codes this listener has never heard of.
+func (s *Server) Mint() (Invite, error) { return s.book.Mint() }
 
 // pinnedExcept guards every route, so a handler added later fails closed
 // rather than being reachable by anyone holding a self-signed key. An

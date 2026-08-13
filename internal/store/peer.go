@@ -17,15 +17,17 @@ type Peer struct {
 	LastVersion int64
 }
 
-func (s *Store) PutPeer(p Peer) error {
+// PairPeer records a pairing. A re-pair refreshes only what the pairing itself
+// establishes: the label an operator gave the node and its sync history belong
+// to the peer, not to the handshake, and pairing sends a generated label every
+// time. A name that vanishes when a node re-pairs makes the whole replica list
+// untrustworthy.
+func (s *Store) PairPeer(p Peer) error {
 	_, err := s.db.Exec(`
 		INSERT INTO peers(node_id, label, address, paired_at, last_sync_at, last_version)
 		VALUES(?, ?, ?, ?, ?, ?)
-		ON CONFLICT(node_id) DO UPDATE SET label = excluded.label,
-		                                   address = excluded.address,
-		                                   paired_at = excluded.paired_at,
-		                                   last_sync_at = excluded.last_sync_at,
-		                                   last_version = excluded.last_version`,
+		ON CONFLICT(node_id) DO UPDATE SET address = excluded.address,
+		                                   paired_at = excluded.paired_at`,
 		p.NodeID, p.Label, p.Address, p.PairedAt, p.LastSyncAt, p.LastVersion)
 	return err
 }

@@ -318,6 +318,7 @@ works from any machine that can reach the admin listener:
 | `kydns token add\|list\|rm` | Manage API tokens. |
 | `kydns settings get` | Print the settings the server is running. |
 | `kydns settings set k=v ...` | Change them. `--confirm-public <cidr>` for a public `allow_query` range. |
+| `kydns replica invite\|list\|remove` | Manage the replicas this node serves. `invite` prints a pairing code and this node's fingerprint; confirm the fingerprint on the replica before entering the code. |
 | `kydns export` / `kydns import` | Read or write the registry and settings as YAML or JSON. |
 | `kydns admin reset-password` | Local recovery. Opens the database directly. |
 

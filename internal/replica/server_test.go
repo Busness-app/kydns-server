@@ -61,7 +61,7 @@ func (f *fakePeers) Peers() ([]store.Peer, error) {
 	return out, nil
 }
 
-func (f *fakePeers) PutPeer(p store.Peer) error {
+func (f *fakePeers) PairPeer(p store.Peer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pinned[p.NodeID] = p
@@ -347,7 +347,7 @@ func TestRemovedPeerIsRefusedOnNextRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := db.PutPeer(store.Peer{NodeID: client.NodeID, Label: "replica"}); err != nil {
+	if err := db.PairPeer(store.Peer{NodeID: client.NodeID, Label: "replica"}); err != nil {
 		t.Fatal(err)
 	}
 	_, addr, fp := startServer(t, db, &fakeSource{})

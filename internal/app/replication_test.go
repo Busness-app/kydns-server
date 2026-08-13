@@ -49,7 +49,7 @@ func openDB(t *testing.T, dir string) *store.Store {
 func pinPeer(t *testing.T, dir string, p store.Peer) {
 	t.Helper()
 	p.PairedAt = time.Now().Unix()
-	if err := openDB(t, dir).PutPeer(p); err != nil {
+	if err := openDB(t, dir).PairPeer(p); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -239,7 +239,7 @@ func TestEndToEndReplicaFollowsPrimary(t *testing.T) {
 func TestPrimaryFingerprintComesFromReplicaState(t *testing.T) {
 	dir := t.TempDir()
 	db := openDB(t, dir)
-	if err := db.PutPeer(store.Peer{NodeID: "replica-i-serve", Label: "one"}); err != nil {
+	if err := db.PairPeer(store.Peer{NodeID: "replica-i-serve", Label: "one"}); err != nil {
 		t.Fatal(err)
 	}
 

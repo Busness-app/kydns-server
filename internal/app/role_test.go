@@ -46,7 +46,7 @@ type fakePullerStatus struct{ st replica.Status }
 func (f fakePullerStatus) Status() replica.Status { return f.st }
 
 func TestReplicaStatusStandaloneHasNoPrimaryFields(t *testing.T) {
-	got := replicaStatus(RoleStandalone, "", nil)
+	got := replicaStatus(RoleStandalone, "", "", nil)
 	if got.Role != RoleStandalone {
 		t.Fatalf("Role = %q, want %q", got.Role, RoleStandalone)
 	}
@@ -58,7 +58,7 @@ func TestReplicaStatusStandaloneHasNoPrimaryFields(t *testing.T) {
 // An unpaired replica has no puller, but it still knows which box its primary
 // is, and the write gate's refusal has to name it.
 func TestUnpairedReplicaStatusStillNamesThePrimary(t *testing.T) {
-	if got := replicaStatus(RoleReplica, "10.0.0.2:8443", nil); got.PrimaryAddr != "10.0.0.2:8443" {
+	if got := replicaStatus(RoleReplica, "10.0.0.2:8443", "", nil); got.PrimaryAddr != "10.0.0.2:8443" {
 		t.Fatalf("PrimaryAddr = %q, want 10.0.0.2:8443", got.PrimaryAddr)
 	}
 }
@@ -67,7 +67,7 @@ func TestUnpairedReplicaStatusStillNamesThePrimary(t *testing.T) {
 // has to come from the current role, not from the file.
 func TestPromotedNodeReportsNoPrimaryAddress(t *testing.T) {
 	for _, role := range []Role{RolePrimary, RoleStandalone} {
-		if got := replicaStatus(role, "10.0.0.2:8443", nil); got.PrimaryAddr != "" {
+		if got := replicaStatus(role, "10.0.0.2:8443", "", nil); got.PrimaryAddr != "" {
 			t.Errorf("a %s reports primary_address %q", role, got.PrimaryAddr)
 		}
 	}
@@ -82,7 +82,7 @@ func TestReplicaStatusReportsPrimaryAndStaleness(t *testing.T) {
 		LastVersion:   3,
 		Stale:         true,
 	}}
-	got := replicaStatus(RoleReplica, "10.0.0.2:8443", fp)
+	got := replicaStatus(RoleReplica, "10.0.0.2:8443", "this-node-fp", fp)
 	if got.Role != RoleReplica {
 		t.Fatalf("Role = %q, want %q", got.Role, RoleReplica)
 	}
@@ -100,5 +100,10 @@ func TestReplicaStatusReportsPrimaryAndStaleness(t *testing.T) {
 	}
 	if !got.Stale {
 		t.Fatal("Stale = false, want true")
+	}
+	// This node's own key, not the primary's: an operator pairing a third node
+	// against a replica would otherwise be handed the wrong fingerprint.
+	if got.NodeID != "this-node-fp" {
+		t.Fatalf("NodeID = %q, want this-node-fp", got.NodeID)
 	}
 }

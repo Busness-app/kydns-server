@@ -33,6 +33,7 @@ type API struct {
 	settings      *settings.Service
 	metrics       *dnsserver.Metrics
 	replicaStatus func() ReplicaStatus
+	replicaAdmin  ReplicaAdmin
 }
 
 // ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
@@ -238,6 +239,13 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
 
 	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
+
+	// Managing replicas is the primary's job. These two are deliberately not in
+	// writeExempt: a replica minting invites would enroll nodes its primary
+	// knows nothing about, and unpairing there would be undone on the next pull.
+	mux.HandleFunc("POST /api/v1/replicas/invite", auth(a.inviteReplica))
+	mux.HandleFunc("GET /api/v1/replicas", auth(a.listReplicas))
+	mux.HandleFunc("DELETE /api/v1/replicas/{node_id}", auth(a.removeReplica))
 }
 
 // roleReplica mirrors app.Role's replica value, which adminapi cannot import

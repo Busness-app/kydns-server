@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
@@ -155,21 +156,43 @@ func primaryFingerprint(st *store.Store) (string, error) {
 	return nodeID, nil
 }
 
+// replicaAdmin is the primary's half of pairing as the admin API needs it.
+// Invite goes through the replication server, so the book it mints from is the
+// one /replica/pair redeems against; there is no second book to drift.
+type replicaAdmin struct {
+	st *store.Store
+	// srv is nil unless this node serves replicas, and minting a code no
+	// listener could redeem is worse than refusing.
+	srv *replica.Server
+}
+
+func (a *replicaAdmin) Invite() (string, time.Time, error) {
+	if a.srv == nil {
+		return "", time.Time{}, adminapi.ErrNotServingReplicas
+	}
+	inv, err := a.srv.Mint()
+	return inv.Code, inv.ExpiresAt, err
+}
+
+func (a *replicaAdmin) Peers() ([]store.Peer, error)  { return a.st.Peers() }
+func (a *replicaAdmin) Unpair(nodeID string) error    { return a.st.DeletePeer(nodeID) }
+func (a *replicaAdmin) ConfigVersion() (int64, error) { return a.st.ConfigVersion() }
+
 // startReplication starts whichever half of replication the config file asked
 // for. A standalone node does nothing here. The returned server is nil unless
-// this node is a primary, and the returned puller is nil unless it is a
-// replica.
+// this node is a primary, the returned puller is nil unless it is a replica,
+// and the returned node ID is empty unless replication is configured at all.
 func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
-	ap replica.Applier, healthFn func() []health.Status, errs chan<- error, logger *slog.Logger) (*replica.Server, *replica.Puller, error) {
+	ap replica.Applier, healthFn func() []health.Status, errs chan<- error, logger *slog.Logger) (*replica.Server, *replica.Puller, string, error) {
 	if cfg.Replication.Listen == "" && cfg.Replication.Primary == "" {
-		return nil, nil, nil
+		return nil, nil, "", nil
 	}
 	id, err := replica.LoadOrCreateIdentity(cfg.DataDir)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	// The node ID is what an operator confirms when pairing, and there is no CLI
-	// yet to print it.
+	// The node ID is what an operator confirms when pairing. It is also what
+	// the status endpoint and every invite report, so it is carried out of here.
 	logger.Info("replication identity", "node_id", id.NodeID)
 
 	if cfg.Replication.Primary != "" {
@@ -180,7 +203,7 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 			logger.Warn("replication.primary is set but this node is not paired; serving the configuration it already has",
 				"primary", cfg.Replication.Primary, "reason", err,
 				"fix", "pair this node with its primary")
-			return nil, nil, nil
+			return nil, nil, id.NodeID, nil
 		}
 		puller := replica.NewPuller(replica.PullerConfig{
 			Dial: func(context.Context) (replica.Primary, error) {
@@ -196,12 +219,12 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 		})
 		go puller.Run(ctx)
 		logger.Info("following primary", "primary", cfg.Replication.Primary, "primary_node_id", fp)
-		return nil, puller, nil
+		return nil, puller, id.NodeID, nil
 	}
 
 	l, err := net.Listen("tcp", cfg.Replication.Listen)
 	if err != nil {
-		return nil, nil, fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
+		return nil, nil, "", fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
 	}
 	srv := replica.NewServer(id, st, &storeSource{st: st, nodeID: id.NodeID, health: healthFn},
 		replica.NewInviteBook(inviteTTL, time.Now))
@@ -219,8 +242,8 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 		// The caller registers its Close only on success, so this one closes here
 		// rather than leaking the listener and its goroutine.
 		srv.Close()
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	logger.Info("serving replicas", "listen", cfg.Replication.Listen, "node_id", id.NodeID, "paired", len(peers))
-	return srv, nil, nil
+	return srv, nil, id.NodeID, nil
 }

@@ -200,7 +200,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	errs := make(chan error, 3)
 	roleHolder := NewRoleHolder(RoleFrom(cfg.Replication))
-	replSrv, repPuller, err := startReplication(ctx, cfg, st,
+	replSrv, repPuller, nodeID, err := startReplication(ctx, cfg, st,
 		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
 		checker.Statuses, errs, logger)
 	if err != nil {
@@ -224,7 +224,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		if repPuller != nil {
 			p = repPuller
 		}
-		return replicaStatus(roleHolder.Current(), cfg.Replication.Primary, p)
+		return replicaStatus(roleHolder.Current(), cfg.Replication.Primary, nodeID, p)
 	}
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
@@ -234,7 +234,8 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithPolicy(policySvc).
 		WithSettings(settingsSvc).
 		WithMetrics(dnsSrv.Metrics()).
-		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() })
+		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
+		WithReplicaAdmin(&replicaAdmin{st: st, srv: replSrv})
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
