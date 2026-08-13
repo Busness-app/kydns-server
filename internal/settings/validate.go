@@ -71,10 +71,10 @@ func ValidateStored(v store.Settings) error {
 		{"cache_max_ttl", v.CacheMaxTTL},
 		{"negative_max_ttl", v.NegativeMaxTTL},
 		{"cache_entries", v.CacheEntries},
-		{"discovery.interval", v.DiscoveryInterval},
-		{"health.interval", v.HealthInterval},
-		{"health.timeout", v.HealthTimeout},
-		{"health.workers", v.HealthWorkers},
+		{"discovery_interval", v.DiscoveryInterval},
+		{"health_interval", v.HealthInterval},
+		{"health_timeout", v.HealthTimeout},
+		{"health_workers", v.HealthWorkers},
 	}
 	for _, p := range positives {
 		if p.val < 1 {
@@ -85,10 +85,10 @@ func ValidateStored(v store.Settings) error {
 		return bad("cache_min_ttl", "must not exceed cache_max_ttl (%d)", v.CacheMaxTTL)
 	}
 	if v.HealthTimeout >= v.HealthInterval {
-		return bad("health.timeout", "must be below health.interval (%d), or probes outlive their own cycle", v.HealthInterval)
+		return bad("health_timeout", "must be below health_interval (%d), or probes outlive their own cycle", v.HealthInterval)
 	}
 	if v.DHCPLeaseFile != "" && !filepath.IsAbs(v.DHCPLeaseFile) {
-		return bad("discovery.dhcp_lease_file", "must be an absolute path")
+		return bad("dhcp_lease_file", "must be an absolute path")
 	}
 	return nil
 }
@@ -157,9 +157,18 @@ func PublicPrefixes(list []string) []string {
 	return out
 }
 
+// Canonicalize returns v with every prefix in its masked, canonical form. Both
+// write paths — Service.Set and the first-run seed — go through it, so what an
+// operator reads back is always what the ACL enforces.
+func Canonicalize(v store.Settings) store.Settings {
+	v.AllowQuery = canonicalPrefixes(v.AllowQuery)
+	v.ReverseZones = canonicalPrefixes(v.ReverseZones)
+	return v
+}
+
 // canonicalPrefixes returns each entry in its masked, canonical CIDR form,
 // preserving order and length. Every entry has already passed validation by
-// the time Service.Set calls this, so a parse failure cannot happen in
+// the time Canonicalize is called, so a parse failure cannot happen in
 // practice; an entry that still fails to parse is kept as-is rather than
 // silently dropped.
 func canonicalPrefixes(list []string) []string {

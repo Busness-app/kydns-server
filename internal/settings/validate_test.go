@@ -81,10 +81,10 @@ func TestValidateRejects(t *testing.T) {
 		{"min ttl above max", func(s *store.Settings) { s.CacheMinTTL = 4000 }, "cache_min_ttl"},
 		{"zero cache entries", func(s *store.Settings) { s.CacheEntries = 0 }, "cache_entries"},
 		{"zero negative max ttl", func(s *store.Settings) { s.NegativeMaxTTL = 0 }, "negative_max_ttl"},
-		{"zero discovery interval", func(s *store.Settings) { s.DiscoveryInterval = 0 }, "discovery.interval"},
-		{"no health workers", func(s *store.Settings) { s.HealthWorkers = 0 }, "health.workers"},
+		{"zero discovery interval", func(s *store.Settings) { s.DiscoveryInterval = 0 }, "discovery_interval"},
+		{"no health workers", func(s *store.Settings) { s.HealthWorkers = 0 }, "health_workers"},
 		// A probe that outlives its own cycle stacks up forever.
-		{"health timeout not below interval", func(s *store.Settings) { s.HealthTimeout = 30 }, "health.timeout"},
+		{"health timeout not below interval", func(s *store.Settings) { s.HealthTimeout = 30 }, "health_timeout"},
 	}
 	paths := map[string]func(store.Settings) error{
 		"ValidateWrite":  func(v store.Settings) error { return validateFresh(v, "") },

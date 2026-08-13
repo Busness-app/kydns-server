@@ -182,8 +182,7 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	// and an entry like "1.2.3.4/0" behaves as 0.0.0.0/0 while reading as a
 	// single host. Canonicalizing after validation keeps a bad entry's error
 	// message showing exactly what the operator typed.
-	v.AllowQuery = canonicalPrefixes(v.AllowQuery)
-	v.ReverseZones = canonicalPrefixes(v.ReverseZones)
+	v = Canonicalize(v)
 	snap, err := Build(v)
 	if err != nil {
 		return err

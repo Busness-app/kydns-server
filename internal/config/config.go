@@ -5,11 +5,10 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net/netip"
+	"net"
 	"os"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
-	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"gopkg.in/yaml.v3"
 )
 
@@ -129,28 +128,19 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// validate checks only the keys the file still owns. Everything else in this
+// struct seeds a fresh database once and is ignored afterwards, so refusing to
+// start over it would strand an operator who tidied their YAML. A bad seed is
+// caught by settings.ValidateStored on the first run instead.
 func (c *Config) validate() error {
 	if c.DataDir == "" {
 		return errors.New("data_dir is required")
 	}
-	if c.DNS.PrivateDomain == "" {
-		return errors.New("dns.private_domain must not be empty")
+	if _, _, err := net.SplitHostPort(c.DNS.Listen); err != nil {
+		return fmt.Errorf("dns.listen %q: %w", c.DNS.Listen, err)
 	}
-	for _, s := range c.DNS.AllowQuery {
-		if _, err := netip.ParsePrefix(s); err != nil {
-			return fmt.Errorf("dns.allow_query %q: %w", s, err)
-		}
-	}
-	for _, s := range c.DNS.ReverseZones {
-		if _, err := netip.ParsePrefix(s); err != nil {
-			return fmt.Errorf("dns.reverse_zones %q: %w", s, err)
-		}
-	}
-	if _, err := upstream.ParseAll(c.DNS.Upstreams); err != nil {
-		return fmt.Errorf("dns.upstreams: %w", err)
-	}
-	if c.DNS.CacheMinTTL > c.DNS.CacheMaxTTL {
-		return errors.New("dns.cache_min_ttl exceeds dns.cache_max_ttl")
+	if _, _, err := net.SplitHostPort(c.Admin.Listen); err != nil {
+		return fmt.Errorf("admin.listen %q: %w", c.Admin.Listen, err)
 	}
 	return nil
 }

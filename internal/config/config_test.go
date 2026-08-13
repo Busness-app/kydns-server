@@ -47,14 +47,30 @@ func TestLoadAppliesDefaults(t *testing.T) {
 func TestLoadRejects(t *testing.T) {
 	for name, body := range map[string]string{
 		"no data dir":      "dns:\n  listen: \":53\"\n",
-		"bad allow_query":  "data_dir: /tmp/x\ndns:\n  allow_query: [\"not-a-cidr\"]\n",
-		"bad reverse zone": "data_dir: /tmp/x\ndns:\n  reverse_zones: [\"192.168.1.0\"]\n",
-		"bad upstream":     "data_dir: /tmp/x\ndns:\n  upstreams: [\"1.1.1.1:no\"]\n",
-		"empty domain":     "data_dir: /tmp/x\ndns:\n  private_domain: \"\"\n",
+		"bad dns listen":   "data_dir: /tmp/x\ndns:\n  listen: \"53\"\n",
+		"bad admin listen": "data_dir: /tmp/x\nadmin:\n  listen: \"localhost\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := Load(write(t, body)); err == nil {
 				t.Fatal("Load() error = nil, want error")
+			}
+		})
+	}
+}
+
+// The database owns these keys after the first run, so the file must not be
+// able to refuse a start over them. An operator tidying their YAML on an
+// installed server must not lose DNS.
+func TestLoadIgnoresMovedKeys(t *testing.T) {
+	for name, body := range map[string]string{
+		"bad allow_query":  "data_dir: /tmp/x\ndns:\n  allow_query: [\"totally bogus\"]\n",
+		"bad reverse zone": "data_dir: /tmp/x\ndns:\n  reverse_zones: [\"192.168.1.0\"]\n",
+		"bad upstream":     "data_dir: /tmp/x\ndns:\n  upstreams: [\"1.1.1.1:no\"]\n",
+		"inverted ttls":    "data_dir: /tmp/x\ndns:\n  cache_min_ttl: 900\n  cache_max_ttl: 60\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(write(t, body)); err != nil {
+				t.Fatalf("Load() error = %v, want the moved key to be ignored", err)
 			}
 		})
 	}
@@ -83,24 +99,6 @@ func TestDefaultUpstreamsAreEncrypted(t *testing.T) {
 	for _, u := range c.DNS.Upstreams {
 		if !strings.HasPrefix(u, "tls://") {
 			t.Errorf("default upstream %q is not encrypted", u)
-		}
-	}
-}
-
-func TestUpstreamValidation(t *testing.T) {
-	body := func(u string) string {
-		return "data_dir: /tmp/x\ndns:\n  upstreams: [\"" + u + "\"]\n"
-	}
-	for _, good := range []string{
-		"tls://1.1.1.1:853", "https://9.9.9.9/dns-query", "udp://192.168.1.1:53", "1.1.1.1:53",
-	} {
-		if _, err := Load(write(t, body(good))); err != nil {
-			t.Errorf("upstreams [%q] rejected: %v", good, err)
-		}
-	}
-	for _, bad := range []string{"tls://dns.quad9.net:853", "quic://1.1.1.1:853", "1.1.1.1:no"} {
-		if _, err := Load(write(t, body(bad))); err == nil {
-			t.Errorf("upstreams [%q] accepted, want a rejection", bad)
 		}
 	}
 }

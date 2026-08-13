@@ -127,7 +127,7 @@ dropped queries: upstreams (which also flushes the cache), reverse zones,
 `allow_query`, `allow_tailscale`, the TTL, all four cache settings, both log
 flags, the three health settings, and the discovery interval. Two cannot
 change in a running process — `private_domain` and
-`discovery.dhcp_lease_file`. Those are saved anyway, and a banner names the
+`dhcp_lease_file`. Those are saved anyway, and a banner names the
 running value and the saved one until you restart.
 
 ### Opening `allow_query` beyond your LAN

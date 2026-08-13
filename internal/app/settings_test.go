@@ -120,12 +120,51 @@ func TestEnsureSettingsGrandfathersAPublicSeed(t *testing.T) {
 	}
 }
 
-// Grandfathering waives the confirmation and nothing else.
-//
-// The first two arms are refused by config.Load before ensureSettings sees
-// them; they are here to pin that a broken file cannot start the process at
-// all. The last two — negative ttl and the relative lease path — are values the
-// loader accepts, so those are the arms that exercise the seed validator.
+// A prefix is stored the way the ACL reads it. The seed is the upgrade path,
+// so an entry like 192.168.1.99/0 must not sit in the database reading as a
+// single LAN host while enforcing 0.0.0.0/0.
+func TestEnsureSettingsCanonicalizesTheSeed(t *testing.T) {
+	st := testStore(t)
+	cfg := testConfig(t, "data_dir: "+t.TempDir()+
+		"\ndns:\n  allow_query: [\"192.168.1.99/0\"]\n  reverse_zones: [\"192.168.1.5/24\"]\n")
+
+	boot, err := ensureSettings(st, cfg, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, ok, err := st.Settings()
+	if err != nil || !ok {
+		t.Fatalf("settings not stored: %v", err)
+	}
+	for _, got := range []store.Settings{boot, stored} {
+		if got.AllowQuery[0] != "0.0.0.0/0" {
+			t.Errorf("allow_query stored as %q, want the masked form", got.AllowQuery[0])
+		}
+		if got.ReverseZones[0] != "192.168.1.0/24" {
+			t.Errorf("reverse_zones stored as %q, want the masked form", got.ReverseZones[0])
+		}
+	}
+}
+
+// The file's moved keys are ignored once the database holds settings, so a
+// bogus one in a tidied YAML must not keep a working server from starting.
+func TestBogusMovedKeyDoesNotBlockASeededStart(t *testing.T) {
+	st := testStore(t)
+	dir := t.TempDir()
+	if _, err := ensureSettings(st, testConfig(t, "data_dir: "+dir+"\n"), slog.Default()); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t, "data_dir: "+dir+"\ndns:\n  allow_query: [\"totally bogus\"]\n"+
+		"  upstreams: [\"1.1.1.1:no\"]\n")
+	if _, err := ensureSettings(st, cfg, slog.Default()); err != nil {
+		t.Fatalf("a seeded database refused to start over an ignored file key: %v", err)
+	}
+}
+
+// Grandfathering waives the confirmation and nothing else. Every arm here is a
+// value config.Load now accepts, because the file no longer owns these keys:
+// the seed validator is the only thing standing between them and a
+// half-configured server on a fresh database.
 func TestEnsureSettingsRejectsAnInvalidSeed(t *testing.T) {
 	for _, tc := range []struct{ name, body string }{
 		{"malformed cidr", "dns:\n  allow_query: [\"192.168.0.0\"]\n"},
@@ -140,11 +179,9 @@ func TestEnsureSettingsRejectsAnInvalidSeed(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			// Some of these the config loader already refuses; the rest have to
-			// fail in ensureSettings. Either way the process must not start.
 			cfg, err := config.Load(path)
 			if err != nil {
-				return
+				t.Fatalf("Load: %v", err)
 			}
 			if _, err := ensureSettings(st, cfg, slog.Default()); err == nil {
 				t.Fatal("an invalid value was seeded from the file with no complaint")
