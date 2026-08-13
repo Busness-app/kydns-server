@@ -144,7 +144,7 @@ type transfer struct {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.Routes(mux)
-	return mux
+	return a.WriteGate(mux)
 }
 
 // The three writes a replica must still accept. Promote is the operator's
@@ -165,6 +165,13 @@ var writeExempt = map[string]bool{
 	PathReplicaPromote:  true,
 }
 
+// authenticated is the one bearer-token check, shared so the write gate and
+// the handlers behind it can never disagree about who is anonymous.
+func (a *API) authenticated(r *http.Request) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return token != "" && a.reg != nil && a.reg.AuthenticateToken(token)
+}
+
 // registrar is the sliver of *http.ServeMux that registration uses. ServeMux
 // cannot be enumerated, so this is what lets a test derive the route table
 // from the router rather than hand-listing it.
@@ -172,26 +179,10 @@ type registrar interface {
 	HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request))
 }
 
-// gatedRoutes puts every registration behind the write gate. Registration is
-// the only door into the mux, so a route added to routes below is refused on
-// a replica without anyone listing it anywhere.
-type gatedRoutes struct {
-	api *API
-	mux *http.ServeMux
-}
-
-func (g gatedRoutes) HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request)) {
-	g.mux.Handle(pattern, g.api.writeGate(http.HandlerFunc(h)))
-}
-
-// gated is how routes reach a real mux. Mounting one gated subtree instead
-// would be tidier, but the web transport registers "GET /" on the same mux
-// and ServeMux calls that a conflict with "/api/v1/".
-func (a *API) gated(mux *http.ServeMux) registrar { return gatedRoutes{a, mux} }
-
 // Routes registers the API on a mux, so the web transport can share one
-// listener with it.
-func (a *API) Routes(mux *http.ServeMux) { a.routes(a.gated(mux)) }
+// listener with it. The mux is not where writes are refused: wrap the whole
+// server handler in WriteGate.
+func (a *API) Routes(mux *http.ServeMux) { a.routes(mux) }
 
 func (a *API) routes(mux registrar) {
 	mux.HandleFunc("GET /api/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -201,8 +192,7 @@ func (a *API) routes(mux registrar) {
 
 	auth := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if token == "" || !a.reg.AuthenticateToken(token) {
+			if !a.authenticated(r) {
 				writeErr(w, http.StatusUnauthorized, "unauthenticated", "", "a valid bearer token is required")
 				return
 			}
@@ -254,20 +244,28 @@ func (a *API) routes(mux registrar) {
 // because app already imports adminapi.
 const roleReplica = "replica"
 
-// writeGate refuses writes on a replica. A write that lands here is not just
+// apiPrefix is the surface WriteGate covers. The web transport's own writes
+// are gated separately: a browser gets a page, not a JSON error.
+const apiPrefix = "/api/v1/"
+
+// WriteGate refuses writes on a replica. A write that lands here is not just
 // unauthorized, it is discarded: the primary overwrites this node's config on
-// the next pull, and the operator would never know. Default-deny, so a route
-// added later is covered without being listed anywhere.
-func (a *API) writeGate(next http.Handler) http.Handler {
+// the next pull, and the operator would never know. It wraps the whole server
+// handler rather than routes, so a path with no route, or a route registered
+// somewhere else entirely, is refused too.
+func (a *API) WriteGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead ||
+		if !strings.HasPrefix(r.URL.Path, apiPrefix) ||
+			r.Method == http.MethodGet || r.Method == http.MethodHead ||
 			writeExempt[r.URL.Path] || a.replicaStatus == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
 		// Read per request, so promotion stops the refusals immediately.
 		st := a.replicaStatus()
-		if st.Role != roleReplica {
+		// An anonymous caller gets the 401 it always got: this gate sits
+		// outside auth and must not tell a stranger where the primary is.
+		if st.Role != roleReplica || !a.authenticated(r) {
 			next.ServeHTTP(w, r)
 			return
 		}

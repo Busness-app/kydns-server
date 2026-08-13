@@ -273,8 +273,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}).Routes(mux)
 
 	adminSrv := &http.Server{
-		Addr:              cfg.Admin.Listen,
-		Handler:           mux,
+		Addr: cfg.Admin.Listen,
+		// Outside the mux, so a replica refuses every admin API write: one
+		// added later, or one on a path with no route at all.
+		Handler:           api.WriteGate(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -21,6 +21,14 @@ func newReplicaAPI(t *testing.T, status ReplicaStatus) (http.Handler, string) {
 // requests, so a test can promote a node mid-flight.
 func newReplicaAPICallback(t *testing.T, status func() ReplicaStatus) (http.Handler, string) {
 	t.Helper()
+	api, tok := newAPIWithStatus(t, status)
+	return api.Handler(), tok
+}
+
+// newAPIWithStatus hands back the API itself, so a test can put the gate over
+// a mux of its own.
+func newAPIWithStatus(t *testing.T, status func() ReplicaStatus) (*API, string) {
+	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -31,8 +39,7 @@ func newReplicaAPICallback(t *testing.T, status func() ReplicaStatus) (http.Hand
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := NewAPI(reg, nil, nil).WithReplication(status)
-	return api.Handler(), tok
+	return NewAPI(reg, nil, nil).WithReplication(status), tok
 }
 
 func TestReplicaStatusRequiresAuth(t *testing.T) {

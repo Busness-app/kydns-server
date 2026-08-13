@@ -63,6 +63,16 @@ func TestUnpairedReplicaStatusStillNamesThePrimary(t *testing.T) {
 	}
 }
 
+// The config keeps naming the old primary after a promotion, so the address
+// has to come from the current role, not from the file.
+func TestPromotedNodeReportsNoPrimaryAddress(t *testing.T) {
+	for _, role := range []Role{RolePrimary, RoleStandalone} {
+		if got := replicaStatus(role, "10.0.0.2:8443", nil); got.PrimaryAddr != "" {
+			t.Errorf("a %s reports primary_address %q", role, got.PrimaryAddr)
+		}
+	}
+}
+
 func TestReplicaStatusReportsPrimaryAndStaleness(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	syncedAt := now.Add(-61 * time.Second)

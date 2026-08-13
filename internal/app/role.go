@@ -82,9 +82,13 @@ type puller interface {
 // replica, and a nil p (or the literal nil interface value) means no
 // primary fields are populated.
 func replicaStatus(role Role, primaryAddr string, p puller) ReplicaStatus {
-	// The address comes from config, so an unpaired replica with no puller
-	// still tells the operator which box to make the change on.
-	rs := ReplicaStatus{Role: role, PrimaryAddr: primaryAddr}
+	rs := ReplicaStatus{Role: role}
+	// Only a replica follows a primary, and the config still names the old one
+	// after a promotion. Set before the puller check, because an unpaired
+	// replica has no puller and still has to name the box to go to.
+	if role == RoleReplica {
+		rs.PrimaryAddr = primaryAddr
+	}
 	if p == nil {
 		return rs
 	}

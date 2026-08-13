@@ -2,7 +2,6 @@ package adminapi
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -36,10 +35,19 @@ func registeredRoutes(t *testing.T) [][2]string {
 	return out
 }
 
-// replicaOf builds a replica whose primary is addr.
+// replicaAPI builds a replica whose primary is addr.
+func replicaAPI(t *testing.T, addr string) (*API, string) {
+	t.Helper()
+	return newAPIWithStatus(t, func() ReplicaStatus {
+		return ReplicaStatus{Role: "replica", PrimaryAddr: addr}
+	})
+}
+
+// replicaOf is replicaAPI wired up the way the daemon serves it.
 func replicaOf(t *testing.T, addr string) (http.Handler, string) {
 	t.Helper()
-	return newReplicaAPI(t, ReplicaStatus{Role: "replica", PrimaryAddr: addr})
+	a, tok := replicaAPI(t, addr)
+	return a.Handler(), tok
 }
 
 // Every mutating admin route must be refused on a replica. The list is
@@ -87,29 +95,25 @@ func TestWriteExemptIsExactlyThreePaths(t *testing.T) {
 }
 
 // The three exempt paths reach their handler. Tasks 6 and 7 register them for
-// real; registering them here through the same seam proves the exemption
-// works before those handlers exist.
+// real; registering them here behind the same gate proves the exemption works
+// before those handlers exist.
 func TestExemptPathsPassTheGateOnAReplica(t *testing.T) {
-	a := (&API{}).WithReplication(func() ReplicaStatus {
-		return ReplicaStatus{Role: "replica", PrimaryAddr: "10.0.0.2:8443"}
-	})
+	a, tok := replicaAPI(t, "10.0.0.2:8443")
 	mux := http.NewServeMux()
 	for _, p := range []string{PathReplicaPairPeek, PathReplicaJoin, PathReplicaPromote} {
-		a.gated(mux).HandleFunc("POST "+p, func(w http.ResponseWriter, _ *http.Request) {
+		mux.HandleFunc("POST "+p, func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 	}
+	gated := a.WriteGate(mux)
 	for _, p := range []string{PathReplicaPairPeek, PathReplicaJoin, PathReplicaPromote} {
-		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, httptest.NewRequest("POST", p, nil))
-		if rec.Code != http.StatusOK {
+		if rec := do(t, gated, "POST", p, tok, "{}"); rec.Code != http.StatusOK {
 			t.Errorf("POST %s on a replica = %d, want 200: the exemption is not honoured", p, rec.Code)
 		}
 	}
 	// Unregistered today, so the live API must 404 them rather than refuse them.
-	h, tok := replicaOf(t, "10.0.0.2:8443")
 	for _, p := range []string{PathReplicaPairPeek, PathReplicaJoin, PathReplicaPromote} {
-		if rec := do(t, h, "POST", p, tok, "{}"); rec.Code != http.StatusNotFound {
+		if rec := do(t, a.Handler(), "POST", p, tok, "{}"); rec.Code != http.StatusNotFound {
 			t.Errorf("POST %s = %d, want 404", p, rec.Code)
 		}
 	}
@@ -118,17 +122,53 @@ func TestExemptPathsPassTheGateOnAReplica(t *testing.T) {
 // A route the gate has never heard of must still be refused, or the gate is
 // an enumeration of routes rather than a default-deny.
 func TestUnknownMutatingRouteIsRefusedOnAReplica(t *testing.T) {
-	a := (&API{}).WithReplication(func() ReplicaStatus {
-		return ReplicaStatus{Role: "replica", PrimaryAddr: "10.0.0.2:8443"}
-	})
+	a, tok := replicaAPI(t, "10.0.0.2:8443")
 	mux := http.NewServeMux()
-	a.gated(mux).HandleFunc("POST /api/v1/whatever", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("POST /api/v1/whatever", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest("POST", "/api/v1/whatever", nil))
-	if rec.Code != http.StatusConflict {
+	if rec := do(t, a.WriteGate(mux), "POST", "/api/v1/whatever", tok, ""); rec.Code != http.StatusConflict {
 		t.Fatalf("POST /api/v1/whatever on a replica = %d, want 409", rec.Code)
+	}
+}
+
+// A path with no route at all is refused too: the gate is outside the mux, so
+// there is no way to reach a write it has not seen.
+func TestUnroutedWriteIsRefusedOnAReplica(t *testing.T) {
+	a, tok := replicaAPI(t, "10.0.0.2:8443")
+	if rec := do(t, a.Handler(), "POST", "/api/v1/nonexistent", tok, ""); rec.Code != http.StatusConflict {
+		t.Fatalf("POST /api/v1/nonexistent on a replica = %d, want 409", rec.Code)
+	}
+}
+
+// The gate wraps the whole server handler, which the web transport shares.
+// Task 3 gates the UI's own writes; a browser posting a form must get a page
+// back, never this JSON, so the gate stops at the API prefix.
+func TestWriteGateLeavesTheWebTransportAlone(t *testing.T) {
+	a, tok := replicaAPI(t, "10.0.0.2:8443")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /login", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	if rec := do(t, a.WriteGate(mux), "POST", "/login", tok, ""); rec.Code != http.StatusOK {
+		t.Fatalf("POST /login on a replica = %d, want 200: the UI is not this gate's business", rec.Code)
+	}
+}
+
+// The gate is outermost, so it must not answer a caller the API would have
+// turned away: an anonymous write gets its 401 and learns nothing about where
+// this node's primary lives.
+func TestUnauthenticatedWriteOnAReplicaStillGets401(t *testing.T) {
+	const primary = "10.0.0.2:8443"
+	a, _ := replicaAPI(t, primary)
+	for _, path := range []string{"/api/v1/services", "/api/v1/nonexistent"} {
+		rec := do(t, a.Handler(), "POST", path, "", "{}")
+		if path == "/api/v1/services" && rec.Code != http.StatusUnauthorized {
+			t.Errorf("anonymous POST %s on a replica = %d, want 401", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), primary) {
+			t.Errorf("anonymous POST %s leaks the primary address: %s", path, rec.Body)
+		}
 	}
 }
 
