@@ -10,6 +10,13 @@ on:
 permissions:
   contents: read
 
+# Two runs against the same tag would race on `gh release create`.
+# cancel-in-progress is false, unlike ci.yml: cancelling a half-finished
+# publish could leave a release with a partial asset set.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -48,6 +55,7 @@ jobs:
 
       - name: checksums
         run: |
+          set -eux
           cd dist
           sha256sum *.tar.gz *.deb > SHA256SUMS
           cat SHA256SUMS
@@ -67,11 +75,15 @@ jobs:
             dist/*.deb
             dist/SHA256SUMS
 
+      # ref_type alone isn't enough: workflow_dispatch can be run against an
+      # existing tag ref, which would satisfy that check and publish a real
+      # release from what an operator thought was a dry run.
       - name: publish the release
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -eux
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
