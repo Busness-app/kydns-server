@@ -180,7 +180,10 @@ nothing about how far behind a replica is.
 
 `GET /replica/health-status` serves health separately, outside the config
 version, because health changes constantly and must not invalidate
-configuration. **Part 2, not yet implemented.**
+configuration. It is implemented, and it is a pinned route like every other
+one here. A replica renders what it fetches as its own service health: it sits
+on the far side of the network from the services, so its own probes would
+answer for a path no client uses.
 
 ### Replica
 
@@ -254,8 +257,22 @@ standing banner once that exceeds 60 seconds.
 ### Promotion and demotion
 
 `kydns replica promote`, or the UI button behind a confirmation, flips a
-replica to primary: it begins accepting writes, keeps its current
-configuration as the new truth, and clears `replication.primary`.
+replica to primary: it stops pulling, begins accepting writes immediately, and
+keeps its current configuration as the new truth.
+
+The promotion is recorded in the database, not in the config file. KyDNS never
+rewrites an operator's file, so `replication.primary` still names the old
+primary after a promotion, and the recorded promotion outranks it at every
+later start: the node comes back a primary and does not resume following the
+key it was promoted away from. Startup logs that the key is being ignored, and
+the operator can remove it at their leisure.
+
+Promotion opens no replication listener. A promoted node has no
+`replication.listen`, so replicas cannot follow it until the operator sets one
+and restarts; the command says so, because repointing replicas first gets
+refused connections and nothing to read about why. Pointing a replica at it is
+in turn `replication.primary` plus a restart on the replica, since the pull
+loop is built at startup.
 
 The confirmation states plainly that the old primary must be demoted or
 rebuilt before it returns. Two primaries serving the same replicas is the one

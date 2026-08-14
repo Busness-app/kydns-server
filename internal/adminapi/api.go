@@ -839,9 +839,16 @@ func (a *API) listHealth(w http.ResponseWriter, _ *http.Request) {
 	out := []map[string]any{}
 	if a.health != nil {
 		for _, s := range a.health() {
+			// Zero means "not since anything": a replica renders its primary's
+			// verdict, which carries no local transition time, and the epoch of a
+			// zero time reads as a date in the year 1.
+			since := int64(0)
+			if !s.Since.IsZero() {
+				since = s.Since.Unix()
+			}
 			out = append(out, map[string]any{
 				"service_id": s.ServiceID, "name": s.Name, "state": s.State,
-				"since": s.Since.Unix(), "last_error": s.LastError,
+				"since": since, "last_error": s.LastError,
 			})
 		}
 	}

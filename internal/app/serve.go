@@ -224,6 +224,20 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		nodeID = repl.id.NodeID
 	}
 
+	// A replica shows the health its primary reports, not what it probes
+	// itself: it sits on the other side of the network from the services, and
+	// its own verdict would keep reading "up" while the primary is unreachable.
+	// A promoted node owns the probes again, so it reads the local checker.
+	healthFn := checker.Statuses
+	if repl.puller != nil {
+		healthFn = func() []health.Status {
+			if roleHolder.Current() != RoleReplica {
+				return checker.Statuses()
+			}
+			return replicaHealth(st, repl.puller)
+		}
+	}
+
 	leaseFn := func() []dhcp.Lease {
 		if poller == nil {
 			return nil
@@ -246,7 +260,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
 	api := adminapi.NewAPI(reg, acl, cache).
-		WithProviders(leaseFn, checker.Statuses).
+		WithProviders(leaseFn, healthFn).
 		WithPolicy(policySvc).
 		WithSettings(settingsSvc).
 		WithMetrics(dnsSrv.Metrics()).
@@ -278,7 +292,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Upstreams:   fwd.Status,
 		SetupToken:  setupToken,
 		Logger:      logger,
-		Health:      checker.Statuses,
+		Health:      healthFn,
 		Replication: func() web.ReplicaStatus { return replStatus().toWeb() },
 		// Compared against the boot values on every page load: there is no
 		// dirty flag to drift, and the banner clears itself on restart.

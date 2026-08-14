@@ -41,6 +41,15 @@ type storeSource struct {
 	health func() []health.Status
 }
 
+// The replication wire vocabulary, defined once: both halves of the
+// translation are in this file, and two spellings of "unhealthy" would be a
+// dead service showing as unknown on every replica.
+const (
+	wireHealthy   = "healthy"
+	wireUnhealthy = "unhealthy"
+	wireUnknown   = "unknown"
+)
+
 // HealthStatus translates the checker's up/down/unknown into the replication
 // wire vocabulary, keyed by service name since a replica has no service IDs
 // to match against. A nil health func (no checker wired) answers empty.
@@ -53,14 +62,44 @@ func (s *storeSource) HealthStatus() (map[string]string, error) {
 	for _, st := range statuses {
 		switch st.State {
 		case health.StateUp:
-			out[st.Name] = "healthy"
+			out[st.Name] = wireHealthy
 		case health.StateDown:
-			out[st.Name] = "unhealthy"
+			out[st.Name] = wireUnhealthy
 		default:
-			out[st.Name] = "unknown"
+			out[st.Name] = wireUnknown
 		}
 	}
 	return out, nil
+}
+
+// replicaHealth is what a replica's own health surface renders: the verdict of
+// the primary that owns the service, matched to local service IDs by name. A
+// replica probes from the other side of the network, and an unreachable
+// primary answers unknown for every service rather than the last value seen.
+func replicaHealth(st *store.Store, p *replica.Puller) []health.Status {
+	states := p.Health()
+	svcs, err := st.Services()
+	if err != nil {
+		return nil
+	}
+	out := make([]health.Status, 0, len(svcs))
+	for _, s := range svcs {
+		out = append(out, health.Status{ServiceID: s.ID, Name: s.Name, State: localHealthState(states[s.Name])})
+	}
+	return out
+}
+
+// localHealthState translates the wire vocabulary back. A service this replica
+// has heard no verdict for is unknown, never assumed well.
+func localHealthState(wire string) string {
+	switch wire {
+	case wireHealthy:
+		return health.StateUp
+	case wireUnhealthy:
+		return health.StateDown
+	default:
+		return health.StateUnknown
+	}
 }
 
 func (s *storeSource) Version() (replica.VersionReply, error) {

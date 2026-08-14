@@ -118,6 +118,13 @@ func writeConfig(t *testing.T, dir string, extra string) (cfgPath string, dnsPor
 	t.Helper()
 	p := freePorts(t, 2)
 	dnsPort, adminPort = p[0], p[1]
+	return writeConfigOn(t, dir, dnsPort, adminPort, extra), dnsPort, adminPort
+}
+
+// writeConfigOn rewrites a node's config on the ports it is already using, so
+// a restart keeps the addresses an operator would keep across one.
+func writeConfigOn(t *testing.T, dir string, dnsPort, adminPort int, extra string) (cfgPath string) {
+	t.Helper()
 	cfgPath = filepath.Join(dir, "kydns.yaml")
 	body := fmt.Sprintf(`
 data_dir: %s
@@ -132,7 +139,7 @@ admin:
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return cfgPath, dnsPort, adminPort
+	return cfgPath
 }
 
 // The whole point of Plan 1: add a service over HTTP, resolve it over DNS.
