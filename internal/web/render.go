@@ -9,7 +9,7 @@ import (
 )
 
 // Version is the release shown in the About popover.
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 //go:embed templates/*.html
 var templateFS embed.FS

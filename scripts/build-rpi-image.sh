@@ -16,6 +16,7 @@ base_url=${3:-https://downloads.raspberrypi.com/raspios_lite_arm64_latest}
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v losetup >/dev/null || { echo "losetup is required" >&2; exit 1; }
+command -v partx >/dev/null || { echo "partx is required" >&2; exit 1; }
 command -v mount >/dev/null || { echo "mount is required" >&2; exit 1; }
 command -v mountpoint >/dev/null || { echo "mountpoint is required" >&2; exit 1; }
 command -v xz >/dev/null || { echo "xz is required" >&2; exit 1; }
@@ -33,17 +34,25 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-base=$work/base
 curl -fL "$base_url" -o "$work/base.download"
-case "$base_url" in
-	*.xz|*/latest) xz -dc "$work/base.download" > "$base" ;;
-	*) cp "$work/base.download" "$base" ;;
-esac
 
 mkdir -p "$(dirname "$output")"
-cp "$base" "$output"
+# The download decides whether it is compressed, not the URL: the published
+# "latest" link names no file at all and still serves an .xz.
+if xz --list "$work/base.download" >/dev/null 2>&1; then
+	xz -dc "$work/base.download" > "$output"
+else
+	cp "$work/base.download" "$output"
+fi
+
 loop=$(losetup --find --show --partscan "$output")
 udevadm settle 2>/dev/null || true
+# --partscan already creates the nodes on most kernels, and adding partitions
+# that are there is an error, so partx runs only where it is needed.
+if [ ! -b "${loop}p2" ]; then
+	partx --add "$loop"
+	udevadm settle 2>/dev/null || true
+fi
 
 mount "${loop}p2" "$root"
 install -d -m 0755 "$root/opt/kydns" "$root/usr/local/sbin" \
@@ -57,4 +66,7 @@ ln -s ../kydns-image-install.service \
 	"$root/etc/systemd/system/multi-user.target.wants/kydns-image-install.service"
 
 sync
+# The mount needed root, the image does not. Left owned by root it is a file
+# the caller cannot compress, copy, or delete without sudo of their own.
+[ -z "${SUDO_UID:-}" ] || chown "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$output"
 echo "wrote $output"

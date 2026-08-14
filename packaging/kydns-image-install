@@ -3,7 +3,9 @@ set -eu
 
 deb=/opt/kydns/kydns.deb
 
-dpkg --install "$deb"
+# apt-get, not dpkg: the package depends on ca-certificates, and only apt
+# resolves that from the image's own sources.
+DEBIAN_FRONTEND=noninteractive apt-get install -y "$deb"
 systemctl enable --now kydns.service
 systemctl disable kydns-image-install.service >/dev/null 2>&1 || true
 rm -f /etc/systemd/system/kydns-image-install.service \

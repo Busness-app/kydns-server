@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -48,6 +51,10 @@ type pairReply struct {
 // Each dial carries its own budget; the operator's decision carries none.
 func PairAsReplica(ctx context.Context, address string, id *Identity, code string,
 	confirm Confirmer, state StateStore) (string, error) {
+	address, err := peerAddress(address)
+	if err != nil {
+		return "", err
+	}
 	fingerprint, err := PeekFingerprint(ctx, address, id)
 	if err != nil {
 		return "", err
@@ -73,13 +80,19 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	}
 	postCtx, cancelPost := context.WithTimeout(ctx, requestTimeout)
 	defer cancelPost()
-	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, "https://"+address+"/replica/pair", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, (&url.URL{
+		Scheme: "https",
+		Host:   address,
+		Path:   "/replica/pair",
+	}).String(), bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}
 	defer client.CloseIdleConnections()
+	// peerAddress accepts only an operator-supplied IP:port, and the connection
+	// is pinned to the key the operator confirmed.
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -110,6 +123,11 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 // on a second: the connection being confirmed cannot be held open across an
 // operator's decision made on another machine.
 func PeekFingerprint(ctx context.Context, address string, id *Identity) (string, error) {
+	var err error
+	address, err = peerAddress(address)
+	if err != nil {
+		return "", err
+	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	cfg, err := pinnedTLSConfig(id, func(string) bool { return true })
@@ -126,6 +144,20 @@ func PeekFingerprint(ctx context.Context, address string, id *Identity) (string,
 		return "", fmt.Errorf("%s presented no certificate", address)
 	}
 	return leafFingerprint([][]byte{certs[0].Raw})
+}
+
+// peerAddress keeps pairing's network target to the documented IP:port form.
+// Hostnames and URL syntax are rejected before either dial is made.
+func peerAddress(raw string) (string, error) {
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil || net.ParseIP(host) == nil {
+		return "", fmt.Errorf("peer address must be an IP:port: %q", raw)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("peer address has invalid port: %q", raw)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n)), nil
 }
 
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {

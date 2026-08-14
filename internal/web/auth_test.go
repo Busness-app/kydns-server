@@ -308,7 +308,12 @@ func TestLogoutDestroysSession(t *testing.T) {
 		t.Fatal("session did not grant access")
 	}
 	sess, _ := srv.o.Sessions.Get(c.Value)
-	postForm(t, h, "/logout", url.Values{"csrf_token": {sess.CSRF}}, c)
+	rec := postForm(t, h, "/logout", url.Values{"csrf_token": {sess.CSRF}}, c)
+	cleared := rec.Result().Cookies()[0]
+	if cleared.Name != auth.CookieName || cleared.MaxAge != -1 || !cleared.HttpOnly ||
+		cleared.SameSite != http.SameSiteLaxMode {
+		t.Errorf("logout cookie = %+v, want a protected deletion cookie", cleared)
+	}
 	if got := get(t, h, "/services", c).Code; got != http.StatusSeeOther {
 		t.Errorf("after logout /services = %d, want a redirect", got)
 	}
