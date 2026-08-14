@@ -227,8 +227,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Each leg builds only the architecture it goes on to test.
       - name: build the package
-        run: make package VERSION=0.0.0-ci
+        run: make package VERSION=0.0.0-ci ARCHES=${{ matrix.arch }}
 
       - name: manifest is right
         run: ./scripts/verify-package.sh dist/kydns_0.0.0-ci_${{ matrix.arch }}.deb ${{ matrix.arch }}
@@ -240,6 +241,12 @@ jobs:
           sudo apt-get install -y -qq ./dist/kydns_0.0.0-ci_${{ matrix.arch }}.deb
           test -x /usr/bin/kydns
           /usr/bin/kydns version | grep -q '0.0.0-ci'
+          # Installed and enabled, but deliberately not started.
+          systemctl is-enabled kydns
+          if systemctl is-active --quiet kydns; then
+            echo "install started kydns unasked; port 53 may not have been free"
+            exit 1
+          fi
 
       # systemd-resolved holds 127.0.0.53:53 on GitHub runners, so binding
       # 0.0.0.0:53 would collide with it. 127.0.0.2:53 is free and still
@@ -320,15 +327,44 @@ jobs:
           assert_show NoNewPrivileges yes
           assert_show ProtectSystem strict
 
+      # The upgrade that matters is the one where the shipped template also
+      # changed: only then does dpkg enter its modified-conffile path. Packaging
+      # a byte-identical template would prove nothing verify-package.sh does not
+      # already prove statically.
       - name: an operator's config edits survive an upgrade
         run: |
           set -eux
           echo "# operator edit, must survive" | sudo tee -a /etc/kydns/kydns.yaml
-          make package VERSION=9.9.9-upgrade
-          sudo apt-get install -y -qq ./dist/kydns_9.9.9-upgrade_${{ matrix.arch }}.deb
+          started_before=$(systemctl show -p ExecMainStartTimestamp --value kydns)
+
+          echo "# upgrade marker: the shipped template changed" >> kydns.package.yaml
+          make package VERSION=9.9.9-upgrade ARCHES=${{ matrix.arch }}
+          git checkout -- kydns.package.yaml
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            -o Dpkg::Options::=--force-confold \
+            ./dist/kydns_9.9.9-upgrade_${{ matrix.arch }}.deb
+
           grep -q "operator edit, must survive" /etc/kydns/kydns.yaml || {
             echo "the upgrade clobbered the operator's config"; exit 1; }
           grep -q "127.0.0.2:53" /etc/kydns/kydns.yaml
+          if grep -q "upgrade marker" /etc/kydns/kydns.yaml; then
+            echo "confold still replaced the operator's config"; exit 1
+          fi
+          # dpkg only writes .dpkg-dist when the two templates really differ,
+          # so this is what proves the modified-conffile path was exercised.
+          grep -q "upgrade marker" /etc/kydns/kydns.yaml.dpkg-dist || {
+            echo "no .dpkg-dist: the upgrade never hit the conffile path"
+            exit 1; }
+
+          # An upgrade must actually replace the running process, or a security
+          # fix ships to disk and never runs.
+          systemctl is-active kydns
+          started_after=$(systemctl show -p ExecMainStartTimestamp --value kydns)
+          if [ -z "$started_after" ] || [ "$started_after" = "$started_before" ]; then
+            echo "the upgrade left the old process running: $started_before"
+            exit 1
+          fi
 
       - name: purge keeps the data
         run: |
