@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 const replicaUsage = `usage:
   kydns replica invite
   kydns replica list
+  kydns replica status
   kydns replica remove <node-id>
   kydns replica join <address> <code> [--fingerprint <fp>] [--yes]
   kydns replica promote [--yes]`
@@ -34,6 +36,8 @@ func replicaCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		return replicaInvite(c, stdout, stderr)
 	case "list":
 		return replicaList(c, stdout, stderr)
+	case "status":
+		return replicaStatus(c, stdout, stderr)
 	case "join":
 		return replicaJoin(c, args[1:], os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), stdout, stderr)
 	case "promote":
@@ -127,9 +131,13 @@ func replicaJoin(c *Client, args []string, in io.Reader, tty bool, stdout, stder
 			return 1
 		}
 	} else {
-		fmt.Fprintf(stdout, "the node at %s presents fingerprint\n\n  %s\n\n", address, presented)
-		fmt.Fprintln(stdout, "Compare it with the one kydns replica invite printed on the primary.")
-		if !ask(prompt, stdout, "Do they match exactly?") {
+		// The operator has to read this and answer, so it goes where a redirected
+		// stdout cannot swallow it: `kydns replica join addr code > join.log`
+		// otherwise leaves them at a blank terminal with the value to compare
+		// sitting in the file.
+		fmt.Fprintf(stderr, "the node at %s presents fingerprint\n\n  %s\n\n", address, presented)
+		fmt.Fprintln(stderr, "Compare it with the one kydns replica invite printed on the primary.")
+		if !ask(prompt, stderr, "Do they match exactly?") {
 			fmt.Fprintln(stderr, "kydns: fingerprint not confirmed")
 			codeWithheld(stderr)
 			return 1
@@ -155,11 +163,15 @@ func replicaJoin(c *Client, args []string, in io.Reader, tty bool, stdout, stder
 		}
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "\npaired with %s\n", out.PrimaryNodeID)
+	fmt.Fprintf(stdout, "paired with %s\n", out.PrimaryNodeID)
 	// Replacing, not adding: a demoted primary's file may still name the node it
-	// used to follow, and that address with this pin fails every poll.
-	fmt.Fprintf(stdout, "Set replication.primary to %s, replacing any address already there,\n", address)
-	fmt.Fprintln(stdout, "and restart to start following it.")
+	// used to follow, and that address with this pin fails every poll. Removing
+	// replication.listen is not optional either: the two keys together are a
+	// fatal config error, so a demoted primary that keeps its listener will not
+	// start at all.
+	fmt.Fprintf(stdout, "\nSet replication.primary to %s, replacing any address already there,\n", address)
+	fmt.Fprintln(stdout, "and remove replication.listen if this node had one: a node with both keys")
+	fmt.Fprintln(stdout, "refuses to start. Then restart to start following it.")
 	return 0
 }
 
@@ -176,21 +188,21 @@ func confirmReplacement(c *Client, address string, prompt *bufio.Reader, tty, ye
 		if yes || !tty {
 			return 0
 		}
-		fmt.Fprintf(stdout, "\nJoining replaces this node's configuration with the one on %s.\n", address)
-		if !ask(prompt, stdout, "Continue?") {
+		fmt.Fprintf(stderr, "\nJoining replaces this node's configuration with the one on %s.\n", address)
+		if !ask(prompt, stderr, "Continue?") {
 			fmt.Fprintln(stderr, "kydns: cancelled")
 			return 1
 		}
 		return 0
 	}
 
-	fmt.Fprintf(stdout, "\nThis node is a primary. Joining makes it a replica, and its first pull\n")
-	fmt.Fprintln(stdout, "discards everything it holds now:")
-	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "  services  %d\n", services)
-	fmt.Fprintf(stdout, "  records   %d\n", records)
-	fmt.Fprintf(stdout, "  follows   %s\n", address)
-	fmt.Fprintln(stdout)
+	fmt.Fprintf(stderr, "\nThis node is a primary. Joining makes it a replica, and its first pull\n")
+	fmt.Fprintln(stderr, "discards everything it holds now:")
+	fmt.Fprintln(stderr)
+	fmt.Fprintf(stderr, "  services  %d\n", services)
+	fmt.Fprintf(stderr, "  records   %d\n", records)
+	fmt.Fprintf(stderr, "  follows   %s\n", address)
+	fmt.Fprintln(stderr)
 	if yes {
 		return 0
 	}
@@ -199,7 +211,7 @@ func confirmReplacement(c *Client, address string, prompt *bufio.Reader, tty, ye
 		fmt.Fprintln(stderr, "Pass --yes if that is what you want.")
 		return 2
 	}
-	if !ask(prompt, stdout, "Discard this node's configuration and follow "+address+"?") {
+	if !ask(prompt, stderr, "Discard this node's configuration and follow "+address+"?") {
 		fmt.Fprintln(stderr, "kydns: cancelled")
 		return 1
 	}
@@ -249,16 +261,18 @@ func replicaPromote(c *Client, args []string, in io.Reader, tty bool, stdout, st
 	}
 
 	if !*yes {
-		fmt.Fprintln(stdout, "Promoting this node stops it following its primary and lets it accept writes.")
-		fmt.Fprintln(stdout, "The old primary must be demoted or rebuilt before it is switched back on:")
-		fmt.Fprintln(stdout, "two primaries serving the same replicas cannot be detected or undone.")
-		fmt.Fprintln(stdout, "Demote it with kydns replica join once this node is serving.")
+		// With the prompt, for the same reason as join: a redirected stdout must
+		// not hide the question the operator is being asked.
+		fmt.Fprintln(stderr, "Promoting this node stops it following its primary and lets it accept writes.")
+		fmt.Fprintln(stderr, "The old primary must be demoted or rebuilt before it is switched back on:")
+		fmt.Fprintln(stderr, "two primaries serving the same replicas cannot be detected or undone.")
+		fmt.Fprintln(stderr, "Demote it with kydns replica join once this node is serving.")
 		if !tty {
 			fmt.Fprintln(stderr, "kydns: there is no terminal here to confirm the promotion on.")
 			fmt.Fprintln(stderr, "Pass --yes if that is what you want.")
 			return 2
 		}
-		if !ask(bufio.NewReader(in), stdout, "Promote this node to primary?") {
+		if !ask(bufio.NewReader(in), stderr, "Promote this node to primary?") {
 			fmt.Fprintln(stderr, "kydns: cancelled")
 			return 1
 		}
@@ -296,10 +310,11 @@ func codeWithheld(stderr io.Writer) {
 	fmt.Fprintln(stderr, "Check the address; something may be between this node and the primary.")
 }
 
-// ask reads one answer. Anything that is not an explicit yes is a no, and so
-// is a closed input: silence must never be taken for consent.
-func ask(in *bufio.Reader, stdout io.Writer, question string) bool {
-	fmt.Fprintf(stdout, "%s [yes/no]: ", question)
+// ask reads one answer on the terminal, which is stderr: stdout may be a file
+// the operator is not looking at. Anything that is not an explicit yes is a no,
+// and so is a closed input: silence must never be taken for consent.
+func ask(in *bufio.Reader, terminal io.Writer, question string) bool {
+	fmt.Fprintf(terminal, "%s [yes/no]: ", question)
 	line, err := in.ReadString('\n')
 	if err != nil && line == "" {
 		return false
@@ -330,25 +345,90 @@ func pairingClient(c *Client) *Client {
 	return &out
 }
 
+// nodeStatus is /api/v1/replica/status as both commands below read it.
+type nodeStatus struct {
+	Role          string `json:"role"`
+	PrimaryAddr   string `json:"primary_address"`
+	PrimaryNodeID string `json:"primary_node_id"`
+	NodeID        string `json:"node_id"`
+	LastSyncUnix  int64  `json:"last_sync_unix"`
+	LastVersion   int64  `json:"last_version"`
+	LastError     string `json:"last_error"`
+	Stale         bool   `json:"stale"`
+}
+
+// replicaStatus is what this node itself is doing. On a replica it is the only
+// place the last error is readable: "unlinked on the primary" and "schema
+// mismatch" both look like an unreachable primary without it.
+func replicaStatus(c *Client, stdout, stderr io.Writer) int {
+	var st nodeStatus
+	if err := c.Do("GET", "/api/v1/replica/status", nil, &st); err != nil {
+		return fail(stderr, err)
+	}
+	printNodeStatus(st, stdout)
+	return 0
+}
+
+func printNodeStatus(st nodeStatus, stdout io.Writer) {
+	fmt.Fprintf(stdout, "role         %s\n", st.Role)
+	if st.NodeID != "" {
+		fmt.Fprintf(stdout, "fingerprint  %s\n", st.NodeID)
+	}
+	if st.Role != "replica" {
+		return
+	}
+	fmt.Fprintf(stdout, "follows      %s\n", st.PrimaryAddr)
+	fmt.Fprintf(stdout, "last sync    %s\n", unixTime(st.LastSyncUnix))
+	fmt.Fprintf(stdout, "version      %d\n", st.LastVersion)
+	if st.Stale {
+		fmt.Fprintln(stdout, "stale        yes, this node may be serving replaced configuration")
+	}
+	if st.LastError != "" {
+		fmt.Fprintf(stdout, "last error   %s\n", st.LastError)
+	}
+}
+
 func replicaList(c *Client, stdout, stderr io.Writer) int {
+	// A replica serves no replicas, so listing them prints nothing at all. What
+	// the operator wanted on that box is this node's own state.
+	var st nodeStatus
+	if err := c.Do("GET", "/api/v1/replica/status", nil, &st); err != nil {
+		return fail(stderr, err)
+	}
+	if st.Role == "replica" {
+		printNodeStatus(st, stdout)
+		return 0
+	}
 	var out struct {
-		ConfigVersion int64 `json:"config_version"`
-		Replicas      []struct {
-			NodeID     string `json:"node_id"`
-			Label      string `json:"label"`
-			LastSyncAt int64  `json:"last_sync_at"`
-			Lag        int64  `json:"lag"`
-			Status     string `json:"status"`
-		} `json:"replicas"`
+		ConfigVersion int64        `json:"config_version"`
+		Replicas      []replicaRow `json:"replicas"`
 	}
 	if err := c.Do("GET", "/api/v1/replicas", nil, &out); err != nil {
 		return fail(stderr, err)
 	}
 	for _, r := range out.Replicas {
-		fmt.Fprintf(stdout, "%s  %-16s %-12s lag %-6d last sync %s\n",
-			r.NodeID, r.Label, r.Status, r.Lag, unixTime(r.LastSyncAt))
+		fmt.Fprintf(stdout, "%s  %-16s %-12s lag %-6s last sync %s\n",
+			r.NodeID, r.Label, r.Status, r.lagText(), unixTime(r.LastSyncAt))
 	}
 	return 0
+}
+
+// replicaRow is one peer as the primary reports it.
+type replicaRow struct {
+	NodeID     string `json:"node_id"`
+	Label      string `json:"label"`
+	LastSyncAt int64  `json:"last_sync_at"`
+	Lag        int64  `json:"lag"`
+	Status     string `json:"status"`
+}
+
+// lagText is how far behind a peer is. A peer that has never synced is not
+// "42 versions behind": it holds nothing, and the web renders that as a dash.
+func (r replicaRow) lagText() string {
+	if r.LastSyncAt == 0 {
+		return "-"
+	}
+	return strconv.FormatInt(r.Lag, 10)
 }
 
 // unixTime renders a stored timestamp. Zero means it never happened, which

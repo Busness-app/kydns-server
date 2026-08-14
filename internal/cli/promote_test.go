@@ -93,9 +93,11 @@ func TestPromoteWarnsAboutTheOldPrimaryBeforeAsking(t *testing.T) {
 	if rc := replicaPromote(c, nil, strings.NewReader("yes\n"), true, &out, &errOut); rc != 0 {
 		t.Fatalf("exit = %d, stderr = %s", rc, errOut.String())
 	}
-	warned, asked := strings.Index(out.String(), promoteWarning), strings.Index(out.String(), "[yes/no]")
+	// On the terminal stream, not stdout: `kydns replica promote > log` must not
+	// hide the question it is waiting on.
+	warned, asked := strings.Index(errOut.String(), promoteWarning), strings.Index(errOut.String(), "[yes/no]")
 	if warned < 0 || asked < 0 || warned > asked {
-		t.Fatalf("the old primary warning was not shown before the question:\n%s", out.String())
+		t.Fatalf("the old primary warning was not shown before the question:\n%s", errOut.String())
 	}
 	if rec.promotes != 1 {
 		t.Fatalf("the node was promoted %d times, want 1", rec.promotes)
@@ -161,17 +163,36 @@ func TestDemoteNamesWhatItWillDiscard(t *testing.T) {
 	if rc := replicaJoin(c, args, strings.NewReader("yes\n"), true, &out, &errOut); rc != 0 {
 		t.Fatalf("exit = %d, stderr = %s", rc, errOut.String())
 	}
-	if got := labelled(out.String(), "services"); got != "3" {
-		t.Errorf("the summary reports %q services, want 3:\n%s", got, out.String())
+	// The summary sits with the question it precedes, on the terminal stream.
+	if got := labelled(errOut.String(), "services"); got != "3" {
+		t.Errorf("the summary reports %q services, want 3:\n%s", got, errOut.String())
 	}
-	if got := labelled(out.String(), "records"); got != "7" {
-		t.Errorf("the summary reports %q records, want 7:\n%s", got, out.String())
+	if got := labelled(errOut.String(), "records"); got != "7" {
+		t.Errorf("the summary reports %q records, want 7:\n%s", got, errOut.String())
 	}
-	if !strings.Contains(out.String(), joinAddress) {
-		t.Errorf("the summary does not name the primary this node will follow:\n%s", out.String())
+	if !strings.Contains(errOut.String(), joinAddress) {
+		t.Errorf("the summary does not name the primary this node will follow:\n%s", errOut.String())
 	}
 	if rec.joins != 1 {
 		t.Fatalf("the confirmed join sent %d pairings, want 1", rec.joins)
+	}
+}
+
+// A demoted primary still has replication.listen in its file, and a node with
+// both replication keys refuses to start. Instructions naming only one of them
+// are followed exactly at 2am and take DNS on that box down.
+func TestDemotionSaysToRemoveBothKeys(t *testing.T) {
+	c, _ := startNodeServer(t, "primary")
+	var out, errOut bytes.Buffer
+
+	args := []string{joinAddress, joinCode, fingerprintF, presentedFP, "--yes"}
+	if rc := replicaJoin(c, args, refusingReader{t}, false, &out, &errOut); rc != 0 {
+		t.Fatalf("exit = %d, stderr = %s", rc, errOut.String())
+	}
+	for _, want := range []string{"Set replication.primary to " + joinAddress, "remove replication.listen"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the demotion instructions do not say %q:\n%s", want, out.String())
+		}
 	}
 }
 

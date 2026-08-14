@@ -331,6 +331,7 @@ of whoever answered before the code is ever sent.
 kydns replica invite                  # on the primary: a code and a fingerprint
 kydns replica join 192.168.1.10:8443 <code> --fingerprint <fingerprint>
 kydns replica list                    # on the primary: lag and last sync per replica
+kydns replica status                  # on a replica: what it follows, and why a poll failed
 ```
 
 Compare the two fingerprints yourself. Without `--fingerprint`, `join` shows
@@ -368,6 +369,11 @@ It accepts writes immediately. Two things are then yours to do:
   Demote it with `kydns replica join` against the new primary, which discards
   its configuration on the first pull. Two primaries serving the same replicas
   is the one state KyDNS can neither detect nor undo.
+
+Demoting an old primary means editing both keys in its config: set
+`replication.primary` to the new primary, and remove the `replication.listen`
+it still has from when it was one. A node with both keys refuses to start, so
+setting only the first leaves that box with no DNS at all.
 
 The promotion is recorded in the database, so a promoted node comes back a
 primary at every later start even though `replication.primary` is still in its

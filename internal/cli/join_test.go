@@ -97,10 +97,12 @@ func TestJoinPromptsAndPairsOnConfirmation(t *testing.T) {
 	}
 	// Shown before the question, not merely somewhere in the output: the same
 	// fingerprint is printed again on success, which would satisfy a bare
-	// "contains" no matter what the operator was asked to confirm.
-	shown, asked := strings.Index(out.String(), presentedFP), strings.Index(out.String(), "[yes/no]")
+	// "contains" no matter what the operator was asked to confirm. On the
+	// terminal stream, because a redirected stdout would take the value the
+	// operator has to compare with it and leave them at a blank prompt.
+	shown, asked := strings.Index(errOut.String(), presentedFP), strings.Index(errOut.String(), "[yes/no]")
 	if shown < 0 || asked < 0 || shown > asked {
-		t.Errorf("the fingerprint was not shown before the operator was asked to confirm it:\n%s", out.String())
+		t.Errorf("the fingerprint was not shown before the operator was asked to confirm it:\n%s", errOut.String())
 	}
 	if len(rec.codes) != 1 || rec.codes[0] != joinCode {
 		t.Fatalf("primary received codes %q, want exactly the one the operator typed", rec.codes)

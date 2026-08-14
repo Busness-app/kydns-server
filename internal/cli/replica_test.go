@@ -55,13 +55,19 @@ func TestReplicaInvitePrintsCodeAndFingerprint(t *testing.T) {
 
 func TestReplicaListRendersLagAndLastSync(t *testing.T) {
 	synced := time.Unix(1755000000, 0)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/replica/status" {
+			json.NewEncoder(w).Encode(map[string]any{"role": "primary"})
+			return
+		}
+		// Labels share no substring with their own node IDs, so a row that lost
+		// its label column cannot satisfy an assertion about it.
 		json.NewEncoder(w).Encode(map[string]any{
 			"config_version": 42,
 			"replicas": []map[string]any{
-				{"node_id": "fp-attic", "label": "attic", "last_sync_at": synced.Unix(),
+				{"node_id": "fp-attic", "label": "upstairs", "last_sync_at": synced.Unix(),
 					"last_version": 40, "lag": 2, "status": "behind"},
-				{"node_id": "fp-shed", "label": "shed", "last_sync_at": 0,
+				{"node_id": "fp-shed", "label": "outbuilding", "last_sync_at": 0,
 					"last_version": 0, "lag": 42, "status": "never_synced"},
 			},
 		})
@@ -85,7 +91,7 @@ func TestReplicaListRendersLagAndLastSync(t *testing.T) {
 	if attic == "" || shed == "" {
 		t.Fatalf("both replicas must be listed:\n%s", out.String())
 	}
-	for _, want := range []string{"attic", "behind", "lag 2", "last sync " + synced.Format(time.RFC3339)} {
+	for _, want := range []string{"upstairs", "behind", "lag 2", "last sync " + synced.Format(time.RFC3339)} {
 		if !strings.Contains(attic, want) {
 			t.Errorf("the behind row is missing %q:\n%s", want, attic)
 		}
@@ -95,9 +101,76 @@ func TestReplicaListRendersLagAndLastSync(t *testing.T) {
 	if !strings.Contains(shed, "last sync never") {
 		t.Errorf("a replica that never synced does not say so:\n%s", shed)
 	}
+	// It holds nothing, so it is not 42 versions behind: 42 is the primary's
+	// whole config version, and the web renders this column as a dash.
+	if !strings.Contains(shed, "lag -") || strings.Contains(shed, "42") {
+		t.Errorf("a never-synced peer reports a lag it cannot have:\n%s", shed)
+	}
 	for _, epoch := range []string{"1969", "1970"} {
 		if strings.Contains(shed, epoch) {
 			t.Errorf("a zero last-sync rendered as a date:\n%s", shed)
+		}
+	}
+}
+
+// statusServer answers /api/v1/replica/status with one canned body, and fails
+// the test if anything else is asked for.
+func statusServer(t *testing.T, body map[string]any) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/replica/status" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(body)
+	}))
+	t.Cleanup(srv.Close)
+	return &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+}
+
+// The failure this closes: a replica that has been removed on the primary
+// fails every poll on the pin, and the only surface an operator has on that box
+// is the CLI. Without the error it reads as an unreachable primary, and they go
+// looking at a network that is working.
+func TestReplicaStatusReportsWhyTheLastPollFailed(t *testing.T) {
+	const refused = `primary claims node "" but this node is pinned to fp-orchard`
+	c := statusServer(t, map[string]any{
+		"role": "replica", "primary_address": "10.0.0.9:8443", "node_id": "fp-meadow",
+		"last_sync_unix": time.Unix(1755000000, 0).Unix(), "last_version": 12,
+		"last_error": refused, "stale": true,
+	})
+
+	for _, cmd := range []string{"status", "list"} {
+		var out, errOut bytes.Buffer
+		if rc := replicaCmd(c, []string{cmd}, &out, &errOut); rc != 0 {
+			t.Fatalf("replica %s exit = %d, stderr = %s", cmd, rc, errOut.String())
+		}
+		printed := out.String()
+		// The whole sentence: a substring of it appears in no other line, and the
+		// pinned fingerprint alone is also printed as this node's own.
+		if !strings.Contains(printed, refused) {
+			t.Errorf("replica %s does not report the last error:\n%s", cmd, printed)
+		}
+		for _, want := range []string{"10.0.0.9:8443", "stale", time.Unix(1755000000, 0).Format(time.RFC3339)} {
+			if !strings.Contains(printed, want) {
+				t.Errorf("replica %s is missing %q:\n%s", cmd, want, printed)
+			}
+		}
+	}
+}
+
+// A healthy replica has no error to print, and must not invent one.
+func TestReplicaStatusOnASyncedReplicaIsQuiet(t *testing.T) {
+	c := statusServer(t, map[string]any{
+		"role": "replica", "primary_address": "10.0.0.9:8443",
+		"last_sync_unix": time.Unix(1755000000, 0).Unix(), "last_version": 12,
+	})
+	var out, errOut bytes.Buffer
+	if rc := replicaCmd(c, []string{"status"}, &out, &errOut); rc != 0 {
+		t.Fatalf("exit = %d, stderr = %s", rc, errOut.String())
+	}
+	for _, unwanted := range []string{"last error", "stale"} {
+		if strings.Contains(out.String(), unwanted) {
+			t.Errorf("a synced replica reports %q:\n%s", unwanted, out.String())
 		}
 	}
 }
