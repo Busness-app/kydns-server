@@ -27,12 +27,22 @@ func leaseFile(t *testing.T, dir string, lines ...string) string {
 
 func resolveA(t *testing.T, server, name string) []string {
 	t.Helper()
+	out, err := lookupA(server, name)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", name, err)
+	}
+	return out
+}
+
+// lookupA is the same query without the assertion, for callers that are
+// waiting for a server to come up rather than testing one that has.
+func lookupA(server, name string) ([]string, error) {
 	c := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(name), dns.TypeA)
 	resp, _, err := c.Exchange(m, server)
 	if err != nil {
-		t.Fatalf("resolve %s: %v", name, err)
+		return nil, err
 	}
 	var out []string
 	for _, rr := range resp.Answer {
@@ -40,7 +50,7 @@ func resolveA(t *testing.T, server, name string) []string {
 			out = append(out, a.A.String())
 		}
 	}
-	return out
+	return out, nil
 }
 
 // A DHCP lease resolves over DNS without any manual registration.

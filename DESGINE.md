@@ -7,8 +7,9 @@ homelabs, and small teams. It provides stable names for local services without
 requiring clients to maintain hosts files.
 
 The first release prioritizes reliable local naming, private upstream
-forwarding, and a small administrative web UI. It is single-node; linked-server
-replication is designed here but deferred to a later release.
+forwarding, and a small administrative web UI. A single node is still the
+normal deployment; linked-server replication is built on top of it, and a
+second node is something an operator adds deliberately.
 
 ## Design goals
 
@@ -37,8 +38,9 @@ Each KyDNS installation contains seven logical parts, one Go package each:
    DHCP leases and probes service check URLs.
 6. **Settings** (`internal/settings`) — the process configuration that lives in
    the database, and the single path by which it changes.
-7. **Replication agent** — *deferred.* Would exchange authenticated
-   configuration changes with linked KyDNS peers.
+7. **Replication agent** (`internal/replica`) — the node identity, the pairing
+   exchange, the pinned TLS transport, and the loop that pulls configuration
+   snapshots from a linked primary.
 
 The DNS server reads from the local registry, so local name resolution does not
 depend on any network beyond the host.
@@ -107,38 +109,90 @@ omit upstream credentials, private keys, and other secrets. A blacklist list URL
 blacklist export, which carries list definitions and rules verbatim but never
 the downloaded list bodies, cannot leak any either.
 
-## Linked-server replication (deferred)
+## Linked-server replication
 
-None of this section is implemented. It is recorded so the shipped design does
-not foreclose it: the store keeps a single write chokepoint, so the change log
-can be added without restructuring.
+Servers form an explicitly configured replication group with exactly one
+primary. The primary accepts administrative writes; every other node is a
+read-only replica that serves DNS from the configuration it last pulled. A
+node is a primary, a replica, or standalone, decided by the `replication` keys
+in its config file and by a promotion it has recorded, never inferred from the
+network. It never changes role on its own.
 
-Servers form an explicitly configured replication group. A peer is identified
-by its node ID and endpoint, and must be authenticated before it can exchange
-data.
+A peer is identified by an Ed25519 key generated on first start; its node ID
+is that key's fingerprint. The replication transport is a dedicated TLS
+listener authenticated on pinned fingerprints alone. A mismatch is refused
+outright — no prompt, no trust-on-next-use.
 
-Every administrative or discovered configuration change is recorded as an
-immutable change with:
+Peers are enrolled by a single-use, short-lived pairing code over that
+transport, on the SSH model rather than as a PAKE: the joining node dials the
+primary and reports the key it was presented, the operator compares it with
+the one the primary printed, and only then is the code sent. The code
+authorizes an enrollment; it never authenticates one. Confirmation and
+transmission are two separate calls for that reason, so a peer the operator
+declines receives nothing. Each side pins the other's fingerprint permanently
+once the code is redeemed.
 
-- a globally unique change ID;
-- the originating node ID;
-- the affected resource and operation;
-- the resulting resource value;
-- an ordering value and schema version.
+The primary keeps a `config_version` that is incremented in the same
+transaction as any write to replicated state. A replica polls that version
+and, when it differs, pulls the whole configuration as one document and
+applies it in a single transaction. The configuration is kilobytes, so
+shipping all of it is cheaper than the machinery needed to ship part of it,
+and a replica that has been offline or has drifted converges on its next poll
+with no catch-up path to get wrong.
 
-Peers exchange changes by ID, apply each change idempotently, and acknowledge
-the highest contiguous set they have stored. Retried delivery is safe, and
-offline peers catch up after reconnecting.
+Replicated: views, services, aliases, addresses, manual records, blacklist
+list definitions and rules, and shared settings. Applying a snapshot rebuilds
+the zone, settings, and policy snapshots in the same step: rows nothing has
+read are not replication, and a replica that stored them without rebuilding
+would keep answering with the configuration it had before the pull.
 
-The replication transport must use encrypted, mutually authenticated links.
-Replication must never include DNS query history by default.
+Not replicated: API tokens
+and the admin account, which stay node-local so a compromised replica does
+not surrender the group's credentials; blacklist list bodies, which each node
+downloads itself; per-node settings such as the DHCP lease file and query
+logging; and DNS query history, ever.
 
-### Conflicts
+Health status replicates as operational metadata, outside the configuration
+version, and is what a replica renders for its own services: a replica sits on
+the far side of the network from the services, so its own probes would answer
+for a path no client takes. While its primary is unreachable — or before it has
+been paired with one at all — it reports every service as unknown, never the
+last value it saw. Stale-good health would show
+a dead service as alive during exactly the outage an operator is reading it in.
 
-The initial design uses deterministic last-write-wins for the same resource:
-the ordering value wins, with node ID as the tie-breaker. A losing update is
-retained in the change log for audit and troubleshooting. Future versions may
-add operator-selected authority for resources that should not be multi-writer.
+An invalid or truncated snapshot leaves a replica's previous configuration
+intact, so a bad pull degrades a replica to stale and never to broken.
+
+### Roles and failover
+
+A replica whose primary is unreachable keeps serving its last configuration
+indefinitely and says so in the UI. It never promotes itself: clients already
+list both servers, so an unreachable primary costs administration, not
+resolution.
+
+Promotion is a deliberate operator action — `kydns replica promote`, or the
+button on the replication screen behind a confirmation — and the old primary
+must be demoted or rebuilt before it returns. Two primaries serving the same
+replicas is the one state this design cannot detect or reconcile, which is why
+nothing here creates one automatically. Demotion re-pairs a former primary as a
+replica and replaces its local configuration wholesale.
+
+A promotion is recorded in the database rather than by editing the operator's
+config file, and outranks a `replication.primary` still sitting in that file at
+every later start: a node that has already accepted writes as a primary must
+never come back following the key it was promoted away from. It opens no
+listener either, so a promoted node serves no replicas until the operator sets
+`replication.listen` and restarts. Both the CLI and the UI say so at the moment
+of promotion.
+
+The pull loop is built at startup from the pinned primary, so a node that has
+just joined does not follow anything until it restarts with
+`replication.primary` set. Pairing writes the pin; the config key and the
+restart start the loop.
+
+Because there is a single writer, there are no concurrent writes and so no
+conflicts to resolve. An administrative audit log remains worth building, but
+as its own feature rather than as a side effect of the replication transport.
 
 Replication failures are visible in the administration UI and structured logs,
 but do not make the local DNS server unavailable.
@@ -206,8 +260,11 @@ Shipped in v1:
 - authenticated administration over a web UI, a JSON API, and a CLI;
 - structured privacy-safe logs.
 
-Replication is deferred to its own spec so the first release stays single-node.
-See `docs/superpowers/specs/2026-08-11-kydns-v1-design.md`.
+Linked-server replication has its own spec,
+[`docs/superpowers/specs/2026-08-13-kydns-linked-server-replication-design.md`](docs/superpowers/specs/2026-08-13-kydns-linked-server-replication-design.md):
+pairing, the pinned transport, the pull loop, the read-only replica, and
+operator-driven promotion. Automatic failover, leader election, and more than
+one primary are outside it.
 
 Parental controls, device posture, traffic inspection, local DNSSEC validation,
 local certificate issuance, and automatic peer discovery are outside the

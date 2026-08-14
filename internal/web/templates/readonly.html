@@ -1,0 +1,9 @@
+{{define "body"}}
+<div class="centered card">
+  <h2>This node is a read-only replica</h2>
+  <p>Nothing was changed here. A replica follows <code>{{.ManagedBy}}</code>, which
+     would overwrite this edit on its next sync.</p>
+  <p>Make the change on <code>{{.ManagedBy}}</code>, or promote this node first.</p>
+  <p><a href="/">Back to the dashboard</a></p>
+</div>
+{{end}}

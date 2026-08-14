@@ -8,12 +8,24 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
 )
 
-func (s *Server) Routes(mux *http.ServeMux) {
+// registrar is the sliver of *http.ServeMux that registration uses. ServeMux
+// cannot be enumerated, so this is what lets a test derive the route table
+// from the router rather than hand-listing it.
+type registrar interface {
+	Handle(pattern string, h http.Handler)
+	HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request))
+}
+
+// Routes registers the web transport on a mux it shares with the API. The mux
+// is not where writes are refused: wrap the whole server handler in WriteGate.
+func (s *Server) Routes(mux *http.ServeMux) { s.routes(mux) }
+
+func (s *Server) routes(mux registrar) {
 	mux.HandleFunc("GET /setup", s.getSetup)
-	mux.HandleFunc("POST /setup", s.postSetup)
+	mux.HandleFunc("POST "+PathSetup, s.postSetup)
 	mux.HandleFunc("GET /login", s.requireSetup(s.getLogin))
-	mux.HandleFunc("POST /login", s.requireSetup(s.postLogin))
-	mux.HandleFunc("POST /logout", s.requireCSRF(s.postLogout))
+	mux.HandleFunc("POST "+PathLogin, s.requireSetup(s.postLogin))
+	mux.HandleFunc("POST "+PathLogout, s.requireCSRF(s.postLogout))
 	s.pageRoutes(mux)
 }
 

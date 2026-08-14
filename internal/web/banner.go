@@ -111,6 +111,36 @@ func UpstreamsDownBanner(statuses []dnsserver.UpstreamStatus) *Banner {
 	}
 }
 
+const staleBannerTitle = "This replica is out of date."
+
+// ReplicaStaleBanner fires on the puller's own staleness verdict, so the
+// threshold is decided in one place. A replica that quietly stopped following
+// its primary renders exactly like a healthy one, and the operator would go on
+// trusting what the screen says.
+func ReplicaStaleBanner(st ReplicaStatus, now time.Time) *Banner {
+	if st.Role != roleReplica || !st.Stale {
+		return nil
+	}
+	when := "has never completed"
+	if st.LastSyncUnix != 0 {
+		when = "was " + shortDuration(now.Sub(time.Unix(st.LastSyncUnix, 0))) + " ago"
+	}
+	b := &Banner{
+		Title: staleBannerTitle,
+		Body: fmt.Sprintf("The last sync with %s %s. What this page shows may already have been replaced on the primary.",
+			st.managedBy(), when),
+		Fix: "Check that " + st.managedBy() + " is reachable from this node, then look at its replication log.",
+	}
+	// A primary that refused this node is reachable, and telling the operator to
+	// check the network hides the one sentence that says what to do instead.
+	if st.LastError != "" {
+		b.Body += " The last attempt failed: " + st.LastError + "."
+		b.Fix = "That is what the attempt reported, not a network failure. " +
+			"If this node was removed on " + st.managedBy() + ", pair it again with kydns replica join."
+	}
+	return b
+}
+
 // unreachableViews names the views whose subnets the ACL rejects outright.
 // The settings screen reuses this to flag each row inline.
 func unreachableViews(views []store.View, allowTailscale bool) []string {

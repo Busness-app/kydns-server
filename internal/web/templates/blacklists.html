@@ -20,11 +20,11 @@
   <div class="address-row">
     <form method="post" action="/blacklists/toggle">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-      <button type="submit">{{if .Enabled}}Turn filtering off{{else}}Turn filtering on{{end}}</button>
+      <button type="submit"{{template "ro" $}}>{{if .Enabled}}Turn filtering off{{else}}Turn filtering on{{end}}</button>
     </form>
     <form method="post" action="/blacklists/refresh">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-      <button class="ghost" type="submit">Refresh all lists</button>
+      <button class="ghost" type="submit"{{template "ro" $}}>Refresh all lists</button>
     </form>
   </div>
   <p class="muted">{{.BlockedTotal}} queries blocked since KyDNS started.</p>
@@ -58,18 +58,18 @@
         <form class="address-row" method="post" action="/blacklists/lists/toggle">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="id" value="{{.ID}}">
-          <button type="submit">{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
+          <button type="submit"{{template "ro" $}}>{{if .Enabled}}Disable{{else}}Enable{{end}}</button>
         </form>
         <form class="address-row" method="post" action="/blacklists/refresh">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="id" value="{{.ID}}">
-          <button class="ghost" type="submit">Refresh</button>
+          <button class="ghost" type="submit"{{template "ro" $}}>Refresh</button>
         </form>
         {{if not .Builtin}}
         <form class="address-row" method="post" action="/blacklists/lists/delete">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="id" value="{{.ID}}">
-          <button class="danger" type="submit">Remove</button>
+          <button class="danger" type="submit"{{template "ro" $}}>Remove</button>
         </form>
         {{end}}
       </td>
@@ -99,7 +99,7 @@
     </select>
     <label for="bl-interval">Refresh every (seconds)</label>
     <input id="bl-interval" name="interval" type="text" value="86400">
-    <button type="submit">Add list</button>
+    <button type="submit"{{template "ro" $}}>Add list</button>
   </form>
 </div>
 
@@ -115,7 +115,7 @@
       <td><form method="post" action="/blacklists/rules/delete">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="id" value="{{.ID}}">
-        <button class="danger" type="submit">Remove</button>
+        <button class="danger" type="submit"{{template "ro" $}}>Remove</button>
       </form></td></tr>
     {{end}}
     {{range .Allow}}
@@ -123,7 +123,7 @@
       <td><form method="post" action="/blacklists/rules/delete">
         <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
         <input type="hidden" name="id" value="{{.ID}}">
-        <button class="danger" type="submit">Remove</button>
+        <button class="danger" type="submit"{{template "ro" $}}>Remove</button>
       </form></td></tr>
     {{end}}
     {{if and (not .Deny) (not .Allow)}}
@@ -139,7 +139,7 @@
       <option value="deny">Deny — always block</option>
       <option value="allow">Allow — never block</option>
     </select>
-    <button type="submit">Add rule</button>
+    <button type="submit"{{template "ro" $}}>Add rule</button>
   </form>
 </div>
 
@@ -156,7 +156,7 @@
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <label for="test-name">Domain</label>
     <input id="test-name" name="name" type="text" placeholder="ads.example">
-    <button type="submit">Test</button>
+    <button type="submit"{{template "ro" $}}>Test</button>
   </form>
 </div>
 

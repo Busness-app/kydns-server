@@ -1,0 +1,89 @@
+{{define "page"}}
+
+{{if .Promoted}}
+<div class="banner">
+  <strong>This node is now the primary and accepts writes.</strong>
+  <p>Replicas cannot follow it yet. Set <code>replication.listen</code> in this
+     node's config and restart KyDNS, then add each replica again below.</p>
+  <p>Do not switch the old primary back on until it has been demoted or rebuilt.</p>
+</div>
+{{end}}
+
+{{if eq .Role "replica"}}
+<div class="card">
+  <table class="grid">
+    <tr><th>Follows</th><td>{{.PrimaryAddr}}</td></tr>
+    <tr><th>Last sync</th><td>{{.SyncAge}}</td></tr>
+    {{with .LastError}}<tr><th>Last error</th><td class="warn">{{.}}</td></tr>{{end}}
+  </table>
+  <p class="muted">This node is read-only. Every change is made on the primary
+     and arrives here on the next pull.</p>
+</div>
+
+<div class="card">
+  <h3>Promote this node</h3>
+  <form method="post" action="/replication/promote" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <p>Promoting this node stops it following {{.PrimaryAddr}} and lets it
+       accept writes.</p>
+    <p>The old primary must be demoted or rebuilt before it is switched back
+       on: two primaries serving the same replicas cannot be detected or
+       undone.</p>
+    <p>A promoted node serves no replicas until <code>replication.listen</code>
+       is set and KyDNS is restarted.</p>
+    <label><input type="checkbox" name="confirm" value="yes" required>
+      I have read this and the old primary will not come back as a primary.</label>
+    <button class="danger" type="submit">Promote to primary</button>
+  </form>
+</div>
+
+{{else}}
+
+{{with .Invite}}
+<div class="card">
+  <h3>Pairing invite</h3>
+  <table class="grid invite">
+    <tr><th>Code</th><td><code data-invite="code">{{.Code}}</code></td></tr>
+    <tr><th>Fingerprint of this node</th><td><code data-invite="fingerprint">{{.Fingerprint}}</code></td></tr>
+    <tr><th>Expires</th><td>in {{.ExpiresIn}}</td></tr>
+  </table>
+  <p>On the replica, run <code>kydns replica join</code> and check the
+     fingerprint it reports matches the one above before you enter the code.
+     They must match exactly.</p>
+  <p class="muted">The code is shown once and is not stored. Reload this page
+     and it is gone; mint another if you need one.</p>
+</div>
+{{end}}
+
+<div class="card">
+  <table class="grid">
+    <tr><th>Replica</th><th>Address</th><th>Last sync</th><th>Versions behind</th><th>State</th><th></th></tr>
+    {{range .Peers}}
+    <tr>
+      <td>{{.Label}}<br><code class="muted">{{.NodeID}}</code></td>
+      <td>{{.Address}}</td>
+      <td>{{.LastSync}}</td>
+      <td>{{if .Synced}}{{.Lag}}{{else}}<span class="muted">&mdash;</span>{{end}}</td>
+      <td>{{if eq .Status "in sync"}}<span class="badge">{{.Status}}</span>
+          {{else}}<span class="badge warn">{{.Status}}</span>{{end}}</td>
+      <td>
+        <form method="post" action="/replication/remove">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="node_id" value="{{.NodeID}}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {{else}}
+      <tr><td colspan="6" class="muted">No replicas are paired with this node.</td></tr>
+    {{end}}
+  </table>
+  <form method="post" action="/replication/invite">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <button type="submit">Add replica</button>
+  </form>
+  <p class="muted">Adding a replica mints a code that is good for ten minutes
+     and can be used once.</p>
+</div>
+{{end}}
+{{end}}

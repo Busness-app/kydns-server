@@ -7,6 +7,7 @@
     <a href="/records"{{if eq .Nav "records"}} aria-current="page"{{end}}>Records</a>
     <a href="/discovered"{{if eq .Nav "discovered"}} aria-current="page"{{end}}>Discovered</a>
     <a href="/blacklists"{{if eq .Nav "blacklists"}} aria-current="page"{{end}}>Blacklists</a>
+    {{if .ShowReplication}}<a href="/replication"{{if eq .Nav "replication"}} aria-current="page"{{end}}>Replication</a>{{end}}
     <a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a>
     <form method="post" action="/logout" style="padding:1rem 1.25rem">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
@@ -32,11 +33,22 @@
   </div>
   <main class="app-main">
     <h2>{{.Title}}</h2>
+    {{with .ReplicaBanner}}
+    <div class="banner">
+      <strong>{{.Title}}</strong>
+      <p>{{.Body}}</p>
+      <p>{{.Fix}}</p>
+    </div>
+    {{end}}
     {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
     {{template "page" .}}
   </main>
 </div>
 {{end}}
+
+{{/* "ro" disables an edit control on a replica and says who owns the change.
+     Disabled rather than hidden: a control that vanishes reads as a bug. */}}
+{{define "ro"}}{{if .ReadOnly}} disabled title="Managed by {{.ManagedBy}}"{{end}}{{end}}
 
 {{/* The standing exposure warning, shown wherever the operator lands. The
      prefixes are already masked, so they read as what the ACL matches. */}}

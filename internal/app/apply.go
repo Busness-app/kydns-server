@@ -2,6 +2,7 @@ package app
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/discovery"
@@ -30,14 +31,19 @@ type liveComponents struct {
 
 	// prevUpstreams tracks what the forwarder was last told, so a change
 	// against the previous upstream list flushes stale cached answers.
-	// Apply is the only writer, and Service.Set serializes calls to it.
 	prevUpstreams []string
+
+	// mu serializes the fan-out. A settings save and a replication pull both
+	// reach Apply, from different goroutines, and prevUpstreams has one writer.
+	mu sync.Mutex
 }
 
 // Apply fans a validated, already-built settings snapshot out to every live
 // component. Every value here is already validated and built, so no swap
 // below can fail.
 func (l *liveComponents) Apply(s *settings.Snapshot) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	// The private zone first: the snapshot rebuild at the end of this function
 	// builds names under it, and the records were already moved into it by the
 	// same write that produced this snapshot.

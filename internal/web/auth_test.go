@@ -60,7 +60,7 @@ func newSettings(t *testing.T, st *store.Store) *settings.Service {
 	return settings.NewService(st, h, nil)
 }
 
-func newWeb(t *testing.T) (http.Handler, *Server) {
+func newWeb(t *testing.T, tweak ...func(*Options)) (*http.ServeMux, *Server) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
 	if err != nil {
@@ -89,7 +89,7 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 		t.Fatal(err)
 	}
 	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil), nil)
-	srv := New(Options{
+	o := Options{
 		Store:      st,
 		Registry:   reg,
 		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol),
@@ -100,7 +100,11 @@ func newWeb(t *testing.T) (http.Handler, *Server) {
 		Policy:     pol,
 		Settings:   newSettings(t, st),
 		SetupToken: "setup-me",
-	})
+	}
+	for _, f := range tweak {
+		f(&o)
+	}
+	srv := New(o)
 	mux := http.NewServeMux()
 	srv.Routes(mux)
 	return mux, srv

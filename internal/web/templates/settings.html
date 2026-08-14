@@ -45,7 +45,7 @@
     {{with $.Rename}}<input type="hidden" name="confirm_rename" value="{{.Confirm}}">{{end}}
     <div class="field-grid">
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Zone</legend>
         <div class="fields">
           <label for="private_domain">Private domain</label>
@@ -60,7 +60,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Access</legend>
         <div class="fields">
           <label for="allow_query">Allow queries from, one CIDR per line</label>
@@ -74,7 +74,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Upstreams</legend>
         <div class="fields">
           <label for="upstreams">Upstreams, one per line, tried in order</label>
@@ -83,7 +83,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Cache</legend>
         <div class="fields">
           <label for="cache_min_ttl">Cache minimum TTL</label>
@@ -97,7 +97,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Discovery</legend>
         <div class="fields">
           <label for="dhcp_lease_file">DHCP lease file <span class="muted">(restart required, empty is off)</span></label>
@@ -107,7 +107,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Health checks</legend>
         <div class="fields">
           <label for="health_interval">Health check interval (seconds)</label>
@@ -119,7 +119,7 @@
         </div>
       </fieldset>
 
-      <fieldset class="field-set">
+      <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Logging</legend>
         <div class="fields">
           <label><input type="checkbox" name="log_queries" {{if .LogQueries}}checked{{end}}> Log queries</label>
@@ -128,7 +128,7 @@
       </fieldset>
 
     </div>
-    <button type="submit">{{if $.Rename}}Save and rename{{else}}Save settings{{end}}</button>
+    <button type="submit"{{template "ro" $}}>{{if $.Rename}}Save and rename{{else}}Save settings{{end}}</button>
   </form>
 </div>
 {{end}}
@@ -146,7 +146,7 @@
         <form method="post" action="/settings/views/delete">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="name" value="{{.Name}}">
-          <button class="danger" type="submit">Remove</button>
+          <button class="danger" type="submit"{{template "ro" $}}>Remove</button>
         </form>
       </td>
     </tr>
@@ -166,7 +166,7 @@
     <input id="vname" name="name" type="text" placeholder="tailnet">
     <label for="vsubnets">Subnets (comma separated)</label>
     <input id="vsubnets" name="subnets" type="text" placeholder="100.64.0.0/10">
-    <button type="submit">Add view</button>
+    <button type="submit"{{template "ro" $}}>Add view</button>
   </form>
 </div>
 
@@ -182,7 +182,7 @@
         <form method="post" action="/settings/tokens/delete">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="id" value="{{.ID}}">
-          <button class="danger" type="submit">Revoke</button>
+          <button class="danger" type="submit"{{template "ro" $}}>Revoke</button>
         </form>
       </td>
     </tr>
@@ -194,7 +194,7 @@
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <label for="tlabel">Label</label>
     <input id="tlabel" name="label" type="text" placeholder="laptop">
-    <button type="submit">Create token</button>
+    <button type="submit"{{template "ro" $}}>Create token</button>
   </form>
 </div>
 
@@ -206,7 +206,7 @@
      contain passwords or tokens.</p>
   <form method="post" action="/settings/cache/flush">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-    <button class="ghost" type="submit">Flush DNS cache</button>
+    <button class="ghost" type="submit"{{template "ro" $}}>Flush DNS cache</button>
   </form>
 </div>
 

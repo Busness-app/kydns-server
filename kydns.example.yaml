@@ -6,9 +6,10 @@
 #
 # Two kinds of setting live here.
 #
-# Three of them are owned by this file: data_dir, dns.listen, and
-# admin.listen. KyDNS needs them before it has a database or a web UI, so they
-# are read at every start and changing them means restarting.
+# Five of them are owned by this file: data_dir, dns.listen, admin.listen,
+# replication.listen, and replication.primary. KyDNS needs them before it has a
+# database or a web UI, so they are read at every start and changing them means
+# restarting.
 #
 # Everything else seeds the database on the first run and is then ignored.
 # Edit those under Settings in the web UI, with `kydns settings set`, or over
@@ -146,3 +147,26 @@ health:
   timeout: 5     # first-run seed
   # Concurrent probes. A large registry will not spawn one goroutine each.
   workers: 8     # first-run seed
+
+replication:
+  # Both keys are owned by this file, and setting both is a startup error. A
+  # node is a primary, a replica, or standalone — that is a decision you make,
+  # not something KyDNS guesses from what happens to be reachable.
+  #
+  # A replica keeps a copy of the primary's services, records, views, settings
+  # and filtering policy, and answers from it. If the primary goes down, or you
+  # are rebooting it, the replica keeps resolving.
+  #
+  # Leave both empty for a single-server install. Nothing below is needed to
+  # run KyDNS.
+
+  # Primary: where this node listens for its replicas, on its own TLS listener
+  # separate from DNS and the web UI. A replica is trusted only after it has
+  # been paired; nothing that has not been paired gets an answer here.
+  # listen: "0.0.0.0:8443"
+
+  # Replica: the primary this node follows, as host:port. The node must be
+  # paired with that primary first, so it can recognise the primary's key and
+  # refuse an imposter. Until it is paired, it logs that it is unpaired and
+  # keeps serving what it already has.
+  # primary: "10.0.0.2:8443"

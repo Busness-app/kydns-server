@@ -41,7 +41,15 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 - A web UI, a JSON API, and a CLI that talks to the API.
 - Server settings — upstreams, the query ACL, TTLs, cache bounds, logging,
   discovery and health — edited from any of the three and applied without a
-  restart. Only three keys are still in a config file.
+  restart. Only five keys are still in a config file.
+- Linked-server replication, operable from the CLI and the web UI: pair two
+  nodes by confirming a fingerprint the way you would an SSH host key, watch
+  each replica's lag on the Replication screen, and promote a replica with one
+  command when the primary is gone. A replica follows its primary over its own
+  pinned TLS listener, keeps answering DNS when the primary is down, refuses
+  administrative writes with the address of the node to make them on, and
+  reports service health as unknown rather than showing you what it last heard.
+  See [Replication](#replication).
 - Built-in and custom DNS blacklists, one-off allow/deny rules, and a one-button
   filtering toggle. Filtering is enabled by default and never overrides local
   records.
@@ -69,8 +77,10 @@ malware guarantee.
 
 ## Not yet
 
-- Linked-server replication between KyDNS peers. The store keeps a single write
-  chokepoint so the change log can be added without restructuring.
+- **Automatic failover.** Replication is one primary, chosen by you. Nothing
+  elects a new one, nothing discovers peers, and a replica never promotes
+  itself. Losing the primary costs administration, not resolution: give clients
+  both servers and they keep resolving.
 - **Local DNSSEC validation.** KyDNS trusts the upstream's verdict over an
   encrypted channel; it does not verify signatures itself. An `AD` bit from
   KyDNS means "the resolver we talked to privately said it validated," not
@@ -80,18 +90,22 @@ malware guarantee.
 
 ## Configuration
 
-**Three keys live in a file. Everything else lives in the database and is
-edited in the UI.**
+**Three keys live in a file, and two more if you replicate. Everything else
+lives in the database and is edited in the UI.**
 
 Copy [`kydns.example.yaml`](kydns.example.yaml) to `/etc/kydns/kydns.yaml`, or
-point somewhere else with `--config`. Only these three are read from it at
-every start, because KyDNS needs them before it has a database or a web UI:
+point somewhere else with `--config`. These three are read from it at every
+start, because KyDNS needs them before it has a database or a web UI:
 
 | Setting | Default | Notes |
 |---|---|---|
 | `data_dir` | *required* | Holds the database and the bootstrap/setup tokens. Back it up. |
 | `dns.listen` | `:53` | UDP and TCP. Port 53 needs root or `CAP_NET_BIND_SERVICE`. |
 | `admin.listen` | `127.0.0.1:8053` | Web UI and JSON API. Plain HTTP — proxy it for TLS. |
+
+Two more are read from the file only if you run more than one server:
+`replication.listen` and `replication.primary`. Setting both is a startup
+error. See [Replication](#replication).
 
 Changing one of those means restarting KyDNS. The Settings screen shows all
 three read-only, so you can see what the running server actually has.
@@ -288,6 +302,86 @@ only: `--proxy` takes one address, so the `AAAA` query gets `NODATA` instead of
 the service's own IPv6 address. Give the service just the address family the
 proxy needs, or leave routing off if both must keep resolving.
 
+## Replication
+
+A second KyDNS keeps resolving while the first one is down. One node is the
+primary and takes every change; the other follows it and serves the same
+answers read-only. Give your clients both addresses.
+
+Both `replication` keys are owned by the config file, so each step here that
+sets one needs a restart. On the primary:
+
+```yaml
+replication:
+  listen: "192.168.1.10:8443"   # its own TLS listener, separate from DNS and the UI
+```
+
+On the node that will follow it:
+
+```yaml
+replication:
+  primary: "192.168.1.10:8443"
+```
+
+Restart both, then pair them. Pairing works like an SSH host key: the primary
+prints a code and its fingerprint, and the other node reports the fingerprint
+of whoever answered before the code is ever sent.
+
+```sh
+kydns replica invite                  # on the primary: a code and a fingerprint
+kydns replica join 192.168.1.10:8443 <code> --fingerprint <fingerprint>
+kydns replica list                    # on the primary: lag and last sync per replica
+kydns replica status                  # on a replica: what it follows, and why a poll failed
+```
+
+Compare the two fingerprints yourself. Without `--fingerprint`, `join` shows
+you the one it was presented and waits for a yes; if it does not match, say no.
+A mismatch means something is answering in the primary's place, and the code is
+not sent, so it stays good.
+
+Restart the replica once more after joining — the pull loop is built at
+startup. From then on it polls every five seconds, and a change on the primary
+is answered by the replica a few seconds later. Writes on the replica are
+refused with the address of the primary to make them on: in the API, in the
+CLI, and in the UI, whose editing controls are disabled with the same reason.
+
+The Replication screen in the web UI does all of this too: minting an invite,
+listing replicas with their lag, removing one, and promoting.
+
+### When the primary is down
+
+The replica keeps answering every name it last pulled, for as long as it takes.
+It shows how long since its last sync, and puts up a standing banner once that
+passes a minute. Service health reads as unknown, not as the last thing it
+heard: the node that runs the checks is the one that is missing.
+
+Promote it once you have decided the primary is not coming back:
+
+```sh
+kydns replica promote
+```
+
+It accepts writes immediately. Two things are then yours to do:
+
+- Set `replication.listen` on it and restart, or nothing can follow it.
+  Promotion opens no listener and does not edit your config file.
+- Do not switch the old primary back on until it has been demoted or rebuilt.
+  Demote it with `kydns replica join` against the new primary, which discards
+  its configuration on the first pull. Two primaries serving the same replicas
+  is the one state KyDNS can neither detect nor undo.
+
+Demoting an old primary means editing both keys in its config: set
+`replication.primary` to the new primary, and remove the `replication.listen`
+it still has from when it was one. A node with both keys refuses to start, so
+setting only the first leaves that box with no DNS at all.
+
+The promotion is recorded in the database, so a promoted node comes back a
+primary at every later start even though `replication.primary` is still in its
+file. It logs that the key is being ignored; remove it when convenient.
+
+There is no automatic failover, no leader election, and no peer discovery.
+Promotion is a decision you make, and one primary is the only supported shape.
+
 ## Running it
 
 ```sh
@@ -312,6 +406,7 @@ works from any machine that can reach the admin listener:
 | `kydns token add\|list\|rm` | Manage API tokens. |
 | `kydns settings get` | Print the settings the server is running. |
 | `kydns settings set k=v ...` | Change them. `--confirm-public <cidr>` for a public `allow_query` range. |
+| `kydns replica invite\|list\|remove` | Manage the replicas this node serves. `invite` prints a pairing code and this node's fingerprint; confirm the fingerprint on the replica before entering the code. |
 | `kydns export` / `kydns import` | Read or write the registry and settings as YAML or JSON. |
 | `kydns admin reset-password` | Local recovery. Opens the database directly. |
 
@@ -461,9 +556,11 @@ traffic inspection.
 
 ## Repository status
 
-v1 is implemented and single-node. See
+v1 is implemented, and a single node is still the normal deployment. See
 [the design spec](docs/superpowers/specs/2026-08-11-kydns-v1-design.md) for the
-architecture and the reasoning behind each decision.
+architecture and the reasoning behind each decision, and
+[the replication spec](docs/superpowers/specs/2026-08-13-kydns-linked-server-replication-design.md)
+for the second node.
 
 ```sh
 make test    # every package

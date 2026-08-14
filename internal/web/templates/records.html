@@ -12,7 +12,7 @@
         <form method="post" action="/records/delete">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="id" value="{{.ID}}">
-          <button class="danger" type="submit">Remove</button>
+          <button class="danger" type="submit"{{template "ro" $}}>Remove</button>
         </form>
       </td>
     </tr>
@@ -39,7 +39,7 @@
       <option value="">All views</option>
       {{range .Views}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
     </select>
-    <button type="submit">Add record</button>
+    <button type="submit"{{template "ro" $}}>Add record</button>
   </form>
   <p class="muted">A manual record takes precedence over a service or a
      discovered lease with the same name.</p>

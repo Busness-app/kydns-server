@@ -198,6 +198,48 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	}
 	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
 
+	errs := make(chan error, 3)
+	promotedAt, err := st.Promotion()
+	if err != nil {
+		return err
+	}
+	role := RoleAtBoot(cfg.Replication, promotedAt != 0)
+	if promotedAt != 0 && cfg.Replication.Primary != "" {
+		logger.Info("this node was promoted to primary; replication.primary in the config file is ignored",
+			"promoted_at", promotedAt, "primary", cfg.Replication.Primary,
+			"fix", "remove replication.primary, or run kydns replica join to make this node a replica again")
+	}
+	roleHolder := NewRoleHolder(role)
+	repl, err := startReplication(ctx, cfg, role, st,
+		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
+		checker.Statuses, logger)
+	if err != nil {
+		return err
+	}
+	if repl.srv != nil {
+		defer repl.srv.Close()
+	}
+	nodeID := ""
+	if repl.id != nil {
+		nodeID = repl.id.NodeID
+	}
+
+	// A replica shows the health its primary reports, not what it probes
+	// itself: it sits on the other side of the network from the services, and
+	// its own verdict would keep reading "up" while the primary is unreachable.
+	// The role decides, not the puller, so an unpaired replica reports unknown
+	// rather than falling back to its own probes. A promoted node owns the
+	// probes again, and reads the local checker.
+	healthFn := checker.Statuses
+	if role == RoleReplica {
+		healthFn = func() []health.Status {
+			if roleHolder.Current() != RoleReplica {
+				return checker.Statuses()
+			}
+			return replicaHealth(st, repl.puller, logger)
+		}
+	}
+
 	leaseFn := func() []dhcp.Lease {
 		if poller == nil {
 			return nil
@@ -205,9 +247,34 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return poller.Leases()
 	}
 
+	// One producer for both transports, read per request so promotion moves
+	// them together.
+	replStatus := func() ReplicaStatus {
+		var p puller
+		// Only while this node is still a replica: a promoted node's stopped
+		// loop would otherwise keep reporting a primary and a stale sync time.
+		if repl.puller != nil && roleHolder.Current() == RoleReplica {
+			p = repl.puller
+		}
+		return replicaStatus(roleHolder.Current(), cfg.Replication.Primary, nodeID, p)
+	}
+
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	api := adminapi.NewAPI(reg, acl, cache).WithProviders(leaseFn, checker.Statuses).WithPolicy(policySvc).WithSettings(settingsSvc).WithMetrics(dnsSrv.Metrics())
+	api := adminapi.NewAPI(reg, acl, cache).
+		WithProviders(leaseFn, healthFn).
+		WithPolicy(policySvc).
+		WithSettings(settingsSvc).
+		WithMetrics(dnsSrv.Metrics()).
+		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
+		WithReplicaAdmin(&replicaAdmin{st: st, srv: repl.srv}).
+		// Wired on every node: promotion answers "already a primary" rather than
+		// an error, and a replica must never find this endpoint missing.
+		WithReplicaPromoter(&replicaPromoter{st: st, role: roleHolder, stopPull: repl.stopPull})
+	// Pairing needs this node's key, so it is offered only where there is one.
+	if repl.id != nil {
+		api = api.WithReplicaJoiner(&replicaJoiner{st: st, id: repl.id})
+	}
 	mux := http.NewServeMux()
 	api.Routes(mux)
 
@@ -215,19 +282,20 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	web.New(web.Options{
+	webSrv := web.New(web.Options{
 		Store: st, Registry: reg, API: api, Config: cfg,
-		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
-		Backoff:    auth.NewBackoff(),
-		ACL:        acl,
-		Cache:      cache,
-		Metrics:    dnsSrv.Metrics(),
-		Policy:     policySvc,
-		Settings:   settingsSvc,
-		Upstreams:  fwd.Status,
-		SetupToken: setupToken,
-		Logger:     logger,
-		Health:     checker.Statuses,
+		Sessions:    auth.NewSessions(time.Hour, 12*time.Hour),
+		Backoff:     auth.NewBackoff(),
+		ACL:         acl,
+		Cache:       cache,
+		Metrics:     dnsSrv.Metrics(),
+		Policy:      policySvc,
+		Settings:    settingsSvc,
+		Upstreams:   fwd.Status,
+		SetupToken:  setupToken,
+		Logger:      logger,
+		Health:      healthFn,
+		Replication: func() web.ReplicaStatus { return replStatus().toWeb() },
 		// Compared against the boot values on every page load: there is no
 		// dirty flag to drift, and the banner clears itself on restart.
 		RestartPending: func() []web.RestartItem {
@@ -247,15 +315,18 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			}
 			return leaseFn
 		}(),
-	}).Routes(mux)
+	})
+	webSrv.Routes(mux)
 
 	adminSrv := &http.Server{
-		Addr:              cfg.Admin.Listen,
-		Handler:           mux,
+		Addr: cfg.Admin.Listen,
+		// Both gates sit outside the mux, so a replica refuses every write:
+		// one added later, or one on a path with no route at all. Each answers
+		// in its own transport's language.
+		Handler:           api.WriteGate(webSrv.WriteGate(mux)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	errs := make(chan error, 2)
 	go func() { errs <- dnsSrv.ListenAndServe(cfg.DNS.Listen) }()
 	go func() {
 		if err := adminSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

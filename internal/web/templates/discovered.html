@@ -13,7 +13,7 @@
         <form method="post" action="/discovered/promote">
           <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
           <input type="hidden" name="ip" value="{{.IP}}">
-          <button type="submit">Promote to service</button>
+          <button type="submit"{{template "ro" $}}>Promote to service</button>
         </form>
         {{end}}
       </td>

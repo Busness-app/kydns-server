@@ -24,14 +24,32 @@ import (
 )
 
 type API struct {
-	reg      *registry.Registry
-	acl      *dnsserver.ACL
-	cache    *dnsserver.Cache
-	leases   func() []dhcp.Lease
-	health   func() []health.Status
-	policy   *policy.Service
-	settings *settings.Service
-	metrics  *dnsserver.Metrics
+	reg             *registry.Registry
+	acl             *dnsserver.ACL
+	cache           *dnsserver.Cache
+	leases          func() []dhcp.Lease
+	health          func() []health.Status
+	policy          *policy.Service
+	settings        *settings.Service
+	metrics         *dnsserver.Metrics
+	replicaStatus   func() ReplicaStatus
+	replicaAdmin    ReplicaAdmin
+	replicaJoiner   ReplicaJoiner
+	replicaPromoter ReplicaPromoter
+}
+
+// ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
+// app.ReplicaStatus field-for-field: adminapi cannot import internal/app,
+// because app already imports adminapi to wire this endpoint.
+type ReplicaStatus struct {
+	Role          string `json:"role"`
+	PrimaryAddr   string `json:"primary_address,omitempty"`
+	PrimaryNodeID string `json:"primary_node_id,omitempty"`
+	NodeID        string `json:"node_id,omitempty"`
+	LastSyncUnix  int64  `json:"last_sync_unix,omitempty"`
+	LastVersion   int64  `json:"last_version,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	Stale         bool   `json:"stale,omitempty"`
 }
 
 // topBlockedShown is how many blocked names /api/v1/stats lists.
@@ -66,6 +84,14 @@ func (a *API) WithPolicy(p *policy.Service) *API {
 // still constructs where settings are not wired.
 func (a *API) WithSettings(s *settings.Service) *API {
 	a.settings = s
+	return a
+}
+
+// WithReplication attaches the status producer for GET /api/v1/replica/status.
+// It is optional; an API built without it reports standalone, since that is
+// what a node with no replication configured actually is.
+func (a *API) WithReplication(status func() ReplicaStatus) *API {
+	a.replicaStatus = status
 	return a
 }
 
@@ -121,12 +147,47 @@ type transfer struct {
 func (a *API) Handler() http.Handler {
 	mux := http.NewServeMux()
 	a.Routes(mux)
-	return mux
+	return a.WriteGate(mux)
+}
+
+// The three writes a replica must still accept. Promote is the operator's
+// deliberate escape from being a replica; the two pairing calls are how a
+// node becomes one. Everything else a replica accepts would be silently
+// overwritten by the primary on the next pull.
+const (
+	PathReplicaPairPeek = "/api/v1/replica/pair/peek"
+	PathReplicaJoin     = "/api/v1/replica/join"
+	PathReplicaPromote  = "/api/v1/replica/promote"
+)
+
+// writeExempt is the whole exemption list, shared with route registration so
+// renaming a route cannot silently un-exempt it.
+var writeExempt = map[string]bool{
+	PathReplicaPairPeek: true,
+	PathReplicaJoin:     true,
+	PathReplicaPromote:  true,
+}
+
+// authenticated is the one bearer-token check, shared so the write gate and
+// the handlers behind it can never disagree about who is anonymous.
+func (a *API) authenticated(r *http.Request) bool {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return token != "" && a.reg != nil && a.reg.AuthenticateToken(token)
+}
+
+// registrar is the sliver of *http.ServeMux that registration uses. ServeMux
+// cannot be enumerated, so this is what lets a test derive the route table
+// from the router rather than hand-listing it.
+type registrar interface {
+	HandleFunc(pattern string, h func(http.ResponseWriter, *http.Request))
 }
 
 // Routes registers the API on a mux, so the web transport can share one
-// listener with it.
-func (a *API) Routes(mux *http.ServeMux) {
+// listener with it. The mux is not where writes are refused: wrap the whole
+// server handler in WriteGate.
+func (a *API) Routes(mux *http.ServeMux) { a.routes(mux) }
+
+func (a *API) routes(mux registrar) {
 	mux.HandleFunc("GET /api/v1/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "ok")
@@ -134,8 +195,7 @@ func (a *API) Routes(mux *http.ServeMux) {
 
 	auth := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if token == "" || !a.reg.AuthenticateToken(token) {
+			if !a.authenticated(r) {
 				writeErr(w, http.StatusUnauthorized, "unauthenticated", "", "a valid bearer token is required")
 				return
 			}
@@ -179,6 +239,68 @@ func (a *API) Routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/settings", auth(a.getSettings))
 	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
+
+	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
+
+	// Registered from the constants the exemption list is built from, so a
+	// renamed path cannot end up gated on one side and exempt on the other.
+	mux.HandleFunc("POST "+PathReplicaPairPeek, auth(a.peekPrimary))
+	mux.HandleFunc("POST "+PathReplicaJoin, auth(a.joinPrimary))
+	mux.HandleFunc("POST "+PathReplicaPromote, auth(a.promoteThisNode))
+
+	// Managing replicas is the primary's job. These two are deliberately not in
+	// writeExempt: a replica minting invites would enroll nodes its primary
+	// knows nothing about, and unpairing there would be undone on the next pull.
+	mux.HandleFunc("POST /api/v1/replicas/invite", auth(a.inviteReplica))
+	mux.HandleFunc("GET /api/v1/replicas", auth(a.listReplicas))
+	mux.HandleFunc("DELETE /api/v1/replicas/{node_id}", auth(a.removeReplica))
+}
+
+// roleReplica mirrors app.Role's replica value, which adminapi cannot import
+// because app already imports adminapi.
+const roleReplica = "replica"
+
+// PathPrefix is the surface WriteGate covers. The web transport's own writes
+// are gated separately: a browser gets a page, not a JSON error, so its gate
+// reads this to leave the API alone.
+const PathPrefix = "/api/v1/"
+
+// WriteGate refuses writes on a replica. A write that lands here is not just
+// unauthorized, it is discarded: the primary overwrites this node's config on
+// the next pull, and the operator would never know. It wraps the whole server
+// handler rather than routes, so a path with no route, or a route registered
+// somewhere else entirely, is refused too.
+func (a *API) WriteGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, PathPrefix) ||
+			r.Method == http.MethodGet || r.Method == http.MethodHead ||
+			writeExempt[r.URL.Path] || a.replicaStatus == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Read per request, so promotion stops the refusals immediately.
+		st := a.replicaStatus()
+		// An anonymous caller gets the 401 it always got: this gate sits
+		// outside auth and must not tell a stranger where the primary is.
+		if st.Role != roleReplica || !a.authenticated(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		where := st.PrimaryAddr
+		if where == "" {
+			where = "its primary"
+		}
+		writeErr(w, http.StatusConflict, "read_only_replica", "",
+			"this node is a read-only replica; make this change on "+where)
+	})
+}
+
+func (a *API) getReplicaStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.replicaStatus == nil {
+		writeJSON(w, http.StatusOK, ReplicaStatus{Role: "standalone"})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.replicaStatus())
 }
 
 type errBody struct {
@@ -717,9 +839,16 @@ func (a *API) listHealth(w http.ResponseWriter, _ *http.Request) {
 	out := []map[string]any{}
 	if a.health != nil {
 		for _, s := range a.health() {
+			// Zero means "not since anything": a replica renders its primary's
+			// verdict, which carries no local transition time, and the epoch of a
+			// zero time reads as a date in the year 1.
+			since := int64(0)
+			if !s.Since.IsZero() {
+				since = s.Since.Unix()
+			}
 			out = append(out, map[string]any{
 				"service_id": s.ServiceID, "name": s.Name, "state": s.State,
-				"since": s.Since.Unix(), "last_error": s.LastError,
+				"since": since, "last_error": s.LastError,
 			})
 		}
 	}

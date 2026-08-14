@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -55,6 +56,59 @@ func TestLoadRejects(t *testing.T) {
 				t.Fatal("Load() error = nil, want error")
 			}
 		})
+	}
+}
+
+// Replication is opt-in. A file that never mentions it leaves this node
+// standalone.
+func TestReplicationOffByDefault(t *testing.T) {
+	c, err := Load(write(t, "data_dir: /tmp/kydns\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Replication.Listen != "" || c.Replication.Primary != "" {
+		t.Fatalf("Replication = %+v, want both empty", c.Replication)
+	}
+}
+
+// A node that is both primary and replica has no defined behaviour. Refusing
+// at startup is the only honest answer.
+func TestBothReplicationKeysIsAnError(t *testing.T) {
+	_, err := Load(write(t, "data_dir: /tmp/kydns\nreplication:\n  listen: \":8443\"\n  primary: \"10.0.0.2:8443\"\n"))
+	if err == nil {
+		t.Fatal("a node configured as both primary and replica started")
+	}
+	for _, want := range []string{"replication.listen", "replication.primary"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+}
+
+func TestReplicationAddressesAreValidated(t *testing.T) {
+	for name, body := range map[string]string{
+		"bad listen":  "data_dir: /tmp/x\nreplication:\n  listen: \"not-an-address\"\n",
+		"bad primary": "data_dir: /tmp/x\nreplication:\n  primary: \"not-an-address\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(write(t, body)); err == nil {
+				t.Fatal("an unparseable replication address was accepted")
+			}
+		})
+	}
+}
+
+// Replication is file-owned, like data_dir and the two listen addresses. A
+// key that leaked into the seed would become database state an operator could
+// not remove by editing the file.
+func TestReplicationIsNotSeeded(t *testing.T) {
+	c, err := Load(write(t, "data_dir: /tmp/x\nreplication:\n  primary: \"10.0.0.2:8443\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := c.SeedSettings()
+	if strings.Contains(fmt.Sprintf("%+v", seed), "8443") {
+		t.Errorf("a replication key reached the seeded settings: %+v", seed)
 	}
 }
 
