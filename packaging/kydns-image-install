@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+deb=/opt/kydns/kydns.deb
+
+dpkg --install "$deb"
+systemctl enable --now kydns.service
+systemctl disable kydns-image-install.service >/dev/null 2>&1 || true
+rm -f /etc/systemd/system/kydns-image-install.service \
+      /usr/local/sbin/kydns-image-install \
+      "$deb"
+rmdir /opt/kydns 2>/dev/null || true

@@ -457,6 +457,33 @@ Removing the package leaves `/var/lib/kydns` in place — with `apt purge` and
 with `dnf remove` alike. It holds your whole registry and every credential.
 Delete it yourself when you are sure.
 
+## Raspberry Pi SD image
+
+For a Raspberry Pi 3, 4, 5, or Zero 2 W running 64-bit Raspberry Pi OS Lite,
+build the image from the arm64 package:
+
+```sh
+make rpi-image VERSION=0.0.0-dev
+sudo dd if=dist/kydns_0.0.0-dev_rpi64.img of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+The tagged release asset is compressed to `*.img.xz`; unpack it with
+`xz -d` before flashing.
+
+Replace `/dev/sdX` with the whole SD card device. The image is a Raspberry Pi
+OS Lite base, not a new distribution. On its first boot it installs the
+staged `.deb`, enables KyDNS, and starts it. Raspberry Pi OS first-boot setup
+still supplies the normal user, password, hostname, and network choices; the
+image needs network access on that boot. Read the setup token with:
+
+```sh
+sudo cat /var/lib/kydns/setup-token
+```
+
+The builder downloads the current official arm64 Lite image. Set
+`RPI_BASE_URL` to a pinned `.img.xz` URL for reproducible builds. The output is
+not safe to flash while compressed and is intentionally not a raw device path.
+
 ## Running it
 
 ```sh

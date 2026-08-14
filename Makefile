@@ -1,4 +1,4 @@
-.PHONY: test build setup up dist package clean
+.PHONY: test build setup up dist package rpi-image clean
 test:
 	CGO_ENABLED=0 go test ./...
 build:
@@ -52,6 +52,18 @@ package: dist
 			go tool nfpm package -f nfpm.yaml -p rpm \
 				-t $(DIST)/kydns-$(RPMVERSION)-1.$$rpmarch.rpm || exit 1; \
 	done
+
+# Raspberry Pi OS Lite supplies the bootloader, kernel, and Debian userspace;
+# the image builder stages the arm64 package and installs it on first boot.
+RPI_BASE_URL ?= https://downloads.raspberrypi.com/raspios_lite_arm64_latest
+RPI_IMAGE ?= $(DIST)/kydns_$(VERSION)_rpi64.img
+SUDO ?= sudo
+
+rpi-image: package
+	$(SUDO) ./scripts/build-rpi-image.sh \
+		$(DIST)/kydns_$(VERSION)_arm64.deb \
+		$(RPI_IMAGE) \
+		$(RPI_BASE_URL)
 
 clean:
 	rm -rf dist

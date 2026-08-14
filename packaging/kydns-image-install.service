@@ -1,0 +1,14 @@
+[Unit]
+Description=Install KyDNS from the image payload
+Wants=network-online.target
+After=network-online.target
+Before=kydns.service
+ConditionPathExists=/opt/kydns/kydns.deb
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/kydns-image-install
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
