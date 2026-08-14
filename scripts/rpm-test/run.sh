@@ -164,7 +164,22 @@ in_container '
 	started_before=$(systemctl show -p ExecMainStartTimestamp --value kydns)
 
 	expected=$(rpm -qp --qf "%{VERSION}" /pkgs/upgrade.rpm | tr "~" "-")
-	dnf -y upgrade /pkgs/upgrade.rpm
+	upgrade_out=$(dnf -y upgrade /pkgs/upgrade.rpm)
+	echo "$upgrade_out"
+
+	# postuninstall guards its /var/lib/kydns notice on $1 = 0 so an upgrade
+	# (postun with 1) stays quiet. Nothing else exercises that guard.
+	if echo "$upgrade_out" | grep -q "KyDNS data was left in"; then
+		echo "the upgrade printed the removal notice; the postun guard broke"
+		exit 1
+	fi
+
+	# preset only runs on a first install ($1 = 1 in postinstall.sh). If a
+	# future edit ran it on every upgrade too, the disable-by-default preset
+	# on Fedora and Rocky would silently disable a unit the operator had
+	# enabled -- the running process would be unaffected, so only this
+	# assertion, not the ones above, would catch it before the next reboot.
+	systemctl is-enabled kydns
 
 	grep -q "operator edit, must survive" /etc/kydns/kydns.yaml || {
 		echo "the upgrade clobbered the operator config"; exit 1; }

@@ -389,13 +389,13 @@ Debian and Ubuntu, including Raspberry Pi OS, on `amd64` and `arm64`:
 ```sh
 # pick the .deb matching your architecture from the latest release
 curl -LO https://github.com/yoshiofthewire/kydns-server/releases/latest/download/kydns_<version>_arm64.deb
-sudo apt install ./kydns_<version>_arm64.deb
 ```
 
 Verify it came from this repository's CI before installing:
 
 ```sh
 gh attestation verify kydns_<version>_arm64.deb --repo yoshiofthewire/kydns-server
+sudo apt install ./kydns_<version>_arm64.deb
 ```
 
 Fedora, and the RHEL 9 and 10 family including Rocky and Alma, on `x86_64`
@@ -404,8 +404,8 @@ and `aarch64`:
 ```sh
 # pick the .rpm matching your architecture from the latest release
 curl -LO https://github.com/yoshiofthewire/kydns-server/releases/latest/download/kydns-<version>-1.aarch64.rpm
-sudo dnf install ./kydns-<version>-1.aarch64.rpm
 gh attestation verify kydns-<version>-1.aarch64.rpm --repo yoshiofthewire/kydns-server
+sudo dnf install ./kydns-<version>-1.aarch64.rpm
 ```
 
 Neither package starts KyDNS, because it wants port 53 and your host may

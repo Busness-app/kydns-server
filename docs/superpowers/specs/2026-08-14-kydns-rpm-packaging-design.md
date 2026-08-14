@@ -50,10 +50,13 @@ as-is the rpm would never enable, never restart on upgrade, and never print the
 setup banner. `packaging/preinst.sh`'s `useradd` is portable and worked on both
 distributions.
 
-**`packaging/postrm.sh` carries a live bug for rpm.** Its `/var/lib/kydns`
-notice is outside any argument guard, so an rpm *upgrade* — `postun` with `1` —
-would tell an operator their data was left behind by a removal that never
-happened.
+**`packaging/postrm.sh` carries a live bug, and it isn't rpm-only.** Its
+`/var/lib/kydns` notice is outside any argument guard, so an rpm *upgrade* —
+`postun` with `1` — would tell an operator their data was left behind by a
+removal that never happened. The same is true of the shipped deb: dpkg calls
+`postrm upgrade`, and this script prints the same false notice. The rpm
+scriptlets fix it. The deb's fix is deliberately deferred, to keep this
+change's zero-regression property for the package already shipping.
 
 ## Decisions
 
