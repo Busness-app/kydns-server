@@ -80,7 +80,6 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	}
 	postCtx, cancelPost := context.WithTimeout(ctx, requestTimeout)
 	defer cancelPost()
-	// codeql[go/request-forgery] peerAddress accepts only an operator-supplied IP:port.
 	req, err := http.NewRequestWithContext(postCtx, http.MethodPost, (&url.URL{
 		Scheme: "https",
 		Host:   address,
@@ -92,6 +91,8 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{Transport: &http.Transport{TLSClientConfig: cfg}}
 	defer client.CloseIdleConnections()
+	// codeql[go/request-forgery] peerAddress accepts only an operator-supplied
+	// IP:port, and the connection is pinned to the key the operator confirmed.
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
