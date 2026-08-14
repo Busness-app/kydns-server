@@ -1,0 +1,57 @@
+# Built per architecture by `make package`, which sets ARCH and VERSION.
+name: kydns
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: Yoshi <yoshi@urlxl.com>
+vendor: KyDNS
+homepage: https://github.com/yoshiofthewire/kydns-server
+license: AGPL-3.0-or-later
+description: |
+  Self-hosted local DNS server and service directory.
+  KyDNS names private services on a home or homelab network, with per-subnet
+  views, DHCP lease discovery, health checks, encrypted upstream forwarding,
+  and opt-out blacklist filtering.
+
+# DNS-over-TLS, DNS-over-HTTPS, and HTTPS health checks all need a trust store.
+# The container gets one implicitly from its distroless base; a package has to
+# ask for it.
+depends:
+  - ca-certificates
+
+contents:
+  - src: dist/kydns_linux_${ARCH}/kydns
+    dst: /usr/bin/kydns
+    expand: true
+    file_info:
+      mode: 0755
+
+  - src: packaging/kydns.service
+    dst: /lib/systemd/system/kydns.service
+    file_info:
+      mode: 0644
+
+  # noreplace: an operator's edits survive an upgrade. 0644 is safe because
+  # every field in this file is operational — listens, upstreams, TTLs, ACLs.
+  # Credentials live in the database under /var/lib/kydns, which is 0700.
+  - src: kydns.package.yaml
+    dst: /etc/kydns/kydns.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+
+  - src: kydns.example.yaml
+    dst: /usr/share/doc/kydns/kydns.example.yaml
+    file_info:
+      mode: 0644
+
+# /var/lib/kydns is deliberately not listed. systemd's StateDirectory creates
+# it with the right owner and mode, and dpkg never learns to remove it.
+
+scripts:
+  preinstall: packaging/preinst.sh
+  postinstall: packaging/postinst.sh
+  preremove: packaging/prerm.sh
+  postremove: packaging/postrm.sh
