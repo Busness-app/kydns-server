@@ -5,8 +5,9 @@ ARG BASE=fedora:latest
 FROM ${BASE}
 
 # --allowerasing: Rocky's minimal image ships curl-minimal, which conflicts
-# with the full curl this suite needs for -sf.
-RUN dnf -y --allowerasing install systemd iproute bind-utils curl procps-ng \
+# with the full curl this suite needs for -sf. dnf5 (Fedora) only accepts
+# the flag after the subcommand; dnf4 (Rocky) accepts it there too.
+RUN dnf -y install --allowerasing systemd iproute bind-utils curl procps-ng \
 	&& dnf clean all
 
 # Nothing in a test container wants a getty, and remounting / fails in one.

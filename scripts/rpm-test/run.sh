@@ -64,7 +64,10 @@ echo "== installs"
 in_container '
 	dnf -y install /pkgs/base.rpm
 	test -x /usr/bin/kydns
-	/usr/bin/kydns version
+	expected=$(rpm -qp --qf "%{VERSION}" /pkgs/base.rpm | tr "~" "-")
+	got=$(/usr/bin/kydns version)
+	test "$got" = "$expected" || {
+		echo "kydns version printed \"$got\", wanted \"$expected\""; exit 1; }
 '
 
 echo "== presets leave it disabled and stopped"
@@ -151,6 +154,60 @@ in_container '
 	answer=$(dig @127.0.0.2 -p 53 ci.home.arpa A +short)
 	test "$answer" = "192.168.1.20" || {
 		echo "resolved \"$answer\", wanted 192.168.1.20"; exit 1; }
+'
+
+# The whole check is one shell invocation because it compares timestamps
+# taken before and after the upgrade.
+echo "== an operator's config edits survive an upgrade"
+in_container '
+	echo "# operator edit, must survive" >> /etc/kydns/kydns.yaml
+	started_before=$(systemctl show -p ExecMainStartTimestamp --value kydns)
+
+	expected=$(rpm -qp --qf "%{VERSION}" /pkgs/upgrade.rpm | tr "~" "-")
+	dnf -y upgrade /pkgs/upgrade.rpm
+
+	grep -q "operator edit, must survive" /etc/kydns/kydns.yaml || {
+		echo "the upgrade clobbered the operator config"; exit 1; }
+	grep -q "127.0.0.2:53" /etc/kydns/kydns.yaml
+	if grep -q "upgrade marker" /etc/kydns/kydns.yaml; then
+		echo "noreplace did not hold; the shipped template replaced the live one"
+		exit 1
+	fi
+	# rpm only writes .rpmnew when the templates really differ, so this is
+	# what proves the modified-config path was exercised at all.
+	grep -q "upgrade marker" /etc/kydns/kydns.yaml.rpmnew || {
+		echo "no .rpmnew: the upgrade never hit the config path"; exit 1; }
+
+	# An upgrade must actually replace the running process, or a security fix
+	# ships to disk and never runs.
+	systemctl is-active kydns
+	started_after=$(systemctl show -p ExecMainStartTimestamp --value kydns)
+	if [ -z "$started_after" ] || [ "$started_after" = "$started_before" ]; then
+		echo "the upgrade left the old process running: $started_before"
+		exit 1
+	fi
+	got=$(/usr/bin/kydns version)
+	test "$got" = "$expected" || {
+		echo "kydns version printed \"$got\" after upgrade, wanted \"$expected\""
+		exit 1
+	}
+'
+
+echo "== removal keeps the data"
+in_container '
+	dnf -y remove kydns
+
+	if systemctl is-active --quiet kydns; then
+		echo "removal left kydns running"; exit 1
+	fi
+	test ! -f /usr/bin/kydns || { echo "removal left the binary"; exit 1; }
+
+	# This directory is 0700 kydns; every check needs to be root or a
+	# surviving file reads as a missing one.
+	ls -la /var/lib/kydns
+	test -d /var/lib/kydns || { echo "removal destroyed the registry"; exit 1; }
+	test -f /var/lib/kydns/kydns.db || {
+		echo "removal destroyed the database"; exit 1; }
 '
 
 echo "OK: $rpm_pkg behaves on $base"
