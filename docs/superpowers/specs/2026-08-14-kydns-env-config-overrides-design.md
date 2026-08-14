@@ -74,16 +74,17 @@ precise confusion this feature exists to remove.
 read file → unmarshal → domainProbe → overlayEnv → applyDefaults → validate
 ```
 
-The position is load-bearing at both ends. Before `applyDefaults`, because
-`admin.listen` is filled with `127.0.0.1:8053` only when empty, and an
-environment value that arrived after it would lose to the default. Before
-`validate`, because the values the process boots with are the ones that must be
-checked: an address from the environment gets the same parsing, and the same
-mutual-exclusion rule, as an address from the file. No validation is duplicated
-and none is bypassed.
+Only the `validate` end is load-bearing. The values the process boots with are
+the ones that must be checked: an address from the environment gets the same
+parsing, and the same mutual-exclusion rule, as an address from the file. No
+validation is duplicated and none is bypassed. Running before `applyDefaults`
+is not load-bearing the same way — `applyDefaults` only fills a field that is
+still empty, so an environment value already in place is never at risk of
+losing to a default — but it is the natural place for it anyway, since the
+overlay is filling in a value the same way the file did.
 
-`overlayEnv` walks a table of `{envKey, *string}` pairs. It takes a
-`getenv func(string) string` so tests supply their own environment.
+`overlayEnv` walks a table of `{envKey, *string}` pairs, reading each with
+`os.Getenv`.
 
 ## Precedence, and the empty case
 
@@ -126,10 +127,8 @@ its sources, so there is one piece of bookkeeping rather than two.
 
 ## Testing
 
-`Load` passes `os.Getenv`; `overlayEnv` takes the function so it can be
-exercised directly without touching the process environment. Tests that go
-through `Load` use `t.Setenv`, which `internal/config/config_test.go` can do
-because it uses no `t.Parallel`.
+Tests go through `Load` and use `t.Setenv`, which `internal/config/config_test.go`
+can do because it uses no `t.Parallel`.
 
 - Each of the five variables overrides the file value.
 - An unset variable and an empty variable both leave the file value standing.

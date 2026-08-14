@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"gopkg.in/yaml.v3"
@@ -67,38 +69,31 @@ type ReplicationConfig struct {
 	Primary string `yaml:"primary"` // replica: the primary to follow
 }
 
-// envOverride is one file-owned key and the variable that can replace it.
-// Only the five keys the file still owns at every start are here: every other
-// key seeds a fresh database once, so a variable for it would silently do
-// nothing on a server that has already been configured.
-//
-// A slice, not a map: the applied list is logged and quoted in errors, and map
-// iteration order would make both vary run to run.
-type envOverride struct {
-	name  string
-	field func(*Config) *string
-}
-
-var envOverrideTable = []envOverride{
-	{"KYDNS_DATA_DIR", func(c *Config) *string { return &c.DataDir }},
-	{"KYDNS_DNS_LISTEN", func(c *Config) *string { return &c.DNS.Listen }},
-	{"KYDNS_ADMIN_LISTEN", func(c *Config) *string { return &c.Admin.Listen }},
-	{"KYDNS_REPLICATION_LISTEN", func(c *Config) *string { return &c.Replication.Listen }},
-	{"KYDNS_REPLICATION_PRIMARY", func(c *Config) *string { return &c.Replication.Primary }},
-}
-
 // overlayEnv replaces file values with the environment. An empty variable is
 // skipped rather than treated as an explicit clear: unRAID templates carry
 // fields left blank, and clearing on blank would demote a working primary to
 // standalone from a field nobody filled in. Turning replication off stays what
 // it is — removing the key from the file.
-func (c *Config) overlayEnv(getenv func(string) string) {
-	for _, o := range envOverrideTable {
-		v := getenv(o.name)
+func (c *Config) overlayEnv() {
+	// Only the five keys the file still owns at every start are here: every
+	// other key seeds a fresh database once, so a variable for it would
+	// silently do nothing on a server that has already been configured.
+	table := []struct {
+		name  string
+		field *string
+	}{
+		{"KYDNS_DATA_DIR", &c.DataDir},
+		{"KYDNS_DNS_LISTEN", &c.DNS.Listen},
+		{"KYDNS_ADMIN_LISTEN", &c.Admin.Listen},
+		{"KYDNS_REPLICATION_LISTEN", &c.Replication.Listen},
+		{"KYDNS_REPLICATION_PRIMARY", &c.Replication.Primary},
+	}
+	for _, o := range table {
+		v := strings.TrimSpace(os.Getenv(o.name))
 		if v == "" {
 			continue
 		}
-		*o.field(c) = v
+		*o.field = v
 		c.envApplied = append(c.envApplied, o.name)
 	}
 }
@@ -112,10 +107,8 @@ func (c *Config) EnvOverrides() []string {
 // involves two keys at once, which would otherwise send an operator grepping a
 // file that holds only one of them.
 func (c *Config) source(env string) string {
-	for _, k := range c.envApplied {
-		if k == env {
-			return env
-		}
+	if slices.Contains(c.envApplied, env) {
+		return env
 	}
 	return "the config file"
 }
@@ -156,7 +149,7 @@ func Load(path string) (*Config, error) {
 	_ = yaml.Unmarshal(raw, &probe)
 	c.explicitEmptyDomain = probe.DNS.PrivateDomain != nil && *probe.DNS.PrivateDomain == ""
 
-	c.overlayEnv(os.Getenv)
+	c.overlayEnv()
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)

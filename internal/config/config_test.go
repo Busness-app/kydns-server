@@ -311,9 +311,12 @@ func TestBothReplicationKeysAcrossSourcesNamesEachSource(t *testing.T) {
 	if err == nil {
 		t.Fatal("a node configured as both primary and replica started")
 	}
-	for _, want := range []string{"KYDNS_REPLICATION_PRIMARY", "the config file"} {
+	for _, want := range []string{
+		"replication.listen (from the config file)",
+		"replication.primary (from KYDNS_REPLICATION_PRIMARY)",
+	} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name %s", err, want)
+			t.Errorf("error %q does not contain %q", err, want)
 		}
 	}
 }
@@ -335,9 +338,9 @@ func TestEmptyEnvIsNotAnOverride(t *testing.T) {
 	}
 }
 
-// The overlay runs before applyDefaults, or admin.listen's default would win
-// over the operator's variable.
-func TestEnvBeatsTheDefault(t *testing.T) {
+// The environment can set a key the file never mentions at all, not just one
+// the file sets to something else.
+func TestEnvSetsAKeyTheFileOmits(t *testing.T) {
 	t.Setenv("KYDNS_ADMIN_LISTEN", "0.0.0.0:8053")
 
 	c, err := Load(write(t, "data_dir: /tmp/x\n"))
@@ -360,6 +363,38 @@ func TestEnvOverridesAreRecorded(t *testing.T) {
 	want := []string{"KYDNS_DNS_LISTEN", "KYDNS_REPLICATION_LISTEN"}
 	if got := c.EnvOverrides(); !reflect.DeepEqual(got, want) {
 		t.Errorf("EnvOverrides() = %v, want %v", got, want)
+	}
+}
+
+// A trailing space typed into a web form field, unlike YAML, is not stripped
+// on the way in. Left untrimmed it would point data_dir at a path that looks
+// right and is not, silently opening a fresh database.
+func TestEnvValueIsTrimmed(t *testing.T) {
+	t.Setenv("KYDNS_DATA_DIR", " /srv/kydns \n")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DataDir != "/srv/kydns" {
+		t.Errorf("DataDir = %q, want /srv/kydns", c.DataDir)
+	}
+}
+
+// Whitespace-only is the same as empty: it must not be recorded as an
+// override or replace the file value.
+func TestEnvWhitespaceOnlyIsNotAnOverride(t *testing.T) {
+	t.Setenv("KYDNS_DATA_DIR", "   ")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DataDir != "/tmp/x" {
+		t.Errorf("DataDir = %q, want the file value /tmp/x", c.DataDir)
+	}
+	if got := c.EnvOverrides(); len(got) != 0 {
+		t.Errorf("EnvOverrides() = %v, want none", got)
 	}
 }
 

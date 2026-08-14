@@ -117,8 +117,8 @@ the file turned on. Setting `replication.listen` in the file and
 `KYDNS_REPLICATION_PRIMARY` in the environment is the same startup error as
 setting both in the file, and the message says which source each came from.
 
-Changing one of those means restarting KyDNS. The Settings screen shows all
-three read-only, so you can see what the running server actually has.
+Changing one of those means restarting KyDNS. The Settings screen shows them
+read-only, so you can see what the running server actually has.
 
 Every other setting — the private domain, reverse zones, upstreams,
 `allow_query`, Tailscale, TTLs, the cache bounds, the two logging opt-ins,
