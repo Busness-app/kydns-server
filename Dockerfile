@@ -16,7 +16,9 @@ RUN go mod download
 
 COPY . .
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/kydns ./cmd/kydns
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags="-s -w -X main.version=$VERSION" -o /out/kydns ./cmd/kydns
 
 # Runtime stage. distroless/static carries CA certificates, which HTTPS health
 # checks need, and nothing else — no shell, no package manager.

@@ -61,12 +61,20 @@ jobs:
       - name: build without cgo
         env:
           CGO_ENABLED: "0"
-        run: go build -trimpath -o /tmp/kydns ./cmd/kydns
+        run: |
+          go build -trimpath -ldflags "-X main.version=ci-test" \
+            -o /tmp/kydns ./cmd/kydns
 
       - name: binary runs
         run: |
           /tmp/kydns 2>&1 | grep -q "usage:" || {
             echo "binary did not print usage"; exit 1; }
+
+      - name: version is stamped at link time
+        run: |
+          got=$(/tmp/kydns version)
+          test "$got" = "ci-test" || {
+            echo "kydns version printed '$got', wanted 'ci-test'"; exit 1; }
 
       # A stale example is worse than none, since it is the first thing an
       # operator copies. The config package tests assert it matches the
@@ -185,6 +193,8 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.sha }}
           push: true
           # The commit tag is what lets an operator pin a known-good image and
           # roll back to it; :latest alone gives them nowhere to go.

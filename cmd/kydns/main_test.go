@@ -44,3 +44,13 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 		t.Fatalf("exit code = %d, want 2", code)
 	}
 }
+
+func TestVersionCommandPrintsVersion(t *testing.T) {
+	var out bytes.Buffer
+	if code := run([]string{"version"}, &out); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if got := strings.TrimSpace(out.String()); got != version {
+		t.Errorf("output = %q, want %q", got, version)
+	}
+}
