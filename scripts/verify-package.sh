@@ -23,6 +23,7 @@ check '-rwxr-xr-x .* \./usr/bin/kydns$' '/usr/bin/kydns mode 0755'
 check '-rw-r--r-- .* \./lib/systemd/system/kydns\.service$' 'the systemd unit, mode 0644'
 check '-rw-r--r-- .* \./etc/kydns/kydns\.yaml$' '/etc/kydns/kydns.yaml mode 0644'
 check '\./usr/share/doc/kydns/kydns\.example\.yaml$' 'the example config'
+check '-rw-r--r-- .* \./usr/share/doc/kydns/copyright$' 'the AGPL text at /usr/share/doc/kydns/copyright'
 
 # /var/lib/kydns must NOT be in the package. systemd creates it, and dpkg must
 # never learn it owns it — that is what keeps purge from deleting the database.

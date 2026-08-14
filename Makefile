@@ -18,16 +18,19 @@ VERSION ?= 0.0.0-dev
 ARCHES := amd64 arm64
 DIST := dist
 
+# The staging directory is also the tarball's one top-level entry, so
+# extracting does not scatter kydns, LICENSE, and the example config across
+# whoever's current directory.
 dist:
 	rm -rf dist
 	for arch in $(ARCHES); do \
-		mkdir -p $(DIST)/kydns_linux_$$arch; \
+		stage=kydns_$(VERSION)_linux_$$arch; \
+		mkdir -p $(DIST)/$$stage; \
 		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath \
 			-ldflags "-s -w -X main.version=$(VERSION)" \
-			-o $(DIST)/kydns_linux_$$arch/kydns ./cmd/kydns || exit 1; \
-		cp kydns.example.yaml LICENSE $(DIST)/kydns_linux_$$arch/ || exit 1; \
-		tar -czf $(DIST)/kydns_$(VERSION)_linux_$$arch.tar.gz \
-			-C $(DIST)/kydns_linux_$$arch . || exit 1; \
+			-o $(DIST)/$$stage/kydns ./cmd/kydns || exit 1; \
+		cp kydns.example.yaml LICENSE $(DIST)/$$stage/ || exit 1; \
+		tar -czf $(DIST)/$$stage.tar.gz -C $(DIST) $$stage || exit 1; \
 	done
 
 package: dist

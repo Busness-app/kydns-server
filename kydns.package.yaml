@@ -14,11 +14,15 @@
 # setup and bootstrap tokens; back it up.
 data_dir: /var/lib/kydns
 
-# admin.listen stays at its default, 127.0.0.1:8053. KyDNS speaks plain HTTP,
-# so reaching the web UI from another machine means either an SSH tunnel:
+# admin.listen is not set here, so it keeps its default of 127.0.0.1:8053.
+# KyDNS speaks plain HTTP, so reaching the web UI from another machine means
+# either an SSH tunnel:
 #
 #   ssh -L 8053:127.0.0.1:8053 <this-host>
 #
-# or a TLS-terminating reverse proxy in front of it. Change this to
-# "0.0.0.0:8053" only if you accept publishing an unencrypted admin UI to your
-# LAN.
+# or a TLS-terminating reverse proxy in front of it. To override the default,
+# uncomment the two lines below — but only if you accept publishing an
+# unencrypted admin UI to your LAN.
+#
+# admin:
+#   listen: "0.0.0.0:8053"

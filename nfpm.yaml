@@ -22,7 +22,7 @@ depends:
   - ca-certificates
 
 contents:
-  - src: dist/kydns_linux_${ARCH}/kydns
+  - src: dist/kydns_${VERSION}_linux_${ARCH}/kydns
     dst: /usr/bin/kydns
     expand: true
     file_info:
@@ -44,6 +44,14 @@ contents:
 
   - src: kydns.example.yaml
     dst: /usr/share/doc/kydns/kydns.example.yaml
+    file_info:
+      mode: 0644
+
+  # The `license:` key above is dropped for deb — Debian control has no License
+  # field, it is rpm-only. Without this the .deb would convey KyDNS with no
+  # licence text at all, which Policy forbids and the AGPL does not allow.
+  - src: LICENSE
+    dst: /usr/share/doc/kydns/copyright
     file_info:
       mode: 0644
 
