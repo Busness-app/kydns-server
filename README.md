@@ -382,6 +382,58 @@ file. It logs that the key is being ignored; remove it when convenient.
 There is no automatic failover, no leader election, and no peer discovery.
 Promotion is a decision you make, and one primary is the only supported shape.
 
+## Install from a package
+
+Debian and Ubuntu, including Raspberry Pi OS, on `amd64` and `arm64`:
+
+```sh
+# pick the .deb matching your architecture from the latest release
+curl -LO https://github.com/yoshiofthewire/kydns-server/releases/latest/download/kydns_<version>_arm64.deb
+sudo apt install ./kydns_<version>_arm64.deb
+```
+
+Verify it came from this repository's CI before installing:
+
+```sh
+gh attestation verify kydns_<version>_arm64.deb --repo yoshiofthewire/kydns-server
+```
+
+The package installs KyDNS but does not start it, because KyDNS wants port 53
+and your host may already run a resolver. Check, then start:
+
+```sh
+sudo ss -lnup 'sport = :53'
+sudo systemctl start kydns
+```
+
+Then read the one-time setup token:
+
+```sh
+sudo cat /var/lib/kydns/setup-token
+```
+
+The web UI listens on `127.0.0.1:8053` only. KyDNS speaks plain HTTP, so reach
+it over an SSH tunnel:
+
+```sh
+ssh -L 8053:127.0.0.1:8053 <this-host>
+```
+
+then open `http://127.0.0.1:8053/setup` and enter the token to create your
+admin account. To publish the UI on your LAN instead, change `admin.listen`
+in `/etc/kydns/kydns.yaml` to `0.0.0.0:8053` — and put a TLS-terminating
+reverse proxy in front of it.
+
+| Path | What it is |
+|---|---|
+| `/etc/kydns/kydns.yaml` | Configuration. Your edits survive upgrades. |
+| `/var/lib/kydns` | Database and tokens. **Back this up.** |
+| `/usr/share/doc/kydns/kydns.example.yaml` | Every setting, documented. |
+
+Removing the package leaves `/var/lib/kydns` in place, even with
+`apt purge` — it holds your whole registry and every credential. Delete it
+yourself when you are sure.
+
 ## Running it
 
 ```sh
