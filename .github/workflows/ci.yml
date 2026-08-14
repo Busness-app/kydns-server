@@ -398,3 +398,66 @@ jobs:
       - name: logs on failure
         if: failure()
         run: sudo journalctl -u kydns --no-pager -n 200 || true
+
+  # Proves the rpm the way the deb job proves the deb: on a real systemd, not
+  # by reading the manifest. Distribution varies the systemd version and
+  # architecture varies the binary, so each axis is covered once rather than
+  # paying for the full matrix.
+  package-rpm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            rpmarch: x86_64
+            base: fedora:latest
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            rpmarch: aarch64
+            base: fedora:latest
+          # Rocky 9's older systemd is where a hardening directive is most
+          # likely to be silently ignored.
+          - runner: ubuntu-latest
+            arch: amd64
+            rpmarch: x86_64
+            base: rockylinux:9
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # `make package` starts by removing dist, so the first package is copied
+      # out before the second is built.
+      - name: build the package
+        run: |
+          set -eux
+          make package VERSION=0.0.0-ci ARCHES=${{ matrix.arch }}
+          mkdir -p /tmp/rpms
+          cp dist/kydns-0.0.0~ci-1.${{ matrix.rpmarch }}.rpm /tmp/rpms/base.rpm
+
+      # A byte-identical template never enters rpm's modified-config path, so
+      # the upgrade package has to really differ.
+      - name: build the upgrade package
+        run: |
+          set -eux
+          echo "# upgrade marker: the shipped template changed" >> kydns.package.yaml
+          make package VERSION=9.9.9-upgrade ARCHES=${{ matrix.arch }}
+          git checkout -- kydns.package.yaml
+          cp dist/kydns-9.9.9~upgrade-1.${{ matrix.rpmarch }}.rpm /tmp/rpms/upgrade.rpm
+
+      - name: manifest is right
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq rpm
+          ./scripts/verify-package.sh /tmp/rpms/base.rpm ${{ matrix.arch }}
+
+      - name: behaves on ${{ matrix.base }}
+        run: |
+          ./scripts/rpm-test/run.sh ${{ matrix.base }} \
+            /tmp/rpms/base.rpm /tmp/rpms/upgrade.rpm
