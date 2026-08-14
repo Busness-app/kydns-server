@@ -41,10 +41,17 @@ printf '%s\n' "$info" | grep -q "Architecture: $arch" || {
 	fail=1
 }
 
-dpkg-deb -I "$deb" conffiles 2>/dev/null | grep -q '/etc/kydns/kydns.yaml' || {
+dpkg-deb -I "$deb" conffiles 2>/dev/null | grep -q '/etc/kydns/kydns\.yaml' || {
 	echo "MISSING: /etc/kydns/kydns.yaml is not registered as a conffile"
 	fail=1
 }
+
+for script in preinst postinst prerm postrm; do
+	dpkg-deb -I "$deb" "$script" >/dev/null 2>&1 || {
+		echo "MISSING: maintainer script $script"
+		fail=1
+	}
+done
 
 if [ "$fail" -eq 0 ]; then
 	echo "OK: $deb"

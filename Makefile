@@ -19,7 +19,7 @@ ARCHES := amd64 arm64
 DIST := dist
 
 dist:
-	rm -rf $(DIST)
+	rm -rf dist
 	for arch in $(ARCHES); do \
 		mkdir -p $(DIST)/kydns_linux_$$arch; \
 		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath \
@@ -38,4 +38,4 @@ package: dist
 	done
 
 clean:
-	rm -rf $(DIST)
+	rm -rf dist

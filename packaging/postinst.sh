@@ -2,11 +2,16 @@
 set -e
 
 systemctl daemon-reload >/dev/null 2>&1 || true
-systemctl enable kydns.service >/dev/null 2>&1 || true
 
-# Enabled but not started. KyDNS wants port 53, and starting it unasked on a
-# host that already runs a resolver would take out that host's DNS.
-cat <<'EOF'
+# $2 is only set when dpkg is reconfiguring an existing install (an upgrade).
+# Enabling and re-printing the banner then would silently re-enable a unit an
+# operator deliberately disabled, and bind :53 again at the next boot.
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+	systemctl enable kydns.service >/dev/null 2>&1 || true
+
+	# Enabled but not started. KyDNS wants port 53, and starting it unasked on
+	# a host that already runs a resolver would take out that host's DNS.
+	cat <<'EOF'
 
 KyDNS is installed but not running. Check that nothing else holds port 53:
 
@@ -23,3 +28,4 @@ Read the one-time setup token and open the web UI:
   http://127.0.0.1:8053/setup
 
 EOF
+fi
