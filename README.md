@@ -398,12 +398,34 @@ Verify it came from this repository's CI before installing:
 gh attestation verify kydns_<version>_arm64.deb --repo yoshiofthewire/kydns-server
 ```
 
-The package installs KyDNS but does not start it, because KyDNS wants port 53
-and your host may already run a resolver. Check, then start:
+Fedora, and the RHEL 9 and 10 family including Rocky and Alma, on `x86_64`
+and `aarch64`:
+
+```sh
+# pick the .rpm matching your architecture from the latest release
+curl -LO https://github.com/yoshiofthewire/kydns-server/releases/latest/download/kydns-<version>-1.aarch64.rpm
+sudo dnf install ./kydns-<version>-1.aarch64.rpm
+gh attestation verify kydns-<version>-1.aarch64.rpm --repo yoshiofthewire/kydns-server
+```
+
+Neither package starts KyDNS, because it wants port 53 and your host may
+already run a resolver. Check first:
 
 ```sh
 sudo ss -lnup 'sport = :53'
+```
+
+The `.deb` is enabled at boot already, so it only needs starting:
+
+```sh
 sudo systemctl start kydns
+```
+
+The `.rpm` follows your host's systemd presets, which leave a new service
+disabled, so it needs both:
+
+```sh
+sudo systemctl enable --now kydns
 ```
 
 Then read the one-time setup token:
@@ -429,10 +451,11 @@ reverse proxy in front of it.
 | `/etc/kydns/kydns.yaml` | Configuration. Your edits survive upgrades. |
 | `/var/lib/kydns` | Database and tokens. **Back this up.** |
 | `/usr/share/doc/kydns/kydns.example.yaml` | Every setting, documented. |
+| `/usr/share/doc/kydns/copyright`, `/usr/share/licenses/kydns/LICENSE` | The AGPL text, deb and rpm respectively. |
 
-Removing the package leaves `/var/lib/kydns` in place, even with
-`apt purge` — it holds your whole registry and every credential. Delete it
-yourself when you are sure.
+Removing the package leaves `/var/lib/kydns` in place — with `apt purge` and
+with `dnf remove` alike. It holds your whole registry and every credential.
+Delete it yourself when you are sure.
 
 ## Running it
 
