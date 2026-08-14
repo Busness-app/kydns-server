@@ -13,6 +13,8 @@ func (s *Server) getDashboard(w http.ResponseWriter, r *http.Request) {
 		"Title": "Dashboard", "Nav": "dashboard",
 		// Exposure is standing state, not an event: it shows on every load.
 		"PublicRanges": s.publicRanges(),
+		// Nil on a standalone node, which has no role worth a line.
+		"ReplicationLine": s.replicationSummary(),
 	}
 
 	var banners []*Banner

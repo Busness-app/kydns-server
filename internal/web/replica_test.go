@@ -90,9 +90,7 @@ func TestExemptSetIsExactlyTheFourNamedPaths(t *testing.T) {
 
 	_, _, srv, _, _, _ := replicaWeb(t)
 	registered := registeredPostRoutes(t, srv)
-	// PathPromote is reserved, not yet registered: Task 8 adds its handler, and
-	// TestPromoteIsNotRefusedByTheGate covers it in the meantime.
-	for _, p := range []string{PathSetup, PathLogin, PathLogout} {
+	for _, p := range []string{PathSetup, PathLogin, PathLogout, PathPromote} {
 		if !slices.Contains(registered, p) {
 			t.Errorf("exempt path %s is not a registered route: the exemption is dead or misspelled", p)
 		}

@@ -17,6 +17,10 @@ import (
 // told only that pairing failed.
 var ErrNotServingReplicas = errors.New("this node is not serving replicas")
 
+// ErrReplicationDisabled is what the exported calls return where nothing is
+// wired: no peers to manage, no role to change.
+var ErrReplicationDisabled = errors.New("replication is not configured on this node")
+
 // ReplicaAdmin is the primary's half of pairing. app injects it, because
 // adminapi cannot import app: app already imports adminapi. Invite mints from
 // the replication listener's own book, so a code handed to an operator here is
@@ -70,26 +74,38 @@ func (a *API) WithReplicaPromoter(p ReplicaPromoter) *API {
 	return a
 }
 
-// promoteThisNode makes this node the primary. It is exempt from the write
-// gate: a replica that cannot be promoted is useless in exactly the outage
-// promotion exists for.
-func (a *API) promoteThisNode(w http.ResponseWriter, _ *http.Request) {
+// PromoteThisNode makes this node the primary and reports the role it holds
+// afterwards. Exported because the web screen's promote button runs the same
+// rules: a second implementation of them is a second thing to get wrong.
+func (a *API) PromoteThisNode() (role string, promoted bool, err error) {
 	if a.replicaPromoter == nil {
-		writeErr(w, http.StatusConflict, "replication_disabled", "",
-			"replication is not configured on this node, so there is no role to change")
-		return
+		return "", false, ErrReplicationDisabled
 	}
-	promoted, err := a.replicaPromoter.Promote()
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "promote_failed", "", err.Error())
-		return
+	if promoted, err = a.replicaPromoter.Promote(); err != nil {
+		return "", false, err
 	}
 	// The role is read back rather than assumed: a standalone node has no
 	// primary to stop following, and telling it that it is one sends the
 	// operator looking for replicas that were never there.
-	role := "primary"
+	role = "primary"
 	if a.replicaStatus != nil {
 		role = a.replicaStatus().Role
+	}
+	return role, promoted, nil
+}
+
+// promoteThisNode is exempt from the write gate: a replica that cannot be
+// promoted is useless in exactly the outage promotion exists for.
+func (a *API) promoteThisNode(w http.ResponseWriter, _ *http.Request) {
+	role, promoted, err := a.PromoteThisNode()
+	switch {
+	case errors.Is(err, ErrReplicationDisabled):
+		writeErr(w, http.StatusConflict, "replication_disabled", "",
+			"replication is not configured on this node, so there is no role to change")
+		return
+	case err != nil:
+		writeErr(w, http.StatusInternalServerError, "promote_failed", "", err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"role": role, "promoted": promoted})
 }
@@ -165,12 +181,13 @@ func (a *API) joinRequest(w http.ResponseWriter, r *http.Request, req *joinReque
 // The three peer states an operator acts on. A peer that has never answered is
 // not "0 behind": it is a pairing that never became a replica.
 const (
-	statusNeverSynced = "never_synced"
-	statusBehind      = "behind"
-	statusInSync      = "in_sync"
+	StatusNeverSynced = "never_synced"
+	StatusBehind      = "behind"
+	StatusInSync      = "in_sync"
 )
 
-type replicaRow struct {
+// ReplicaRow is one peer as both transports render it.
+type ReplicaRow struct {
 	NodeID      string `json:"node_id"`
 	Label       string `json:"label,omitempty"`
 	Address     string `json:"address,omitempty"`
@@ -188,26 +205,66 @@ type replicaRow struct {
 //
 // The code is written to this response and nowhere else. It is never logged.
 func (a *API) inviteReplica(w http.ResponseWriter, _ *http.Request) {
-	if a.replicaAdmin == nil {
+	code, expires, nodeID, err := a.InviteReplica()
+	switch {
+	case errors.Is(err, ErrNotServingReplicas):
 		writeErr(w, http.StatusConflict, "replication_disabled", "",
 			"replication is not enabled on this node; set replication.listen to serve replicas")
 		return
-	}
-	code, expires, err := a.replicaAdmin.Invite()
-	if err != nil {
-		if errors.Is(err, ErrNotServingReplicas) {
-			writeErr(w, http.StatusConflict, "replication_disabled", "",
-				"replication is not enabled on this node; set replication.listen to serve replicas")
-			return
-		}
+	case err != nil:
 		writeErr(w, http.StatusInternalServerError, "invite_failed", "", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"code":       code,
 		"expires_at": expires.Unix(),
-		"node_id":    a.thisNodeID(),
+		"node_id":    nodeID,
 	})
+}
+
+// InviteReplica mints a pairing code and returns it with this node's
+// fingerprint. Exported so the web screen shows the pair the CLI prints,
+// from one call: neither transport can display a code without the key beside
+// it, because there is no call here that returns only one of them.
+func (a *API) InviteReplica() (code string, expiresAt time.Time, nodeID string, err error) {
+	if a.replicaAdmin == nil {
+		return "", time.Time{}, "", ErrNotServingReplicas
+	}
+	code, expiresAt, err = a.replicaAdmin.Invite()
+	if err != nil {
+		return "", time.Time{}, "", err
+	}
+	return code, expiresAt, a.thisNodeID(), nil
+}
+
+// ReplicaRows reports the peers this node serves and the config version their
+// lag is measured against. Exported for the web screen, so the lag and status
+// rules live in one place.
+func (a *API) ReplicaRows() ([]ReplicaRow, int64, error) {
+	rows := []ReplicaRow{}
+	if a.replicaAdmin == nil {
+		return rows, 0, nil
+	}
+	version, err := a.replicaAdmin.ConfigVersion()
+	if err != nil {
+		return nil, 0, err
+	}
+	peers, err := a.replicaAdmin.Peers()
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, p := range peers {
+		rows = append(rows, toReplicaRow(p, version))
+	}
+	return rows, version, nil
+}
+
+// RemoveReplica unpairs a peer. Exported for the web screen's remove control.
+func (a *API) RemoveReplica(nodeID string) error {
+	if a.replicaAdmin == nil {
+		return ErrReplicationDisabled
+	}
+	return a.replicaAdmin.Unpair(nodeID)
 }
 
 // thisNodeID is the fingerprint an operator confirms at pairing. It comes from
@@ -225,28 +282,16 @@ func (a *API) thisNodeID() string {
 // has none of, and a demoted primary still holds rows an operator needs to see
 // to clean up.
 func (a *API) listReplicas(w http.ResponseWriter, _ *http.Request) {
-	rows := []replicaRow{}
-	var version int64
-	if a.replicaAdmin != nil {
-		var err error
-		if version, err = a.replicaAdmin.ConfigVersion(); err != nil {
-			writeRegistryErr(w, err)
-			return
-		}
-		peers, err := a.replicaAdmin.Peers()
-		if err != nil {
-			writeRegistryErr(w, err)
-			return
-		}
-		for _, p := range peers {
-			rows = append(rows, toReplicaRow(p, version))
-		}
+	rows, version, err := a.ReplicaRows()
+	if err != nil {
+		writeRegistryErr(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"replicas": rows, "config_version": version})
 }
 
-func toReplicaRow(p store.Peer, version int64) replicaRow {
-	r := replicaRow{
+func toReplicaRow(p store.Peer, version int64) ReplicaRow {
+	r := ReplicaRow{
 		NodeID: p.NodeID, Label: p.Label, Address: p.Address, PairedAt: p.PairedAt,
 		LastSyncAt: p.LastSyncAt, LastVersion: p.LastVersion,
 		Lag: version - p.LastVersion,
@@ -258,21 +303,22 @@ func toReplicaRow(p store.Peer, version int64) replicaRow {
 	}
 	switch {
 	case p.LastSyncAt == 0:
-		r.Status = statusNeverSynced
+		r.Status = StatusNeverSynced
 	case r.Lag > 0:
-		r.Status = statusBehind
+		r.Status = StatusBehind
 	default:
-		r.Status = statusInSync
+		r.Status = StatusInSync
 	}
 	return r
 }
 
 func (a *API) removeReplica(w http.ResponseWriter, r *http.Request) {
-	if a.replicaAdmin == nil {
+	err := a.RemoveReplica(r.PathValue("node_id"))
+	if errors.Is(err, ErrReplicationDisabled) {
 		writeErr(w, http.StatusNotFound, "not_found", "node_id", "this node serves no replicas")
 		return
 	}
-	if err := a.replicaAdmin.Unpair(r.PathValue("node_id")); err != nil {
+	if err != nil {
 		writeRegistryErr(w, err)
 		return
 	}

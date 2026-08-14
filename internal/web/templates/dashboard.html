@@ -8,6 +8,13 @@
 </div>
 {{end}}
 
+{{with .ReplicationLine}}
+<div class="card stat-row">
+  <div class="stat"><div class="value" data-stat="role">{{.Role}}</div><div class="label">This node</div></div>
+  <div class="stat"><div class="value" data-stat="replication">{{.Detail}}</div><div class="label">{{.Label}}</div></div>
+</div>
+{{end}}
+
 <div class="card stat-row">
   <div class="stat"><div class="value" data-stat="total">{{.Queries.Total}}</div><div class="label">Queries</div></div>
   <div class="stat"><div class="value" data-stat="blocked">{{.Queries.Blocked}}</div><div class="label">Blocked</div></div>

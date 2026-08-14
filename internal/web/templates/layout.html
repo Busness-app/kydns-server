@@ -7,6 +7,7 @@
     <a href="/records"{{if eq .Nav "records"}} aria-current="page"{{end}}>Records</a>
     <a href="/discovered"{{if eq .Nav "discovered"}} aria-current="page"{{end}}>Discovered</a>
     <a href="/blacklists"{{if eq .Nav "blacklists"}} aria-current="page"{{end}}>Blacklists</a>
+    {{if .ShowReplication}}<a href="/replication"{{if eq .Nav "replication"}} aria-current="page"{{end}}>Replication</a>{{end}}
     <a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a>
     <form method="post" action="/logout" style="padding:1rem 1.25rem">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">

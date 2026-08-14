@@ -7,6 +7,7 @@ func init() {
 	registerPage("settings.html")
 	registerPage("discovered.html")
 	registerPage("blacklists.html")
+	registerPage("replication.html")
 }
 
 // pageRoutes registers the application screens.
@@ -40,6 +41,14 @@ func (s *Server) pageRoutes(mux registrar) {
 	mux.HandleFunc("POST /blacklists/rules/new", s.requireCSRF(s.postBlacklistRuleNew))
 	mux.HandleFunc("POST /blacklists/rules/delete", s.requireCSRF(s.postBlacklistRuleDelete))
 	mux.HandleFunc("POST /blacklists/test", s.requireCSRF(s.postBlacklistTest))
+
+	mux.HandleFunc("GET /replication", s.requireSession(s.getReplication))
+	mux.HandleFunc("POST /replication/invite", s.requireCSRF(s.postReplicaInvite))
+	mux.HandleFunc("POST /replication/remove", s.requireCSRF(s.postReplicaRemove))
+	// PathPromote, not a path of this file's own choosing: the web write gate
+	// exempts that constant, and a button anywhere else is refused with 409 on
+	// the one node that needs it.
+	mux.HandleFunc("POST "+PathPromote, s.requireCSRF(s.postReplicaPromote))
 
 	mux.HandleFunc("GET /settings", s.requireSession(s.getSettings))
 	mux.HandleFunc("GET /settings/export", s.requireSession(s.getExport))
