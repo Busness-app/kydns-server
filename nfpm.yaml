@@ -52,6 +52,16 @@ contents:
   # licence text at all, which Policy forbids and the AGPL does not allow.
   - src: LICENSE
     dst: /usr/share/doc/kydns/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+
+  # rpm has the License field, set above, and its own place for the text.
+  # `type: license` is what sets the flag `rpm -qL` reads.
+  - src: LICENSE
+    dst: /usr/share/licenses/kydns/LICENSE
+    type: license
+    packager: rpm
     file_info:
       mode: 0644
 
