@@ -15,6 +15,22 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
+func TestPeerAddressRequiresIPAndPort(t *testing.T) {
+	tests := map[string]bool{
+		"192.0.2.10:8443":         true,
+		"[2001:db8::10]:8443":     true,
+		"primary.example:8443":    false,
+		"https://192.0.2.10:8443": false,
+		"192.0.2.10:0":            false,
+	}
+	for raw, wantOK := range tests {
+		_, err := peerAddress(raw)
+		if (err == nil) != wantOK {
+			t.Errorf("peerAddress(%q) error = %v, want success %v", raw, err, wantOK)
+		}
+	}
+}
+
 func pairCtx(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

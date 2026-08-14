@@ -70,6 +70,8 @@ Code, one concern per package:
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.
+- `internal/replica` — linked-node pairing accepts only literal IP:port peer
+  addresses and authenticates self-signed peers by Ed25519 key fingerprint.
 - `internal/dnsserver` — ACL, authoritative answers, cache, forwarding.
 - `internal/upstream` — DoT, DoH, and opt-in plain-UDP upstreams.
 - `internal/policy` — blacklist normalization, list parsing, fetch, refresh,
