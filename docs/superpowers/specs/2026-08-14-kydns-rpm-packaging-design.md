@@ -55,8 +55,9 @@ distributions.
 `postun` with `1` — would tell an operator their data was left behind by a
 removal that never happened. The same is true of the shipped deb: dpkg calls
 `postrm upgrade`, and this script prints the same false notice. The rpm
-scriptlets fix it. The deb's fix is deliberately deferred, to keep this
-change's zero-regression property for the package already shipping.
+scriptlets fix it. The deb was fixed after this design was written: the notice
+now sits behind a `remove | purge` case, which also covers the abort and
+failed-upgrade paths where the package stays installed.
 
 ## Decisions
 

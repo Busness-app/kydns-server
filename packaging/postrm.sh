@@ -25,8 +25,14 @@ fi
 # Kept on purpose, including on purge. This directory is the entire registry
 # and every credential KyDNS holds; removing a package must not be able to
 # destroy it. The kydns user is kept too, because it still owns these files.
-if [ -d /var/lib/kydns ]; then
-	cat <<'EOF'
+#
+# The case is what keeps an upgrade — and the abort and failed-upgrade paths,
+# where the package stays installed — from telling an operator their data was
+# left behind by a removal that never happened.
+case "$1" in
+remove | purge)
+	if [ -d /var/lib/kydns ]; then
+		cat <<'EOF'
 
 KyDNS data was left in /var/lib/kydns. It holds the registry database and
 every credential, so removing the package does not remove it. Delete it
@@ -36,4 +42,6 @@ yourself once you are certain you no longer need it:
   sudo userdel kydns
 
 EOF
-fi
+	fi
+	;;
+esac
