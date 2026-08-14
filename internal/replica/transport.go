@@ -64,8 +64,8 @@ func pinnedTLSConfig(id *Identity, allowed func(fp string) bool) (*tls.Config, e
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13,
-		// codeql[go/disabled-certificate-check] KyDNS uses self-signed certificates;
-		// VerifyPeerCertificate pins the peer's Ed25519 key instead of a CA.
+		// Code scanning flags this and the alert is dismissed there. Do not add
+		// a codeql[...] marker: it does nothing in Go.
 		InsecureSkipVerify: true,
 		// The peer's key is the only credential, so a client that presents none
 		// is refused. Verifying it against a CA is impossible; the callback below
