@@ -181,10 +181,12 @@ func TestPromotionIsRecordedAndCleared(t *testing.T) {
 	if at, err := s.Promotion(); err != nil || at != promotedAt {
 		t.Fatalf("Promotion() = %d, %v, want %d", at, err, promotedAt)
 	}
-	if err := s.ClearPromotion(); err != nil {
+	// Demotion is FollowPrimary, which drops the promotion in the same
+	// transaction as the pairing it records.
+	if err := s.FollowPrimary("fp-new-primary", 0); err != nil {
 		t.Fatal(err)
 	}
 	if at, err := s.Promotion(); err != nil || at != 0 {
-		t.Fatalf("Promotion() = %d, %v after ClearPromotion, want 0", at, err)
+		t.Fatalf("Promotion() = %d, %v after FollowPrimary, want 0", at, err)
 	}
 }

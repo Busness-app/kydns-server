@@ -299,4 +299,46 @@ func TestOperatorPairsWritesFailsOverAndPromotes(t *testing.T) {
 	if got := resolveA(t, second.dnsAddr(), "quarry.home.arpa."); !slices.Contains(got, "192.168.1.44") {
 		t.Errorf("the promoted node answered %v for the replicated name, want 192.168.1.44", got)
 	}
+
+	// 8. The old primary comes back, and the node that was promoted is re-paired
+	// to it as a replica. The two have diverged, and demotion is not a merge:
+	// what this node wrote while it was the primary goes.
+	primary.start(t)
+	postJSON(t, primary.base+"/api/v1/services", primary.token,
+		`{"name":"smithy","addresses":[{"address":"192.168.1.88"}]}`)
+
+	code, inviteOut, stderr = runCLI(t, primary, "replica", "invite")
+	if code != 0 {
+		t.Fatalf("replica invite = %d: %s", code, stderr)
+	}
+	inviteCode = fieldAfter(t, inviteOut, "code")
+
+	// --yes because this node is a primary: joining discards everything it
+	// holds, and there is no terminal here to confirm that on.
+	code, joinOut, stderr = runCLI(t, second, "replica", "join", replAddr, inviteCode,
+		"--fingerprint", primaryNodeID, "--yes")
+	if code != 0 {
+		t.Fatalf("re-pairing the old primary = %d: %s", code, stderr)
+	}
+	// A demoted primary still has replication.listen from when it was one, and a
+	// node with both keys refuses to start. This box's own config never had one,
+	// but the instructions are the same ones the operator of a real demotion
+	// follows at 2am.
+	if !strings.Contains(joinOut, "remove replication.listen") {
+		t.Errorf("the demotion does not say to remove the listener key:\n%s", joinOut)
+	}
+
+	second.restart(t)
+	// Through DNS, not through rows: the pull has to have rebuilt the zone.
+	waitForA(t, second.dnsAddr(), "smithy.home.arpa.", "192.168.1.88")
+	for _, gone := range []string{"foundry.home.arpa.", "tannery.home.arpa."} {
+		if got, err := lookupA(second.dnsAddr(), gone); err == nil && len(got) > 0 {
+			t.Errorf("%s still answers %v on the re-paired node: its divergent configuration was merged, not replaced", gone, got)
+		}
+	}
+	// And it is a replica again, so the promotion it carried is gone with them.
+	getJSON(t, second.base+"/api/v1/replica/status", second.token, &st)
+	if st.Role != "replica" {
+		t.Errorf("the re-paired node reports role %q, want replica", st.Role)
+	}
 }

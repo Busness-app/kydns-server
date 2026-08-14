@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,9 +21,13 @@ import (
 type testAdmin struct {
 	st   *store.Store
 	book *replica.InviteBook
+	// mints counts codes handed out, so a refusal that mints one first is
+	// visible: a spent code is a credential the operator cannot account for.
+	mints int
 }
 
 func (a *testAdmin) Invite() (string, time.Time, error) {
+	a.mints++
 	if a.book == nil {
 		return "", time.Time{}, ErrNotServingReplicas
 	}
@@ -94,6 +99,40 @@ func TestInviteReturnsCodeAndFingerprint(t *testing.T) {
 	// The code came off the book the listener redeems against, not a fresh one.
 	if !admin.book.Redeem(got.Code) {
 		t.Error("the minted code is not outstanding on the invite book")
+	}
+}
+
+// A code beside a blank fingerprint is an invitation to pair with whoever
+// answers, which is exactly what confirming a key prevents. The refusal comes
+// before the mint, so no code is spent on it either.
+func TestInviteIsRefusedWithoutAFingerprint(t *testing.T) {
+	api, admin, tok := primaryAPI(t, "")
+
+	rec := do(t, api.Handler(), "POST", "/api/v1/replicas/invite", tok, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /replicas/invite with no fingerprint to show = %d: %s", rec.Code, rec.Body)
+	}
+	// The error envelope has a "code" of its own, so this reads the field an
+	// invite would put a pairing code in, not the word.
+	var got struct {
+		Code string `json:"code"`
+	}
+	decodeInto(t, rec, &got)
+	if got.Code != "" {
+		t.Errorf("the refusal carries a pairing code %q: %s", got.Code, rec.Body)
+	}
+	if admin.mints != 0 {
+		t.Errorf("%d codes were minted for a refused invite", admin.mints)
+	}
+}
+
+// A code POSTed to peek has nowhere to land: the body this endpoint decodes
+// holds an address and nothing else, so it cannot reach this daemon's memory
+// at all.
+func TestPeekBodyCannotHoldACode(t *testing.T) {
+	rt := reflect.TypeOf(peekRequest{})
+	if rt.NumField() != 1 || rt.Field(0).Name != "Address" {
+		t.Fatalf("peekRequest holds more than an address: %v", rt)
 	}
 }
 

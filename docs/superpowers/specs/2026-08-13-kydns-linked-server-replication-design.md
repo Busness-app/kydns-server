@@ -233,8 +233,10 @@ The web UI reads the role from the existing settings response and renders
 edit controls **disabled** with "Managed by *primary*". Disabled explains
 itself; hidden reads as a bug.
 
-The CLI fails the same way, before touching the network, with the primary's
-address in the message.
+The CLI reports the same refusal, with the primary's address in the message.
+It sends the request and reports the 409 rather than deciding locally: one
+rule at one chokepoint means the CLI cannot be the surface that disagrees
+with it after a promotion.
 
 ### CLI
 
@@ -245,8 +247,11 @@ address in the message.
 | `kydns replica list` | Peers, last sync, version lag, status. |
 | `kydns replica remove <node-id>` | Unpair. Primary. |
 | `kydns replica promote` | Promote this replica to primary. |
+| `kydns replica status` | What this node follows, and why a poll failed. |
 
-Each mirrors a UI control, as every other KyDNS surface does.
+Every one of these mirrors a UI control except `join`: joining is CLI-only.
+The operator has to compare a fingerprint on the node being paired, and that
+node has no session on the primary's screen to do it from.
 
 ### Dashboard
 

@@ -116,12 +116,19 @@ type joinRequest struct {
 	Fingerprint string `json:"fingerprint"`
 }
 
+// peekRequest is an address and nothing else. Sharing joinRequest would decode
+// a code POSTed here into this daemon's memory before discarding it; a struct
+// with nowhere to put one cannot.
+type peekRequest struct {
+	Address string `json:"address"`
+}
+
 // peekPrimary reports the key the peer at address presents. It sends nothing:
 // the operator has confirmed nothing yet, so a peer they go on to decline must
 // learn nothing from having been dialled.
 func (a *API) peekPrimary(w http.ResponseWriter, r *http.Request) {
-	var req joinRequest
-	if !a.joinRequest(w, r, &req) {
+	var req peekRequest
+	if !a.pairingRequest(w, r, &req, &req.Address) {
 		return
 	}
 	fp, err := a.replicaJoiner.Peek(r.Context(), req.Address)
@@ -137,7 +144,7 @@ func (a *API) peekPrimary(w http.ResponseWriter, r *http.Request) {
 // trusts whatever answered, here or in the CLI above it.
 func (a *API) joinPrimary(w http.ResponseWriter, r *http.Request) {
 	var req joinRequest
-	if !a.joinRequest(w, r, &req) {
+	if !a.pairingRequest(w, r, &req, &req.Address) {
 		return
 	}
 	fingerprint := strings.TrimSpace(req.Fingerprint)
@@ -160,9 +167,10 @@ func (a *API) joinPrimary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"primary_node_id": nodeID})
 }
 
-// joinRequest decodes the body both pairing calls share and refuses the two
-// cases neither can do anything with.
-func (a *API) joinRequest(w http.ResponseWriter, r *http.Request, req *joinRequest) bool {
+// pairingRequest decodes into whichever body the call takes and refuses the two
+// cases neither can do anything with. address points into req, because the
+// address is the only field the two share.
+func (a *API) pairingRequest(w http.ResponseWriter, r *http.Request, req any, address *string) bool {
 	if a.replicaJoiner == nil {
 		writeErr(w, http.StatusConflict, "replication_disabled", "",
 			"replication is not configured on this node; set replication.primary and restart before pairing")
@@ -171,7 +179,7 @@ func (a *API) joinRequest(w http.ResponseWriter, r *http.Request, req *joinReque
 	if !decode(w, r, req) {
 		return false
 	}
-	if strings.TrimSpace(req.Address) == "" {
+	if strings.TrimSpace(*address) == "" {
 		writeErr(w, http.StatusBadRequest, "address_required", "address", "an address to pair with is required")
 		return false
 	}
@@ -230,11 +238,17 @@ func (a *API) InviteReplica() (code string, expiresAt time.Time, nodeID string, 
 	if a.replicaAdmin == nil {
 		return "", time.Time{}, "", ErrNotServingReplicas
 	}
+	// Checked before minting: a code printed beside a blank fingerprint is an
+	// invitation to trust whoever answers, which is the one thing this design
+	// exists to prevent. A node with no key to show has nothing to pair with.
+	if nodeID = a.thisNodeID(); nodeID == "" {
+		return "", time.Time{}, "", ErrNotServingReplicas
+	}
 	code, expiresAt, err = a.replicaAdmin.Invite()
 	if err != nil {
 		return "", time.Time{}, "", err
 	}
-	return code, expiresAt, a.thisNodeID(), nil
+	return code, expiresAt, nodeID, nil
 }
 
 // ReplicaRows reports the peers this node serves and the config version their

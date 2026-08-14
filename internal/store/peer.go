@@ -116,13 +116,6 @@ func (s *Store) RecordPromotion(at int64) error {
 	return err
 }
 
-// ClearPromotion undoes a promotion. Joining a primary is the demotion, and a
-// node that kept the record would come back a primary on its next restart.
-func (s *Store) ClearPromotion() error {
-	_, err := s.db.Exec(`DELETE FROM promotion WHERE id = 1`)
-	return err
-}
-
 // FollowPrimary records the primary this node has just paired with and drops
 // any promotion in one transaction. Two statements would leave a window where
 // a node is paired and still promoted, which comes back as a second primary at
