@@ -263,3 +263,154 @@ func TestSeedSettingsUsesDefaults(t *testing.T) {
 		t.Error("the seeded upstreams or ACL are empty, which would refuse every query")
 	}
 }
+
+func TestEnvOverridesFileValues(t *testing.T) {
+	t.Setenv("KYDNS_DATA_DIR", "/srv/kydns")
+	t.Setenv("KYDNS_DNS_LISTEN", "0.0.0.0:5353")
+	t.Setenv("KYDNS_ADMIN_LISTEN", "0.0.0.0:8053")
+	t.Setenv("KYDNS_REPLICATION_LISTEN", "0.0.0.0:8443")
+
+	c, err := Load(write(t, "data_dir: /var/lib/kydns\ndns:\n  listen: \":53\"\nadmin:\n  listen: \"127.0.0.1:8053\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DataDir != "/srv/kydns" {
+		t.Errorf("DataDir = %q, want /srv/kydns", c.DataDir)
+	}
+	if c.DNS.Listen != "0.0.0.0:5353" {
+		t.Errorf("DNS.Listen = %q, want 0.0.0.0:5353", c.DNS.Listen)
+	}
+	if c.Admin.Listen != "0.0.0.0:8053" {
+		t.Errorf("Admin.Listen = %q, want 0.0.0.0:8053", c.Admin.Listen)
+	}
+	if c.Replication.Listen != "0.0.0.0:8443" {
+		t.Errorf("Replication.Listen = %q, want 0.0.0.0:8443", c.Replication.Listen)
+	}
+}
+
+// Tested apart from the four above, because a node is a primary or a replica
+// and never both.
+func TestEnvSetsTheReplicaPrimary(t *testing.T) {
+	t.Setenv("KYDNS_REPLICATION_PRIMARY", "10.0.0.2:8443")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Replication.Primary != "10.0.0.2:8443" {
+		t.Errorf("Replication.Primary = %q, want 10.0.0.2:8443", c.Replication.Primary)
+	}
+}
+
+// The file holds one key and the environment the other, so an error naming
+// only the two keys would send the operator grepping a file that has one.
+func TestBothReplicationKeysAcrossSourcesNamesEachSource(t *testing.T) {
+	t.Setenv("KYDNS_REPLICATION_PRIMARY", "10.0.0.2:8443")
+
+	_, err := Load(write(t, "data_dir: /tmp/x\nreplication:\n  listen: \"0.0.0.0:8443\"\n"))
+	if err == nil {
+		t.Fatal("a node configured as both primary and replica started")
+	}
+	for _, want := range []string{
+		"replication.listen (from the config file)",
+		"replication.primary (from KYDNS_REPLICATION_PRIMARY)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+// An unRAID template field left blank must not demote a working primary to
+// standalone, so an empty variable is not an override.
+func TestEmptyEnvIsNotAnOverride(t *testing.T) {
+	t.Setenv("KYDNS_REPLICATION_LISTEN", "")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\nreplication:\n  listen: \"0.0.0.0:8443\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Replication.Listen != "0.0.0.0:8443" {
+		t.Errorf("Replication.Listen = %q, want the file value 0.0.0.0:8443", c.Replication.Listen)
+	}
+	if got := c.EnvOverrides(); len(got) != 0 {
+		t.Errorf("EnvOverrides() = %v, want none", got)
+	}
+}
+
+// The environment can set a key the file never mentions at all, not just one
+// the file sets to something else.
+func TestEnvSetsAKeyTheFileOmits(t *testing.T) {
+	t.Setenv("KYDNS_ADMIN_LISTEN", "0.0.0.0:8053")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Admin.Listen != "0.0.0.0:8053" {
+		t.Errorf("Admin.Listen = %q, want 0.0.0.0:8053", c.Admin.Listen)
+	}
+}
+
+func TestEnvOverridesAreRecorded(t *testing.T) {
+	t.Setenv("KYDNS_DNS_LISTEN", "0.0.0.0:5353")
+	t.Setenv("KYDNS_REPLICATION_LISTEN", "0.0.0.0:8443")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"KYDNS_DNS_LISTEN", "KYDNS_REPLICATION_LISTEN"}
+	if got := c.EnvOverrides(); !reflect.DeepEqual(got, want) {
+		t.Errorf("EnvOverrides() = %v, want %v", got, want)
+	}
+}
+
+// A trailing space typed into a web form field, unlike YAML, is not stripped
+// on the way in. Left untrimmed it would point data_dir at a path that looks
+// right and is not, silently opening a fresh database.
+func TestEnvValueIsTrimmed(t *testing.T) {
+	t.Setenv("KYDNS_DATA_DIR", " /srv/kydns \n")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DataDir != "/srv/kydns" {
+		t.Errorf("DataDir = %q, want /srv/kydns", c.DataDir)
+	}
+}
+
+// Whitespace-only is the same as empty: it must not be recorded as an
+// override or replace the file value.
+func TestEnvWhitespaceOnlyIsNotAnOverride(t *testing.T) {
+	t.Setenv("KYDNS_DATA_DIR", "   ")
+
+	c, err := Load(write(t, "data_dir: /tmp/x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DataDir != "/tmp/x" {
+		t.Errorf("DataDir = %q, want the file value /tmp/x", c.DataDir)
+	}
+	if got := c.EnvOverrides(); len(got) != 0 {
+		t.Errorf("EnvOverrides() = %v, want none", got)
+	}
+}
+
+// The overlay runs before validate, so a bad address fails the same way from
+// either source.
+func TestEnvAddressesAreValidated(t *testing.T) {
+	for name, env := range map[string][2]string{
+		"bad admin listen":       {"KYDNS_ADMIN_LISTEN", "localhost"},
+		"bad replication listen": {"KYDNS_REPLICATION_LISTEN", "not-an-address"},
+		"primary as a url path":  {"KYDNS_REPLICATION_PRIMARY", "10.0.0.2:8443/replica"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(env[0], env[1])
+			if _, err := Load(write(t, "data_dir: /tmp/x\n")); err == nil {
+				t.Fatalf("Load() error = nil, want error for %s=%s", env[0], env[1])
+			}
+		})
+	}
+}

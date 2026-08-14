@@ -11,6 +11,16 @@
 # database or a web UI, so they are read at every start and changing them means
 # restarting.
 #
+# Each of those five can also be set in the environment, which is how you
+# configure a container without mounting a file over this one:
+#
+#   KYDNS_DATA_DIR  KYDNS_DNS_LISTEN  KYDNS_ADMIN_LISTEN
+#   KYDNS_REPLICATION_LISTEN  KYDNS_REPLICATION_PRIMARY
+#
+# The variable wins over this file. A variable set to nothing is ignored, not
+# treated as empty, so a blank field in a container template cannot silently
+# switch off something this file turned on.
+#
 # Everything else seeds the database on the first run and is then ignored.
 # Edit those under Settings in the web UI, with `kydns settings set`, or over
 # the API. Changing them here after the first start does nothing, which is why

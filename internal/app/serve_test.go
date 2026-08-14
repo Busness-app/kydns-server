@@ -1,9 +1,11 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/miekg/dns"
 
+	"github.com/yoshiofthewire/kydns-server/internal/config"
 	"github.com/yoshiofthewire/kydns-server/internal/policy"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -320,6 +323,48 @@ func TestServeRejectsBadConfig(t *testing.T) {
 	os.WriteFile(cfg, []byte("dns:\n  listen: \":0\"\n"), 0o600) // no data_dir
 	if err := Serve(context.Background(), cfg, nil); err == nil {
 		t.Error("Serve() error = nil for a config with no data_dir")
+	}
+}
+
+// A variable set once and forgotten otherwise overrides the file forever with
+// nothing in the log to say why the file is being ignored.
+func TestLogEnvOverridesNamesTheVariables(t *testing.T) {
+	t.Setenv("KYDNS_REPLICATION_LISTEN", "0.0.0.0:8443")
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "kydns.yaml")
+	if err := os.WriteFile(cfgPath, []byte("data_dir: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	logEnvOverrides(cfg, slog.New(slog.NewTextHandler(&buf, nil)))
+
+	if !strings.Contains(buf.String(), "KYDNS_REPLICATION_LISTEN") {
+		t.Errorf("log %q does not name the variable that was applied", buf.String())
+	}
+}
+
+func TestLogEnvOverridesSaysNothingWhenThereAreNone(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "kydns.yaml")
+	if err := os.WriteFile(cfgPath, []byte("data_dir: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	logEnvOverrides(cfg, slog.New(slog.NewTextHandler(&buf, nil)))
+
+	if buf.Len() != 0 {
+		t.Errorf("logged %q, want nothing when no variable was applied", buf.String())
 	}
 }
 

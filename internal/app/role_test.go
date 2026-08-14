@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +94,23 @@ func TestPromotedNodeReportsNoPrimaryAddress(t *testing.T) {
 		if got := replicaStatus(role, "10.0.0.2:8443", "", nil); got.PrimaryAddr != "" {
 			t.Errorf("a %s reports primary_address %q", role, got.PrimaryAddr)
 		}
+	}
+}
+
+func TestEnvAloneMakesThisNodeAPrimary(t *testing.T) {
+	t.Setenv("KYDNS_REPLICATION_LISTEN", "0.0.0.0:8443")
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "kydns.yaml")
+	if err := os.WriteFile(cfgPath, []byte("data_dir: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := RoleFrom(cfg.Replication); got != RolePrimary {
+		t.Errorf("RoleFrom() = %q, want %q", got, RolePrimary)
 	}
 }
 

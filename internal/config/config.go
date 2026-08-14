@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"gopkg.in/yaml.v3"
@@ -33,6 +35,10 @@ type Config struct {
 	// explicitEmptyDomain records that the operator wrote an empty
 	// private_domain, which must fail rather than silently defaulting.
 	explicitEmptyDomain bool
+	// envApplied names the environment variables that replaced a file value,
+	// in table order. Startup logs them, and the mutual-exclusion error reads
+	// them to say which source each key came from.
+	envApplied []string
 }
 
 type DNSConfig struct {
@@ -61,6 +67,50 @@ type AdminConfig struct {
 type ReplicationConfig struct {
 	Listen  string `yaml:"listen"`  // primary: the TLS replication listener
 	Primary string `yaml:"primary"` // replica: the primary to follow
+}
+
+// overlayEnv replaces file values with the environment. An empty variable is
+// skipped rather than treated as an explicit clear: unRAID templates carry
+// fields left blank, and clearing on blank would demote a working primary to
+// standalone from a field nobody filled in. Turning replication off stays what
+// it is — removing the key from the file.
+func (c *Config) overlayEnv() {
+	// Only the five keys the file still owns at every start are here: every
+	// other key seeds a fresh database once, so a variable for it would
+	// silently do nothing on a server that has already been configured.
+	table := []struct {
+		name  string
+		field *string
+	}{
+		{"KYDNS_DATA_DIR", &c.DataDir},
+		{"KYDNS_DNS_LISTEN", &c.DNS.Listen},
+		{"KYDNS_ADMIN_LISTEN", &c.Admin.Listen},
+		{"KYDNS_REPLICATION_LISTEN", &c.Replication.Listen},
+		{"KYDNS_REPLICATION_PRIMARY", &c.Replication.Primary},
+	}
+	for _, o := range table {
+		v := strings.TrimSpace(os.Getenv(o.name))
+		if v == "" {
+			continue
+		}
+		*o.field = v
+		c.envApplied = append(c.envApplied, o.name)
+	}
+}
+
+// EnvOverrides names the environment variables that replaced a file value.
+func (c *Config) EnvOverrides() []string {
+	return append([]string(nil), c.envApplied...)
+}
+
+// source names where a key's value came from. It exists for the one error that
+// involves two keys at once, which would otherwise send an operator grepping a
+// file that holds only one of them.
+func (c *Config) source(env string) string {
+	if slices.Contains(c.envApplied, env) {
+		return env
+	}
+	return "the config file"
 }
 
 // DiscoveryConfig is off unless DHCPLeaseFile is set: KyDNS does not guess at
@@ -99,6 +149,7 @@ func Load(path string) (*Config, error) {
 	_ = yaml.Unmarshal(raw, &probe)
 	c.explicitEmptyDomain = probe.DNS.PrivateDomain != nil && *probe.DNS.PrivateDomain == ""
 
+	c.overlayEnv()
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -154,8 +205,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("admin.listen %q: %w", c.Admin.Listen, err)
 	}
 	if c.Replication.Listen != "" && c.Replication.Primary != "" {
-		return errors.New("replication.listen and replication.primary are mutually " +
-			"exclusive: a node is a primary or a replica, never both")
+		return fmt.Errorf("replication.listen (from %s) and replication.primary (from %s) "+
+			"are mutually exclusive: a node is a primary or a replica, never both",
+			c.source("KYDNS_REPLICATION_LISTEN"), c.source("KYDNS_REPLICATION_PRIMARY"))
 	}
 	if c.Replication.Listen != "" {
 		if _, _, err := net.SplitHostPort(c.Replication.Listen); err != nil {

@@ -11,9 +11,9 @@ import (
 
 // restartNote covers exactly the keys the config file still owns. Everything
 // else is edited above and stored in the database.
-const restartNote = "These three come from the config file and are read at startup. " +
-	"Everything else is edited above and stored in the database, where the config " +
-	"file no longer has any effect."
+const restartNote = "These come from the config file or the environment, and are read at " +
+	"startup. Everything else is edited above and stored in the database, where the " +
+	"config file no longer has any effect."
 
 type viewRow struct {
 	Name        string
@@ -37,7 +37,7 @@ func (s *Server) upstreams() []dnsserver.UpstreamStatus {
 	return s.o.Upstreams()
 }
 
-// configRows renders the three keys the config file still owns: they are all
+// configRows renders the keys the config file still owns: they are all
 // needed before the database is open. Every other key moved into the database,
 // and showing the file's copy of one would show a value nothing reads.
 func (s *Server) configRows() []configRow {

@@ -43,6 +43,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	if err != nil {
 		return err // fail fast: never run half-configured
 	}
+	logEnvOverrides(cfg, logger)
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
@@ -354,6 +355,19 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return errors.Join(dnsSrv.Shutdown(shutdown), adminSrv.Shutdown(shutdown))
+}
+
+// logEnvOverrides records which file-owned settings the environment replaced.
+// Without it, a variable set once and forgotten contradicts the operator's
+// file at every start with nothing to say so.
+func logEnvOverrides(cfg *config.Config, logger *slog.Logger) {
+	keys := cfg.EnvOverrides()
+	if len(keys) == 0 {
+		return
+	}
+	logger.Info("configuration overridden from the environment",
+		"variables", strings.Join(keys, " "),
+		"note", "these replace the matching keys in the config file")
 }
 
 // ensureSettings returns the settings the process will boot with. On a fresh
