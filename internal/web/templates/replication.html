@@ -14,6 +14,7 @@
   <table class="grid">
     <tr><th>Follows</th><td>{{.PrimaryAddr}}</td></tr>
     <tr><th>Last sync</th><td>{{.SyncAge}}</td></tr>
+    {{with .LastError}}<tr><th>Last error</th><td class="warn">{{.}}</td></tr>{{end}}
   </table>
   <p class="muted">This node is read-only. Every change is made on the primary
      and arrives here on the next pull.</p>

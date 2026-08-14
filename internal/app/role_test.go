@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -56,10 +57,31 @@ func TestReplicaStatusStandaloneHasNoPrimaryFields(t *testing.T) {
 }
 
 // An unpaired replica has no puller, but it still knows which box its primary
-// is, and the write gate's refusal has to name it.
+// is, and the write gate's refusal has to name it. It will also never sync, so
+// it says so rather than rendering like a node that is up to date.
 func TestUnpairedReplicaStatusStillNamesThePrimary(t *testing.T) {
-	if got := replicaStatus(RoleReplica, "10.0.0.2:8443", "", nil); got.PrimaryAddr != "10.0.0.2:8443" {
+	got := replicaStatus(RoleReplica, "10.0.0.2:8443", "", nil)
+	if got.PrimaryAddr != "10.0.0.2:8443" {
 		t.Fatalf("PrimaryAddr = %q, want 10.0.0.2:8443", got.PrimaryAddr)
+	}
+	if !got.Stale || !strings.Contains(got.LastError, "not paired") {
+		t.Fatalf("an unpaired replica reports stale=%v, error %q", got.Stale, got.LastError)
+	}
+}
+
+// Every surface renders from this one status, and a field dropped on the way to
+// one of them is how "the replica has been unlinked" becomes "check the
+// network" on the screen the operator is actually looking at.
+func TestLastErrorReachesBothTransports(t *testing.T) {
+	const refused = `primary claims node "" but this node is pinned to fp-orchard`
+	got := replicaStatus(RoleReplica, "10.0.0.2:8443", "fp-me", fakePullerStatus{st: replica.Status{
+		PrimaryNodeID: "fp-orchard", LastVersion: 3, LastError: refused, Stale: true,
+	}})
+	if w := got.toWeb(); w.LastError != refused || !w.Stale {
+		t.Errorf("the web status carries error %q, stale %v", w.LastError, w.Stale)
+	}
+	if a := got.toAdminAPI(); a.LastError != refused || !a.Stale {
+		t.Errorf("the API status carries error %q, stale %v", a.LastError, a.Stale)
 	}
 }
 

@@ -199,23 +199,64 @@ func TestReplicaDisablesTheSettingsFieldsets(t *testing.T) {
 	}
 }
 
-func TestReplicaShowsStaleBannerPastSixtySeconds(t *testing.T) {
+// The threshold is the puller's, so the screen renders its verdict rather than
+// timing the sync again with its own constant.
+func TestReplicaShowsStaleBannerOnTheStaleFlag(t *testing.T) {
 	h, _, _, status, c, _ := replicaWeb(t)
 
 	status.LastSyncUnix = time.Now().Add(-10 * time.Second).Unix()
 	if body := get(t, h, "/services", c).Body.String(); strings.Contains(body, staleBannerTitle) {
-		t.Errorf("a replica synced 10s ago shows the stale banner:\n%s", body)
+		t.Errorf("a replica the puller calls fresh shows the stale banner:\n%s", body)
 	}
 
+	status.Stale = true
 	status.LastSyncUnix = time.Now().Add(-61 * time.Second).Unix()
 	for _, path := range []string{"/", "/services", "/records", "/settings"} {
 		body := get(t, h, path, c).Body.String()
 		if !strings.Contains(body, staleBannerTitle) {
-			t.Errorf("GET %s shows no stale banner 61s after the last sync:\n%s", path, body)
+			t.Errorf("GET %s shows no stale banner for a stale replica:\n%s", path, body)
 		}
 		if !strings.Contains(body, testPrimaryAddr) {
 			t.Errorf("GET %s stale banner does not name the primary", path)
 		}
+	}
+}
+
+// The failure this closes: the operator removes this replica on the primary,
+// every poll is refused, and the only thing on the screen says to check that a
+// primary which is up and answering is reachable.
+func TestStaleBannerCarriesTheLastError(t *testing.T) {
+	h, _, _, status, c, _ := replicaWeb(t)
+	const unlinked = "primary claims node \"\" but this node is pinned to fp-orchard"
+
+	status.Stale = true
+	status.LastError = unlinked
+	status.LastSyncUnix = time.Now().Add(-61 * time.Second).Unix()
+	body := get(t, h, "/services", c).Body.String()
+	if !strings.Contains(body, "pinned to fp-orchard") {
+		t.Errorf("the banner does not report why the last poll failed:\n%s", body)
+	}
+	// The wrong instruction, and the one an operator would act on first.
+	if strings.Contains(body, "is reachable from this node") {
+		t.Errorf("a refused replica is told to check reachability:\n%s", body)
+	}
+	if !strings.Contains(body, "kydns replica join") {
+		t.Errorf("the banner does not say how to pair this node again:\n%s", body)
+	}
+
+	// The same error on the replication screen, which is where an operator goes
+	// once the banner has sent them there. Matched on the row's own label: the
+	// banner renders on this page too and carries the same text, so the value
+	// alone would be satisfied by a screen that shows nothing itself.
+	page := get(t, h, "/replication", c).Body.String()
+	if !strings.Contains(page, "Last error") || !strings.Contains(page, "pinned to fp-orchard") {
+		t.Errorf("the replication screen has no last-error row of its own:\n%s", page)
+	}
+
+	// Without an error the reachability advice is still the right one.
+	status.LastError = ""
+	if body := get(t, h, "/services", c).Body.String(); !strings.Contains(body, "is reachable from this node") {
+		t.Errorf("an unreachable primary loses the advice to check the network:\n%s", body)
 	}
 }
 

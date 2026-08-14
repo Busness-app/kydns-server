@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"maps"
 	"net/http"
 	"strconv"
@@ -109,6 +110,9 @@ func (s *Server) replicationData() map[string]any {
 	if st, isReplica := s.replica(); isReplica {
 		data["PrimaryAddr"] = st.managedBy()
 		data["SyncAge"] = sinceText(st.LastSyncUnix, time.Now())
+		// The screen an operator opens when replication looks wrong is this one,
+		// so what the last poll reported belongs on it.
+		data["LastError"] = st.LastError
 		return data
 	}
 	rows, err := s.peerRows(time.Now())
@@ -130,7 +134,7 @@ func (s *Server) postReplicaInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	code, expires, fingerprint, err := s.o.API.InviteReplica()
 	if err != nil {
-		s.renderReplication(w, r, http.StatusConflict, map[string]any{"Error": err.Error()})
+		s.renderReplication(w, r, http.StatusConflict, map[string]any{"Error": inviteErrorText(err)})
 		return
 	}
 	// The page holds a credential good for ten minutes. Nothing is meant to
@@ -151,6 +155,15 @@ func (s *Server) postReplicaRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/replication", http.StatusSeeOther)
+}
+
+// inviteErrorText says what to change, matching the sentence the JSON path
+// gives. A bare "not serving replicas" leaves the operator with no key to set.
+func inviteErrorText(err error) string {
+	if errors.Is(err, adminapi.ErrNotServingReplicas) {
+		return err.Error() + "; set replication.listen to serve replicas and restart"
+	}
+	return err.Error()
 }
 
 // replicationOff is what a screen with no replication wiring behind it says.

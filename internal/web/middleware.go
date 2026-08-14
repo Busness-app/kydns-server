@@ -64,6 +64,12 @@ type ReplicaStatus struct {
 	Role         string
 	PrimaryAddr  string
 	LastSyncUnix int64
+	// LastError is why the last poll failed, in the primary's own words. An
+	// unlinked replica and a schema mismatch both read as "unreachable" without
+	// it, which sends the operator to check a network that is working.
+	LastError string
+	// Stale is the puller's own verdict, so the threshold is decided once.
+	Stale bool
 }
 
 // roleReplica mirrors app.Role's replica value, for the same reason.

@@ -106,6 +106,12 @@ func replicaStatus(role Role, primaryAddr, nodeID string, p puller) ReplicaStatu
 		rs.PrimaryAddr = primaryAddr
 	}
 	if p == nil {
+		// A replica with no pull loop is not paired, so it will never sync. Left
+		// unsaid it renders exactly like a healthy node.
+		if role == RoleReplica {
+			rs.Stale = true
+			rs.LastError = "this node is not paired with a primary"
+		}
 		return rs
 	}
 	st := p.Status()
@@ -124,6 +130,7 @@ func replicaStatus(role Role, primaryAddr, nodeID string, p puller) ReplicaStatu
 func (s ReplicaStatus) toWeb() web.ReplicaStatus {
 	return web.ReplicaStatus{
 		Role: string(s.Role), PrimaryAddr: s.PrimaryAddr, LastSyncUnix: s.LastSyncUnix,
+		LastError: s.LastError, Stale: s.Stale,
 	}
 }
 
