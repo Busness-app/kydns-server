@@ -93,7 +93,7 @@ func PairAsReplica(ctx context.Context, address string, id *Identity, code strin
 	defer client.CloseIdleConnections()
 	// peerAddress accepts only an operator-supplied IP:port, and the connection
 	// is pinned to the key the operator confirmed.
-	resp, err := client.Do(req) // codeql[go/request-forgery]
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
