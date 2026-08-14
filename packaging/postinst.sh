@@ -4,13 +4,23 @@ set -e
 systemctl daemon-reload >/dev/null 2>&1 || true
 
 if [ "$1" = "configure" ]; then
-	# deb-systemd-helper records whether the operator deliberately disabled the
-	# unit, so this both re-enables on a reinstall from the config-files state
-	# and leaves a hand-disabled unit alone on an upgrade. init-system-helpers
-	# is Priority: required on Debian and Ubuntu; the guard is for anywhere
-	# else, where the $2 test is the best approximation we have.
+	# init-system-helpers is Priority: required on Debian and Ubuntu; the
+	# guard is for anywhere else, where the $2 test is the best approximation
+	# we have.
 	if command -v deb-systemd-helper >/dev/null 2>&1; then
-		deb-systemd-helper enable kydns.service >/dev/null 2>&1 || true
+		# postrm masks the unit on remove, so undo that before enabling.
+		deb-systemd-helper unmask kydns.service >/dev/null 2>&1 || true
+
+		# was-enabled reads the recorded links, and an absent record reads
+		# as enabled — so a first install enables, a reinstall from the
+		# config-files state re-enables, and a unit the operator disabled
+		# by hand stays disabled.
+		if deb-systemd-helper --quiet was-enabled kydns.service; then
+			deb-systemd-helper enable kydns.service >/dev/null 2>&1 || true
+		else
+			# Still record the links a purge has to clean up.
+			deb-systemd-helper update-state kydns.service >/dev/null 2>&1 || true
+		fi
 	elif [ -z "$2" ]; then
 		systemctl enable kydns.service >/dev/null 2>&1 || true
 	fi

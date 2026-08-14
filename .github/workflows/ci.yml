@@ -248,6 +248,22 @@ jobs:
             exit 1
           fi
 
+      # An operator who removes and reinstalls must not silently lose DNS at
+      # the next boot. The enable symlinks are the state a reinstall restores
+      # from, so a remove has to leave them alone — disabling here is
+      # indistinguishable from the operator disabling the unit themselves.
+      - name: a reinstall after apt remove comes back enabled
+        run: |
+          set -eux
+          sudo apt-get remove -y -qq kydns
+          test -L /etc/systemd/system/multi-user.target.wants/kydns.service || {
+            echo "remove deleted the enable symlink; the reinstall has nothing to restore"
+            exit 1; }
+          sudo apt-get install -y -qq ./dist/kydns_0.0.0-ci_${{ matrix.arch }}.deb
+          # Fails on "disabled" and on "masked", which is the other way this
+          # can go wrong: postrm masks on remove, postinst has to unmask.
+          systemctl is-enabled kydns
+
       # systemd-resolved holds 127.0.0.53:53 on GitHub runners, so binding
       # 0.0.0.0:53 would collide with it. 127.0.0.2:53 is free and still
       # privileged, which is the part that has to be proven.

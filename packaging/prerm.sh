@@ -1,19 +1,13 @@
 #!/bin/sh
 set -e
 
-# $1 is "upgrade" on a dpkg upgrade and "1" on an rpm upgrade. Stopping and
-# disabling then would leave the service down after an upgrade.
+# $1 is "upgrade" on a dpkg upgrade and "1" on an rpm upgrade. Stopping then
+# would leave the service down after an upgrade; postinst restarts it instead.
 case "$1" in
 remove | purge | 0)
+	# Stop only. Disabling here would delete the enable symlinks, and a
+	# reinstall could not tell that apart from the operator disabling the
+	# unit themselves, so it would come back disabled. postrm masks instead.
 	systemctl stop kydns.service >/dev/null 2>&1 || true
-	# Disabling through the helper also clears the state it recorded on
-	# install, which is what lets postinst re-enable the unit if the package is
-	# installed again. A bare `systemctl disable` leaves that state behind and
-	# the reinstalled unit stays disabled.
-	if command -v deb-systemd-helper >/dev/null 2>&1; then
-		deb-systemd-helper disable kydns.service >/dev/null 2>&1 || true
-	else
-		systemctl disable kydns.service >/dev/null 2>&1 || true
-	fi
 	;;
 esac
