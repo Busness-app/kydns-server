@@ -302,6 +302,22 @@ func TestEnvSetsTheReplicaPrimary(t *testing.T) {
 	}
 }
 
+// The file holds one key and the environment the other, so an error naming
+// only the two keys would send the operator grepping a file that has one.
+func TestBothReplicationKeysAcrossSourcesNamesEachSource(t *testing.T) {
+	t.Setenv("KYDNS_REPLICATION_PRIMARY", "10.0.0.2:8443")
+
+	_, err := Load(write(t, "data_dir: /tmp/x\nreplication:\n  listen: \"0.0.0.0:8443\"\n"))
+	if err == nil {
+		t.Fatal("a node configured as both primary and replica started")
+	}
+	for _, want := range []string{"KYDNS_REPLICATION_PRIMARY", "the config file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %s", err, want)
+		}
+	}
+}
+
 // An unRAID template field left blank must not demote a working primary to
 // standalone, so an empty variable is not an override.
 func TestEmptyEnvIsNotAnOverride(t *testing.T) {

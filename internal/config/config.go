@@ -212,8 +212,9 @@ func (c *Config) validate() error {
 		return fmt.Errorf("admin.listen %q: %w", c.Admin.Listen, err)
 	}
 	if c.Replication.Listen != "" && c.Replication.Primary != "" {
-		return errors.New("replication.listen and replication.primary are mutually " +
-			"exclusive: a node is a primary or a replica, never both")
+		return fmt.Errorf("replication.listen (from %s) and replication.primary (from %s) "+
+			"are mutually exclusive: a node is a primary or a replica, never both",
+			c.source("KYDNS_REPLICATION_LISTEN"), c.source("KYDNS_REPLICATION_PRIMARY"))
 	}
 	if c.Replication.Listen != "" {
 		if _, _, err := net.SplitHostPort(c.Replication.Listen); err != nil {
