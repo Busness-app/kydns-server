@@ -33,6 +33,10 @@ type Config struct {
 	// explicitEmptyDomain records that the operator wrote an empty
 	// private_domain, which must fail rather than silently defaulting.
 	explicitEmptyDomain bool
+	// envApplied names the environment variables that replaced a file value,
+	// in table order. Startup logs them, and the mutual-exclusion error reads
+	// them to say which source each key came from.
+	envApplied []string
 }
 
 type DNSConfig struct {
@@ -61,6 +65,59 @@ type AdminConfig struct {
 type ReplicationConfig struct {
 	Listen  string `yaml:"listen"`  // primary: the TLS replication listener
 	Primary string `yaml:"primary"` // replica: the primary to follow
+}
+
+// envOverride is one file-owned key and the variable that can replace it.
+// Only the five keys the file still owns at every start are here: every other
+// key seeds a fresh database once, so a variable for it would silently do
+// nothing on a server that has already been configured.
+//
+// A slice, not a map: the applied list is logged and quoted in errors, and map
+// iteration order would make both vary run to run.
+type envOverride struct {
+	name  string
+	field func(*Config) *string
+}
+
+var envOverrideTable = []envOverride{
+	{"KYDNS_DATA_DIR", func(c *Config) *string { return &c.DataDir }},
+	{"KYDNS_DNS_LISTEN", func(c *Config) *string { return &c.DNS.Listen }},
+	{"KYDNS_ADMIN_LISTEN", func(c *Config) *string { return &c.Admin.Listen }},
+	{"KYDNS_REPLICATION_LISTEN", func(c *Config) *string { return &c.Replication.Listen }},
+	{"KYDNS_REPLICATION_PRIMARY", func(c *Config) *string { return &c.Replication.Primary }},
+}
+
+// overlayEnv replaces file values with the environment. An empty variable is
+// skipped rather than treated as an explicit clear: unRAID templates carry
+// fields left blank, and clearing on blank would demote a working primary to
+// standalone from a field nobody filled in. Turning replication off stays what
+// it is — removing the key from the file.
+func (c *Config) overlayEnv(getenv func(string) string) {
+	for _, o := range envOverrideTable {
+		v := getenv(o.name)
+		if v == "" {
+			continue
+		}
+		*o.field(c) = v
+		c.envApplied = append(c.envApplied, o.name)
+	}
+}
+
+// EnvOverrides names the environment variables that replaced a file value.
+func (c *Config) EnvOverrides() []string {
+	return append([]string(nil), c.envApplied...)
+}
+
+// source names where a key's value came from. It exists for the one error that
+// involves two keys at once, which would otherwise send an operator grepping a
+// file that holds only one of them.
+func (c *Config) source(env string) string {
+	for _, k := range c.envApplied {
+		if k == env {
+			return env
+		}
+	}
+	return "the config file"
 }
 
 // DiscoveryConfig is off unless DHCPLeaseFile is set: KyDNS does not guess at
@@ -99,6 +156,7 @@ func Load(path string) (*Config, error) {
 	_ = yaml.Unmarshal(raw, &probe)
 	c.explicitEmptyDomain = probe.DNS.PrivateDomain != nil && *probe.DNS.PrivateDomain == ""
 
+	c.overlayEnv(os.Getenv)
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
