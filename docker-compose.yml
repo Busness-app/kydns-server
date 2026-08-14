@@ -93,6 +93,11 @@ volumes:
 #    it is not on the host. Put a TLS-terminating proxy in front if you want
 #    encryption; KyDNS speaks plain HTTP.
 #
+#    Or set them in the environment instead of mounting a file at all:
+#    KYDNS_DATA_DIR, KYDNS_DNS_LISTEN, KYDNS_ADMIN_LISTEN, and for a second
+#    server KYDNS_REPLICATION_LISTEN or KYDNS_REPLICATION_PRIMARY. A variable
+#    beats the file, and an empty one is ignored.
+#
 # 3. make setup                  fills in your interface, subnet and gateway
 # 4. docker compose up -d
 #

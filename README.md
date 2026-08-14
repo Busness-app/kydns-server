@@ -107,6 +107,16 @@ Two more are read from the file only if you run more than one server:
 `replication.listen` and `replication.primary`. Setting both is a startup
 error. See [Replication](#replication).
 
+All five can also come from the environment — `KYDNS_DATA_DIR`,
+`KYDNS_DNS_LISTEN`, `KYDNS_ADMIN_LISTEN`, `KYDNS_REPLICATION_LISTEN`,
+`KYDNS_REPLICATION_PRIMARY` — which is how a container is configured without
+mounting a file. The variable wins over the file, and startup logs which
+variables it applied. A variable set to nothing is ignored rather than treated
+as empty, so a blank field in a container template cannot switch off something
+the file turned on. Setting `replication.listen` in the file and
+`KYDNS_REPLICATION_PRIMARY` in the environment is the same startup error as
+setting both in the file, and the message says which source each came from.
+
 Changing one of those means restarting KyDNS. The Settings screen shows all
 three read-only, so you can see what the running server actually has.
 
@@ -584,14 +594,24 @@ house.
 
 #### Unraid
 
-On Unraid there is no YAML to edit at all. All three file-owned keys are the
-container template's job: one volume mapping for `data_dir`, and two port
-mappings for `dns.listen` and `admin.listen`. The baked-in
+On Unraid there is no YAML to edit at all. The three keys a single server needs
+are the container template's job: one volume mapping for `data_dir`, and two
+port mappings for `dns.listen` and `admin.listen`. The baked-in
 `kydns.docker.yaml` already sets the two that need it, and the template's
-mappings decide where they land on the host. Set the container on your `br0`
-network so it gets its own LAN address, start it, read the setup token from
-the log, and do everything else — upstreams, the private domain, filtering,
-`allow_query` — from the web UI.
+mappings decide where they land on the host.
+
+Replication is the fourth, and it has no port mapping to stand in for it. Add
+it as a template **Variable** rather than mounting a config file: Edit the
+container, *Add another Path, Port, Variable...*, Config Type **Variable**, Key
+`KYDNS_REPLICATION_LISTEN`, Value `0.0.0.0:8443` for a primary — or
+`KYDNS_REPLICATION_PRIMARY` with the primary's `host:port` for a replica.
+Apply, which restarts the container, which is what picking up a file-owned key
+takes anyway. On a `br0` address that port needs no mapping; it is already on
+the container's own LAN address.
+
+Set the container on your `br0` network so it gets its own LAN address, start
+it, read the setup token from the log, and do everything else — upstreams, the
+private domain, filtering, `allow_query` — from the web UI.
 
 #### Pre-creating it
 
