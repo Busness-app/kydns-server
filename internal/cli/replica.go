@@ -156,7 +156,10 @@ func replicaJoin(c *Client, args []string, in io.Reader, tty bool, stdout, stder
 		return fail(stderr, err)
 	}
 	fmt.Fprintf(stdout, "\npaired with %s\n", out.PrimaryNodeID)
-	fmt.Fprintf(stdout, "Set replication.primary to %s and restart to start following it.\n", address)
+	// Replacing, not adding: a demoted primary's file may still name the node it
+	// used to follow, and that address with this pin fails every poll.
+	fmt.Fprintf(stdout, "Set replication.primary to %s, replacing any address already there,\n", address)
+	fmt.Fprintln(stdout, "and restart to start following it.")
 	return 0
 }
 
@@ -262,17 +265,27 @@ func replicaPromote(c *Client, args []string, in io.Reader, tty bool, stdout, st
 	}
 
 	var out struct {
-		Promoted bool `json:"promoted"`
+		Promoted bool   `json:"promoted"`
+		Role     string `json:"role"`
 	}
 	if err := c.Do("POST", "/api/v1/replica/promote", nil, &out); err != nil {
 		return fail(stderr, err)
 	}
 	if !out.Promoted {
-		fmt.Fprintln(stdout, "this node was already a primary; nothing changed")
+		// The role this node actually has. A standalone node told it is "already
+		// a primary" would be sent looking for replicas it never had.
+		fmt.Fprintf(stdout, "nothing changed: this node is a %s, not a replica\n", out.Role)
 		return 0
 	}
 	fmt.Fprintln(stdout, "this node is now the primary and accepts writes")
-	fmt.Fprintln(stdout, "Point its replicas at it, and do not switch the old primary back on until it is demoted.")
+	fmt.Fprintln(stdout)
+	// Promotion does not open a listener: the config key that would is
+	// replication.listen, and a promoted replica's file does not have one. An
+	// operator who repoints replicas first gets refused connections and nothing
+	// to read about why.
+	fmt.Fprintln(stdout, "Replicas cannot follow it yet. Set replication.listen in this node's config")
+	fmt.Fprintln(stdout, "and restart it, then run kydns replica invite for each replica.")
+	fmt.Fprintln(stdout, "Do not switch the old primary back on until it is demoted or rebuilt.")
 	return 0
 }
 

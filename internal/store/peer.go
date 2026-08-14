@@ -123,6 +123,29 @@ func (s *Store) ClearPromotion() error {
 	return err
 }
 
+// FollowPrimary records the primary this node has just paired with and drops
+// any promotion in one transaction. Two statements would leave a window where
+// a node is paired and still promoted, which comes back as a second primary at
+// the next restart: the one state replication cannot reconcile.
+func (s *Store) FollowPrimary(primaryNodeID string, version int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`
+		INSERT INTO replica_state(id, primary_node_id, last_version) VALUES(1, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET primary_node_id = excluded.primary_node_id,
+		                              last_version = excluded.last_version`,
+		primaryNodeID, version); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM promotion WHERE id = 1`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // TouchPeer records the outcome of a successful pull. version is the version
 // the peer reported holding; nil leaves the recorded one alone, so a peer that
 // reports nothing still updates its last-seen time.

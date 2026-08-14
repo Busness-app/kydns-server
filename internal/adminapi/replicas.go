@@ -84,7 +84,14 @@ func (a *API) promoteThisNode(w http.ResponseWriter, _ *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "promote_failed", "", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"role": "primary", "promoted": promoted})
+	// The role is read back rather than assumed: a standalone node has no
+	// primary to stop following, and telling it that it is one sends the
+	// operator looking for replicas that were never there.
+	role := "primary"
+	if a.replicaStatus != nil {
+		role = a.replicaStatus().Role
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"role": role, "promoted": promoted})
 }
 
 type joinRequest struct {

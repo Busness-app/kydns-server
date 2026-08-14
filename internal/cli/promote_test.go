@@ -37,7 +37,11 @@ func startNodeServer(t *testing.T, role string) (*Client, *nodeRecorder) {
 		switch r.URL.Path {
 		case "/api/v1/replica/promote":
 			rec.promotes++
-			json.NewEncoder(w).Encode(map[string]any{"role": "primary", "promoted": rec.role != "primary"})
+			promoted := rec.role == "replica"
+			if promoted {
+				rec.role = "primary"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"role": rec.role, "promoted": promoted})
 		case "/api/v1/replica/status":
 			rec.statusGet++
 			json.NewEncoder(w).Encode(map[string]any{"role": rec.role, "primary_address": "10.0.0.9:8443"})
@@ -111,16 +115,39 @@ func TestPromoteDeclinedChangesNothing(t *testing.T) {
 	}
 }
 
-// A node that is already a primary reports it plainly. Re-running the command
-// after a timeout must not read like a failure.
-func TestPromoteOnAPrimaryReportsNoChange(t *testing.T) {
-	c, _ := startNodeServer(t, "primary")
+// A node that changed nothing is told which role it actually has. Re-running
+// the command after a timeout must not read like a failure, and a standalone
+// node must never be told it is a primary: it would send the operator looking
+// for replicas that do not exist.
+func TestPromoteThatChangesNothingNamesTheRealRole(t *testing.T) {
+	for _, role := range []string{"primary", "standalone"} {
+		c, _ := startNodeServer(t, role)
+		var out, errOut bytes.Buffer
+		if rc := replicaPromote(c, []string{"--yes"}, refusingReader{t}, false, &out, &errOut); rc != 0 {
+			t.Fatalf("%s: exit = %d, stderr = %s", role, rc, errOut.String())
+		}
+		if !strings.Contains(out.String(), "nothing changed: this node is a "+role) {
+			t.Errorf("a %s is not told what it is:\n%s", role, out.String())
+		}
+		if role == "standalone" && strings.Contains(out.String(), "primary") {
+			t.Errorf("a standalone node is told it is a primary:\n%s", out.String())
+		}
+	}
+}
+
+// Promotion opens no listener: that key is replication.listen, and a promoted
+// replica's config does not have one. An operator who repoints replicas first
+// gets refused connections and nothing anywhere to read about why.
+func TestPromoteSaysReplicasCannotFollowYet(t *testing.T) {
+	c, _ := startNodeServer(t, "replica")
 	var out, errOut bytes.Buffer
 	if rc := replicaPromote(c, []string{"--yes"}, refusingReader{t}, false, &out, &errOut); rc != 0 {
 		t.Fatalf("exit = %d, stderr = %s", rc, errOut.String())
 	}
-	if !strings.Contains(out.String(), "already") {
-		t.Errorf("a node that was already a primary is not told so:\n%s", out.String())
+	for _, want := range []string{"Replicas cannot follow it yet", "replication.listen", "restart"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the success message does not mention %q:\n%s", want, out.String())
+		}
 	}
 }
 

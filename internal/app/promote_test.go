@@ -305,3 +305,75 @@ func TestJoinClearsARecordedPromotion(t *testing.T) {
 		t.Fatalf("Promotion() = %d, %v after joining a primary, want it cleared", at, err)
 	}
 }
+
+// A join that fails demotes nothing. Clearing the promotion on the way in
+// would take a node that is still serving as a primary and bring it back as a
+// replica at the next restart, discarding everything written since it was
+// promoted -- for a mistyped address, or a peer that is not who it claimed.
+func TestAFailedJoinLeavesThePromotionAlone(t *testing.T) {
+	primaryDir, _ := nodeDir(t, "primary")
+	admin, primaryID, addr := startPrimaryListener(t, primaryDir)
+	code, _, err := admin.Invite()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A peer whose key is not the one the operator confirmed, and an address
+	// with nothing behind it at all.
+	deadAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	cases := []struct {
+		name        string
+		address     string
+		fingerprint string
+	}{
+		{"fingerprint the operator never confirmed", addr, pinnedPrimaryFP},
+		{"nothing listening", deadAddr, primaryID.NodeID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			joinerDir, _ := nodeDir(t, "joiner")
+			j := newJoiner(t, joinerDir)
+			const promotedAt = 1786000000
+			if err := j.st.RecordPromotion(promotedAt); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := j.Join(joinCtx(t), tc.address, code, tc.fingerprint); err == nil {
+				t.Fatal("the join succeeded; this case is no longer testing a failure")
+			}
+			if at, err := j.st.Promotion(); err != nil || at != promotedAt {
+				t.Fatalf("Promotion() = %d, %v after a failed join, want it left at %d", at, err, promotedAt)
+			}
+			// The other half of the same mistake: a primary it never paired with
+			// must not be pinned either.
+			if fp, _, err := j.st.ReplicaState(); err != nil || fp != "" {
+				t.Fatalf("replica_state = %q, %v after a failed join, want empty", fp, err)
+			}
+		})
+	}
+}
+
+// A promoted node has no replication.listen, so nothing can follow it. Starting
+// silently leaves an operator repointing replicas at a node that will refuse
+// every one of them with nothing anywhere to read about why.
+func TestAPrimaryWithNoListenerSaysSo(t *testing.T) {
+	dir, _ := nodeDir(t, "promoted")
+	primaryAddr := fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	cfgPath, _, adminPort := writeConfig(t, dir, fmt.Sprintf("replication:\n  primary: %q\n", primaryAddr))
+	if err := openDB(t, dir).RecordPromotion(time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	logger, logged := logCapture(t)
+	go Serve(ctx, cfgPath, logger)
+	waitForHTTP(t, fmt.Sprintf("http://127.0.0.1:%d/api/v1/healthz", adminPort))
+
+	out := logged()
+	if !strings.Contains(out, "replication.listen is not set") {
+		t.Errorf("a promoted node with no listener does not say so:\n%s", out)
+	}
+	if !strings.Contains(out, "set replication.listen and restart") {
+		t.Errorf("the warning does not say what to do about it:\n%s", out)
+	}
+}

@@ -190,6 +190,10 @@ type replicaPromoter struct {
 	stopPull func()
 }
 
+// Promote is not atomic across its guard, so two concurrent calls can both get
+// past it. Every step below is idempotent — the same record written twice, the
+// same loop stopped twice, the same role set twice — so the second call costs a
+// redundant write and changes nothing.
 func (p *replicaPromoter) Promote() (bool, error) {
 	if p.role.Current() != RoleReplica {
 		return false, nil // already what the operator asked for
@@ -223,15 +227,23 @@ func (j *replicaJoiner) Peek(ctx context.Context, address string) (string, error
 }
 
 func (j *replicaJoiner) Join(ctx context.Context, address, code, fingerprint string) (string, error) {
-	nodeID, err := replica.PairAsReplica(ctx, address, j.id, code,
-		func(_ context.Context, presented string) (bool, error) { return presented == fingerprint, nil }, j.st)
-	if err != nil {
-		return "", err
-	}
-	// Joining is the demotion. A former primary that kept its promotion record
-	// would come back a primary on the next restart, which is the two-primaries
-	// state nothing downstream can reconcile.
-	return nodeID, j.st.ClearPromotion()
+	return replica.PairAsReplica(ctx, address, j.id, code,
+		func(_ context.Context, presented string) (bool, error) { return presented == fingerprint, nil },
+		pairingState{st: j.st})
+}
+
+// pairingState is the store as the pairing exchange writes it. Joining is the
+// demotion of a promoted node, so recording the new primary also drops the
+// promotion, and both land in one transaction: a pairing that committed while
+// the promotion survived would bring the node back as a second primary. It is
+// written here and not after the pairing call, because a failure there would
+// have to be reported over a pairing code that is already spent.
+type pairingState struct{ st *store.Store }
+
+func (p pairingState) ReplicaState() (string, int64, error) { return p.st.ReplicaState() }
+
+func (p pairingState) SetReplicaState(primaryNodeID string, version int64) error {
+	return p.st.FollowPrimary(primaryNodeID, version)
 }
 
 // runPuller starts the pull loop and returns the function that stops it. Stop
@@ -305,9 +317,13 @@ func startReplication(ctx context.Context, cfg *config.Config, role Role, st *st
 	}
 
 	// A promoted node whose file still names a primary has no listener to
-	// start. It serves what it holds and accepts writes; the operator sets
-	// replication.listen when they are ready to serve replicas again.
+	// start. It accepts writes, but no replica can follow it until the operator
+	// gives it an address, so this says that rather than starting silently:
+	// repointing replicas at a node with no listener fails with nothing to read.
 	if cfg.Replication.Listen == "" {
+		logger.Warn("this node is a primary but serves no replicas: replication.listen is not set",
+			"node_id", id.NodeID,
+			"fix", "set replication.listen and restart before pointing replicas at this node")
 		return replication{id: id}, nil
 	}
 
