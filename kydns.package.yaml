@@ -1,0 +1,28 @@
+# The configuration the .deb installs at /etc/kydns/kydns.yaml.
+#
+# It sets one thing: data_dir. The other two file-owned settings, dns.listen
+# and admin.listen, are already right at their defaults for a host install.
+#
+# Everything else is left out on purpose. Those keys seed the database on the
+# first run and are edited afterwards under Settings in the web UI, with
+# `kydns settings set`, or over the API. See kydns.example.yaml for the
+# defaults and the reasoning behind them.
+#
+# dpkg treats this file as a conffile: your edits survive an upgrade.
+
+# Matches StateDirectory=kydns in the systemd unit. Holds kydns.db plus the
+# setup and bootstrap tokens; back it up.
+data_dir: /var/lib/kydns
+
+# admin.listen is not set here, so it keeps its default of 127.0.0.1:8053.
+# KyDNS speaks plain HTTP, so reaching the web UI from another machine means
+# either an SSH tunnel:
+#
+#   ssh -L 8053:127.0.0.1:8053 <this-host>
+#
+# or a TLS-terminating reverse proxy in front of it. To override the default,
+# uncomment the two lines below — but only if you accept publishing an
+# unencrypted admin UI to your LAN.
+#
+# admin:
+#   listen: "0.0.0.0:8053"

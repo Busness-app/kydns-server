@@ -61,12 +61,20 @@ jobs:
       - name: build without cgo
         env:
           CGO_ENABLED: "0"
-        run: go build -trimpath -o /tmp/kydns ./cmd/kydns
+        run: |
+          go build -trimpath -ldflags "-X main.version=ci-test" \
+            -o /tmp/kydns ./cmd/kydns
 
       - name: binary runs
         run: |
           /tmp/kydns 2>&1 | grep -q "usage:" || {
             echo "binary did not print usage"; exit 1; }
+
+      - name: version is stamped at link time
+        run: |
+          got=$(/tmp/kydns version)
+          test "$got" = "ci-test" || {
+            echo "kydns version printed '$got', wanted 'ci-test'"; exit 1; }
 
       # A stale example is worse than none, since it is the first thing an
       # operator copies. The config package tests assert it matches the
@@ -185,6 +193,8 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.sha }}
           push: true
           # The commit tag is what lets an operator pin a known-good image and
           # roll back to it; :latest alone gives them nowhere to go.
@@ -195,3 +205,196 @@ jobs:
             ghcr.io/yoshiofthewire/kydns-server:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Builds the deb and proves it on both architectures: it installs, it runs as
+  # a non-root user, it binds a privileged port, its data survives a purge, and
+  # an operator's config edits survive an upgrade.
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Each leg builds only the architecture it goes on to test.
+      - name: build the package
+        run: make package VERSION=0.0.0-ci ARCHES=${{ matrix.arch }}
+
+      - name: manifest is right
+        run: ./scripts/verify-package.sh dist/kydns_0.0.0-ci_${{ matrix.arch }}.deb ${{ matrix.arch }}
+
+      - name: installs
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ./dist/kydns_0.0.0-ci_${{ matrix.arch }}.deb
+          test -x /usr/bin/kydns
+          /usr/bin/kydns version | grep -q '0.0.0-ci'
+          # Installed and enabled, but deliberately not started.
+          systemctl is-enabled kydns
+          if systemctl is-active --quiet kydns; then
+            echo "install started kydns unasked; port 53 may not have been free"
+            exit 1
+          fi
+
+      # An operator who removes and reinstalls must not silently lose DNS at
+      # the next boot. The enable symlinks are the state a reinstall restores
+      # from, so a remove has to leave them alone — disabling here is
+      # indistinguishable from the operator disabling the unit themselves.
+      - name: a reinstall after apt remove comes back enabled
+        run: |
+          set -eux
+          sudo apt-get remove -y -qq kydns
+          test -L /etc/systemd/system/multi-user.target.wants/kydns.service || {
+            echo "remove deleted the enable symlink; the reinstall has nothing to restore"
+            exit 1; }
+          sudo apt-get install -y -qq ./dist/kydns_0.0.0-ci_${{ matrix.arch }}.deb
+          # Fails on "disabled" and on "masked", which is the other way this
+          # can go wrong: postrm masks on remove, postinst has to unmask.
+          systemctl is-enabled kydns
+
+      # systemd-resolved holds 127.0.0.53:53 on GitHub runners, so binding
+      # 0.0.0.0:53 would collide with it. 127.0.0.2:53 is free and still
+      # privileged, which is the part that has to be proven.
+      - name: configure for the runner
+        run: |
+          set -eux
+          sudo tee /etc/kydns/kydns.yaml >/dev/null <<'YAML'
+          data_dir: /var/lib/kydns
+          dns:
+            listen: "127.0.0.2:53"
+            allow_query: ["127.0.0.0/8"]
+          admin:
+            listen: "127.0.0.1:8053"
+          YAML
+
+      - name: starts
+        run: |
+          set -eux
+          sudo systemctl start kydns
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8053/api/v1/healthz && break
+            sleep 1
+          done
+          systemctl is-active kydns
+
+      - name: runs as a non-root user
+        run: |
+          set -eux
+          pid=$(systemctl show -p MainPID --value kydns)
+          uid=$(awk '/^Uid:/{print $2}' /proc/$pid/status)
+          test "$uid" != "0" || { echo "kydns is running as root"; exit 1; }
+          test "$(id -nu "$uid")" = "kydns"
+
+      - name: state directory is locked down
+        run: |
+          set -eux
+          test "$(sudo stat -c '%a %U' /var/lib/kydns)" = "700 kydns"
+          test "$(sudo stat -c '%a' /var/lib/kydns/setup-token)" = "600"
+          test "$(sudo stat -c '%a' /var/lib/kydns/bootstrap-token)" = "600"
+
+      # The real proof that CAP_NET_BIND_SERVICE is sufficient: a name is
+      # registered over the API and answered on a privileged port.
+      - name: serves DNS on a privileged port
+        run: |
+          set -eux
+          sudo apt-get install -y -qq dnsutils
+          token=$(sudo cat /var/lib/kydns/bootstrap-token)
+          curl -sf -X POST -H "Authorization: Bearer $token" \
+            -H 'Content-Type: application/json' \
+            -d '{"name":"ci","addresses":[{"address":"192.168.1.20"}]}' \
+            http://127.0.0.1:8053/api/v1/services
+          answer=$(dig @127.0.0.2 -p 53 ci.home.arpa A +short)
+          test "$answer" = "192.168.1.20" || {
+            echo "resolved '$answer', wanted 192.168.1.20"; exit 1; }
+
+      # systemd-analyze's score has no pinned threshold to fail against, so it
+      # is printed as evidence only. The actual proof is that the directives
+      # packaging/kydns.service sets are still in force on the running unit —
+      # a systemd version silently ignoring one, or a future edit dropping it,
+      # fails this step. systemctl show renders capability sets and
+      # NoNewPrivileges/ProtectSystem in their own normalized form, not the
+      # unit file's spelling, so assert against that normalized form.
+      - name: hardening is in force
+        run: |
+          set -eux
+          systemd-analyze security kydns.service || true
+
+          assert_show() {
+            got=$(systemctl show -p "$1" --value kydns)
+            test "$got" = "$2" || {
+              echo "kydns.service $1=$got, wanted $2"; exit 1; }
+          }
+
+          assert_show User kydns
+          assert_show AmbientCapabilities cap_net_bind_service
+          assert_show CapabilityBoundingSet cap_net_bind_service
+          assert_show NoNewPrivileges yes
+          assert_show ProtectSystem strict
+
+      # The upgrade that matters is the one where the shipped template also
+      # changed: only then does dpkg enter its modified-conffile path. Packaging
+      # a byte-identical template would prove nothing verify-package.sh does not
+      # already prove statically.
+      - name: an operator's config edits survive an upgrade
+        run: |
+          set -eux
+          echo "# operator edit, must survive" | sudo tee -a /etc/kydns/kydns.yaml
+          started_before=$(systemctl show -p ExecMainStartTimestamp --value kydns)
+
+          echo "# upgrade marker: the shipped template changed" >> kydns.package.yaml
+          make package VERSION=9.9.9-upgrade ARCHES=${{ matrix.arch }}
+          git checkout -- kydns.package.yaml
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            -o Dpkg::Options::=--force-confold \
+            ./dist/kydns_9.9.9-upgrade_${{ matrix.arch }}.deb
+
+          grep -q "operator edit, must survive" /etc/kydns/kydns.yaml || {
+            echo "the upgrade clobbered the operator's config"; exit 1; }
+          grep -q "127.0.0.2:53" /etc/kydns/kydns.yaml
+          if grep -q "upgrade marker" /etc/kydns/kydns.yaml; then
+            echo "confold still replaced the operator's config"; exit 1
+          fi
+          # dpkg only writes .dpkg-dist when the two templates really differ,
+          # so this is what proves the modified-conffile path was exercised.
+          grep -q "upgrade marker" /etc/kydns/kydns.yaml.dpkg-dist || {
+            echo "no .dpkg-dist: the upgrade never hit the conffile path"
+            exit 1; }
+
+          # An upgrade must actually replace the running process, or a security
+          # fix ships to disk and never runs.
+          systemctl is-active kydns
+          started_after=$(systemctl show -p ExecMainStartTimestamp --value kydns)
+          if [ -z "$started_after" ] || [ "$started_after" = "$started_before" ]; then
+            echo "the upgrade left the old process running: $started_before"
+            exit 1
+          fi
+
+      - name: purge keeps the data
+        run: |
+          set -eux
+          sudo apt-get purge -y -qq kydns
+          # Every check here needs sudo: the directory is 0700 kydns, so an
+          # unprivileged test cannot traverse it and reads a surviving file as
+          # a missing one.
+          sudo ls -la /var/lib/kydns
+          sudo test -d /var/lib/kydns || {
+            echo "purge destroyed the registry"; exit 1; }
+          sudo test -f /var/lib/kydns/kydns.db || {
+            echo "purge destroyed the database"; exit 1; }
+
+      - name: logs on failure
+        if: failure()
+        run: sudo journalctl -u kydns --no-pager -n 200 || true

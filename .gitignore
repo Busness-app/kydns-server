@@ -9,3 +9,5 @@
 
 # Isolated workspaces for in-progress plans.
 /.worktrees/
+
+dist/

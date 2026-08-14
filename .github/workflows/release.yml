@@ -1,0 +1,113 @@
+name: Release
+
+# Separate from ci.yml so the write permissions a release needs never apply to
+# a pull request build.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two runs against the same tag would race on `gh release create`.
+# cancel-in-progress is false, unlike ci.yml: cancelling a half-finished
+# publish could leave a release with a partial asset set.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the release
+      id-token: write     # keyless attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Debian versions must start with a digit, so the tag's leading v goes.
+      # A manual run is not a release; it just proves the workflow still works.
+      - name: resolve the version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version=${GITHUB_REF_NAME#v}
+          else
+            version=0.0.0-dev+${GITHUB_SHA:0:7}
+          fi
+          # A ref name may hold ;, $, backticks, and pipes. This value ends up
+          # in a make recipe, a file name, and a Debian version field, so
+          # anything outside that alphabet is rejected here rather than
+          # escaped at each of the places it lands.
+          case $version in
+            *[!0-9A-Za-z.+~_-]* | '')
+              echo "refusing to build from tag '$GITHUB_REF_NAME'"; exit 1 ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # An attestation only says where an artifact came from. Publishing one
+      # for a tag that was never tested lets that signature vouch for code no
+      # check ever saw.
+      - name: tests pass
+        run: go test ./...
+
+      # The version reaches these steps through the environment, never spliced
+      # into the script body: it comes from a tag name, and a ref may contain
+      # ;, $, backticks, and pipes, in a job that holds contents: write.
+      - name: build binaries and packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make package VERSION="$VERSION"
+
+      - name: manifests are right
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eux
+          ./scripts/verify-package.sh "dist/kydns_${VERSION}_amd64.deb" amd64
+          ./scripts/verify-package.sh "dist/kydns_${VERSION}_arm64.deb" arm64
+
+      # Before the attestation, and attested itself: SHA256SUMS is the file a
+      # scripted installer is most likely to fetch.
+      - name: checksums
+        run: |
+          set -eux
+          cd dist
+          sha256sum *.tar.gz *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      # Keyless, free, and verifiable with `gh attestation verify`. Signing
+      # from the first release is far cheaper than retrofitting it once people
+      # are already downloading unsigned binaries.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*.tar.gz, dist/*.deb, dist/SHA256SUMS"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kydns-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+
+      # ref_type alone isn't enough: workflow_dispatch can be run against an
+      # existing tag ref, which would satisfy that check and publish a real
+      # release from what an operator thought was a dry run.
+      - name: publish the release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eux
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.tar.gz dist/*.deb dist/SHA256SUMS

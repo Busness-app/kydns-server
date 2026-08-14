@@ -13,6 +13,9 @@ const examplePath = "../../kydns.example.yaml"
 // dockerPath is the config the image bakes in at /etc/kydns/kydns.yaml.
 const dockerPath = "../../kydns.docker.yaml"
 
+// packagePath is the config the .deb installs at /etc/kydns/kydns.yaml.
+const packagePath = "../../kydns.package.yaml"
+
 // The image's config is what a fresh container runs on with nothing prepared
 // on the host, so a broken one is a container that will not start.
 func TestDockerConfigLoads(t *testing.T) {
@@ -33,6 +36,29 @@ func TestDockerConfigLoads(t *testing.T) {
 	}
 	if c.Discovery.DHCPLeaseFile != "" {
 		t.Error("image config ships with discovery enabled; it must be opt-in")
+	}
+}
+
+// The package's config is what a fresh `apt install` runs on. Unlike the
+// image's, it must keep the admin listener on loopback: a host install has a
+// real LAN address, and binding it would publish the admin UI to the network
+// without the operator ever asking for that.
+func TestPackageConfigLoads(t *testing.T) {
+	c, err := Load(packagePath)
+	if err != nil {
+		t.Fatalf("kydns.package.yaml does not load: %v", err)
+	}
+	if c.DataDir != "/var/lib/kydns" {
+		t.Errorf("data_dir is %q, want the unit's StateDirectory", c.DataDir)
+	}
+	if !strings.HasPrefix(c.Admin.Listen, "127.") && !strings.HasPrefix(c.Admin.Listen, "[::1]") {
+		t.Errorf("admin.listen is %q; the package must not expose the admin UI", c.Admin.Listen)
+	}
+	if c.DNS.AllowTailscale {
+		t.Error("package config ships with allow_tailscale on; the default must be closed")
+	}
+	if c.Discovery.DHCPLeaseFile != "" {
+		t.Error("package config ships with discovery enabled; it must be opt-in")
 	}
 }
 

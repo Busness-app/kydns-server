@@ -13,6 +13,10 @@ import (
 	"github.com/yoshiofthewire/kydns-server/internal/cli"
 )
 
+// version is set at link time with -X main.version. "dev" means someone built
+// straight from a source tree, which is exactly what a bug report needs to say.
+var version = "dev"
+
 const usage = `usage: kydns <command> [flags]
 
 commands:
@@ -26,6 +30,7 @@ commands:
   export    write registry contents to YAML or JSON
   import    load registry contents from YAML or JSON
   admin     local recovery: reset-password
+  version   print the version
 `
 
 func run(args []string, stdout io.Writer) int {
@@ -68,6 +73,9 @@ func run(args []string, stdout io.Writer) int {
 		return 0
 	case "service", "record", "view", "token", "blacklist", "settings", "export", "import":
 		return cli.Run(args, stdout, os.Stderr)
+	case "version":
+		fmt.Fprintln(stdout, version)
+		return 0
 	default:
 		fmt.Fprintf(stdout, "kydns: unknown command %q\n\n%s", args[0], usage)
 		return 2
