@@ -16,6 +16,7 @@ base_url=${3:-https://downloads.raspberrypi.com/raspios_lite_arm64_latest}
 
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v losetup >/dev/null || { echo "losetup is required" >&2; exit 1; }
+command -v partx >/dev/null || { echo "partx is required" >&2; exit 1; }
 command -v mount >/dev/null || { echo "mount is required" >&2; exit 1; }
 command -v mountpoint >/dev/null || { echo "mountpoint is required" >&2; exit 1; }
 command -v xz >/dev/null || { echo "xz is required" >&2; exit 1; }
@@ -44,6 +45,7 @@ mkdir -p "$(dirname "$output")"
 cp "$base" "$output"
 loop=$(losetup --find --show --partscan "$output")
 udevadm settle 2>/dev/null || true
+partx --add "$loop"
 
 mount "${loop}p2" "$root"
 install -d -m 0755 "$root/opt/kydns" "$root/usr/local/sbin" \
