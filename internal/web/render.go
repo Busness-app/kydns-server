@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
-// Version is the release shown in the About popover.
-const Version = "0.3.0"
+// Version is the release shown in the About popover. main sets it from the
+// version stamped at link time, so the popover and `kydns version` cannot
+// disagree — and nobody has to remember to bump it here.
+var Version = "dev"
 
 //go:embed templates/*.html
 var templateFS embed.FS

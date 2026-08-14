@@ -98,6 +98,41 @@ func TestReplicationAddressesAreValidated(t *testing.T) {
 	}
 }
 
+// The primary is pasted into a URL and dialled on a loop, so a value that only
+// half parses has to be refused at startup rather than logged five seconds at
+// a time. A hostname is fine: the pin is the peer's key, not its name.
+func TestPrimaryMustBeAHostAndAPort(t *testing.T) {
+	for name, primary := range map[string]string{
+		"a url":          "https://10.0.0.2:8443",
+		"a path":         "10.0.0.2:8443/replica",
+		"a service name": "10.0.0.2:https",
+		"no host":        ":8443",
+		"port zero":      "10.0.0.2:0",
+		"port too high":  "10.0.0.2:65536",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := "data_dir: /tmp/x\nreplication:\n  primary: \"" + primary + "\"\n"
+			if _, err := Load(write(t, body)); err == nil {
+				t.Fatalf("primary %q was accepted", primary)
+			}
+		})
+	}
+	for name, primary := range map[string]string{
+		"an ip":      "10.0.0.2:8443",
+		"a hostname": "primary.home.arpa:8443",
+		"ipv6":       "[fd00::2]:8443",
+		"port one":   "10.0.0.2:1",
+		"port 65535": "10.0.0.2:65535",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := "data_dir: /tmp/x\nreplication:\n  primary: \"" + primary + "\"\n"
+			if _, err := Load(write(t, body)); err != nil {
+				t.Fatalf("primary %q was refused: %v", primary, err)
+			}
+		})
+	}
+}
+
 // Replication is file-owned, like data_dir and the two listen addresses. A
 // key that leaked into the seed would become database state an operator could
 // not remove by editing the file.

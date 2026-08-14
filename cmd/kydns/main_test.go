@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/yoshiofthewire/kydns-server/internal/web"
 )
 
 func TestRunUnknownSubcommand(t *testing.T) {
@@ -42,6 +44,14 @@ func TestRunNoArgsPrintsUsage(t *testing.T) {
 	var out bytes.Buffer
 	if code := run(nil, &out); code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
+	}
+}
+
+// The About popover and `kydns version` are the two places an operator reads
+// the release from, and a bug report quoting one has to match the other.
+func TestWebShowsTheStampedVersion(t *testing.T) {
+	if web.Version != version {
+		t.Errorf("web shows %q, binary reports %q", web.Version, version)
 	}
 }
 

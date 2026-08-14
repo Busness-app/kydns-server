@@ -423,7 +423,7 @@ jobs:
   rpi-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: a base laid out like Raspberry Pi OS
         run: |
@@ -438,6 +438,7 @@ jobs:
           # what the published "latest" link serves.
           xz -T0 -0 base.img
           mv base.img.xz raspios_lite_arm64_latest
+          sha256sum raspios_lite_arm64_latest | cut -d' ' -f1 > base.sha256
 
       - name: build the image
         run: |
@@ -447,7 +448,20 @@ jobs:
           # caller by the time the image lands in it.
           mkdir -p dist
           sudo ./scripts/build-rpi-image.sh kydns_ci_arm64.deb dist/kydns_ci_rpi64.img \
-            "file://$PWD/raspios_lite_arm64_latest"
+            "file://$PWD/raspios_lite_arm64_latest" "$(cat base.sha256)"
+
+      # The pin is only worth having if a base that stops matching it stops the
+      # build. Asserting that in a comment would prove nothing.
+      - name: a base that misses the pin is refused
+        run: |
+          set -eux
+          wrong=0000000000000000000000000000000000000000000000000000000000000000
+          if sudo ./scripts/build-rpi-image.sh kydns_ci_arm64.deb dist/unpinned.img \
+            "file://$PWD/raspios_lite_arm64_latest" "$wrong"; then
+            echo "the builder accepted a base that did not match the pin"
+            exit 1
+          fi
+          test ! -f dist/unpinned.img
 
       - name: the package is staged to install on first boot
         run: |

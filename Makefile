@@ -55,7 +55,14 @@ package: dist
 
 # Raspberry Pi OS Lite supplies the bootloader, kernel, and Debian userspace;
 # the image builder stages the arm64 package and installs it on first boot.
-RPI_BASE_URL ?= https://downloads.raspberrypi.com/raspios_lite_arm64_latest
+#
+# The base is pinned to one release and its published checksum, in
+# packaging/rpi-base.pin. A release is signed and attested, so what it was
+# built on top of has to be a reviewed decision and not a moving download.
+# .github/workflows/rpi-base.yml proposes the next one.
+RPI_PIN := packaging/rpi-base.pin
+RPI_BASE_URL ?= $(word 1,$(shell cat $(RPI_PIN)))
+RPI_BASE_SHA256 ?= $(word 2,$(shell cat $(RPI_PIN)))
 RPI_IMAGE ?= $(DIST)/kydns_$(VERSION)_rpi64.img
 SUDO ?= sudo
 
@@ -63,7 +70,8 @@ rpi-image: package
 	$(SUDO) ./scripts/build-rpi-image.sh \
 		$(DIST)/kydns_$(VERSION)_arm64.deb \
 		$(RPI_IMAGE) \
-		$(RPI_BASE_URL)
+		$(RPI_BASE_URL) \
+		$(RPI_BASE_SHA256)
 
 clean:
 	rm -rf dist

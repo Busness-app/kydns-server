@@ -45,6 +45,25 @@ func newCountingServer(t *testing.T, allow []netip.Prefix, pol PolicyDecider) (*
 	return srv, startUDP(t, srv)
 }
 
+// countedQueries waits for the server to have recorded want queries.
+//
+// The handler writes the answer before it records the outcome, so a client
+// that has its reply in hand knows nothing about whether the count has landed.
+// Snapshotting the instant the last answer arrives is a race the test loses
+// perhaps one run in fifty, on a loaded runner, in whichever outcome finished
+// last — so wait for the count instead of racing it.
+func countedQueries(t *testing.T, srv *Server, want uint64) MetricsSnapshot {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s := srv.Metrics().Snapshot()
+		if s.Total >= want || time.Now().After(deadline) {
+			return s
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestMetricsCountEachOutcome(t *testing.T) {
 	allow := []netip.Prefix{netip.MustParsePrefix("127.0.0.2/32")}
 	srv, addr := newCountingServer(t, allow, blockList{"ads.example.com.": true})
@@ -54,7 +73,7 @@ func TestMetricsCountEachOutcome(t *testing.T) {
 	queryFrom(t, addr, "127.0.0.2", "ads.example.com.", dns.TypeA)
 	queryFrom(t, addr, "127.0.0.3", "example.com.", dns.TypeA) // outside the allow list
 
-	s := srv.Metrics().Snapshot()
+	s := countedQueries(t, srv, 4)
 	if s.Total != 4 {
 		t.Errorf("Total = %d, want 4", s.Total)
 	}
@@ -85,7 +104,7 @@ func TestMetricsCountMalformedQueryAsError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := srv.Metrics().Snapshot()
+	s := countedQueries(t, srv, 1)
 	if s.Errors != 1 {
 		t.Errorf("Errors = %d, want 1", s.Errors)
 	}
@@ -102,7 +121,7 @@ func TestMetricsRecordLatencyAndLastQuery(t *testing.T) {
 	}
 	queryFrom(t, addr, "127.0.0.2", "kypost.home.arpa.", dns.TypeA)
 
-	s := srv.Metrics().Snapshot()
+	s := countedQueries(t, srv, 1)
 	if s.LastQuery == 0 {
 		t.Error("LastQuery still 0 after a query")
 	}
@@ -121,7 +140,7 @@ func TestMetricsSnapshotCarriesNoClientIdentity(t *testing.T) {
 	srv, addr := newCountingServer(t, []netip.Prefix{netip.MustParsePrefix("127.0.0.2/32")}, nil)
 	queryFrom(t, addr, "127.0.0.2", "kypost.home.arpa.", dns.TypeA)
 
-	s := srv.Metrics().Snapshot()
+	s := countedQueries(t, srv, 1)
 	for _, b := range s.History {
 		if b.Minute == 0 {
 			t.Error("history bucket has no minute stamp")

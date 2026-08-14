@@ -1,10 +1,16 @@
 version: 2
 
+# Three days of cooldown on every ecosystem: a version that has been out for
+# three days has had three days for someone else to find the yanked release.
+# Cooldown applies to version updates only — a security update still arrives
+# the day it is published.
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       go-minor-patch:
         update-types: [minor, patch]
@@ -13,6 +19,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     groups:
       actions:
         patterns: ["*"]
@@ -21,3 +29,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
