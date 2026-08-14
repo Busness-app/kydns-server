@@ -199,19 +199,29 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
 
 	errs := make(chan error, 3)
-	roleHolder := NewRoleHolder(RoleFrom(cfg.Replication))
-	replSrv, repPuller, replID, err := startReplication(ctx, cfg, st,
+	promotedAt, err := st.Promotion()
+	if err != nil {
+		return err
+	}
+	role := RoleAtBoot(cfg.Replication, promotedAt != 0)
+	if promotedAt != 0 && cfg.Replication.Primary != "" {
+		logger.Info("this node was promoted to primary; replication.primary in the config file is ignored",
+			"promoted_at", promotedAt, "primary", cfg.Replication.Primary,
+			"fix", "remove replication.primary, or run kydns replica join to make this node a replica again")
+	}
+	roleHolder := NewRoleHolder(role)
+	repl, err := startReplication(ctx, cfg, role, st,
 		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
 		checker.Statuses, errs, logger)
 	if err != nil {
 		return err
 	}
-	if replSrv != nil {
-		defer replSrv.Close()
+	if repl.srv != nil {
+		defer repl.srv.Close()
 	}
 	nodeID := ""
-	if replID != nil {
-		nodeID = replID.NodeID
+	if repl.id != nil {
+		nodeID = repl.id.NodeID
 	}
 
 	leaseFn := func() []dhcp.Lease {
@@ -225,8 +235,10 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	// them together.
 	replStatus := func() ReplicaStatus {
 		var p puller
-		if repPuller != nil {
-			p = repPuller
+		// Only while this node is still a replica: a promoted node's stopped
+		// loop would otherwise keep reporting a primary and a stale sync time.
+		if repl.puller != nil && roleHolder.Current() == RoleReplica {
+			p = repl.puller
 		}
 		return replicaStatus(roleHolder.Current(), cfg.Replication.Primary, nodeID, p)
 	}
@@ -239,10 +251,13 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithSettings(settingsSvc).
 		WithMetrics(dnsSrv.Metrics()).
 		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
-		WithReplicaAdmin(&replicaAdmin{st: st, srv: replSrv})
+		WithReplicaAdmin(&replicaAdmin{st: st, srv: repl.srv}).
+		// Wired on every node: promotion answers "already a primary" rather than
+		// an error, and a replica must never find this endpoint missing.
+		WithReplicaPromoter(&replicaPromoter{st: st, role: roleHolder, stopPull: repl.stopPull})
 	// Pairing needs this node's key, so it is offered only where there is one.
-	if replID != nil {
-		api = api.WithReplicaJoiner(&replicaJoiner{st: st, id: replID})
+	if repl.id != nil {
+		api = api.WithReplicaJoiner(&replicaJoiner{st: st, id: repl.id})
 	}
 	mux := http.NewServeMux()
 	api.Routes(mux)

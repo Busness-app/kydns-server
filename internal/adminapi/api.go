@@ -24,17 +24,18 @@ import (
 )
 
 type API struct {
-	reg           *registry.Registry
-	acl           *dnsserver.ACL
-	cache         *dnsserver.Cache
-	leases        func() []dhcp.Lease
-	health        func() []health.Status
-	policy        *policy.Service
-	settings      *settings.Service
-	metrics       *dnsserver.Metrics
-	replicaStatus func() ReplicaStatus
-	replicaAdmin  ReplicaAdmin
-	replicaJoiner ReplicaJoiner
+	reg             *registry.Registry
+	acl             *dnsserver.ACL
+	cache           *dnsserver.Cache
+	leases          func() []dhcp.Lease
+	health          func() []health.Status
+	policy          *policy.Service
+	settings        *settings.Service
+	metrics         *dnsserver.Metrics
+	replicaStatus   func() ReplicaStatus
+	replicaAdmin    ReplicaAdmin
+	replicaJoiner   ReplicaJoiner
+	replicaPromoter ReplicaPromoter
 }
 
 // ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
@@ -245,6 +246,7 @@ func (a *API) routes(mux registrar) {
 	// renamed path cannot end up gated on one side and exempt on the other.
 	mux.HandleFunc("POST "+PathReplicaPairPeek, auth(a.peekPrimary))
 	mux.HandleFunc("POST "+PathReplicaJoin, auth(a.joinPrimary))
+	mux.HandleFunc("POST "+PathReplicaPromote, auth(a.promoteThisNode))
 
 	// Managing replicas is the primary's job. These two are deliberately not in
 	// writeExempt: a replica minting invites would enroll nodes its primary

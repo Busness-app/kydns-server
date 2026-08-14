@@ -225,6 +225,15 @@ CREATE TABLE IF NOT EXISTS replica_state (
   last_version    INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO replica_state(id) VALUES(1);
+-- A promotion is recorded here, never by rewriting replication.primary in the
+-- operator's config file: KyDNS edits that file nowhere else, and a daemon
+-- that started doing so would be a surprise. Startup reads this first, so a key still
+-- sitting in the file loses to a promotion that actually happened. Node-local,
+-- so no config_version trigger: a promotion is this node's own history.
+CREATE TABLE IF NOT EXISTS promotion (
+  id          INTEGER PRIMARY KEY CHECK (id = 1),
+  promoted_at INTEGER NOT NULL
+);
 `
 
 // migrations run in order on a database whose user_version is below their

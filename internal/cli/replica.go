@@ -17,9 +17,12 @@ const replicaUsage = `usage:
   kydns replica invite
   kydns replica list
   kydns replica remove <node-id>
-  kydns replica join <address> <code> [--fingerprint <fp>] [--yes]`
+  kydns replica join <address> <code> [--fingerprint <fp>] [--yes]
+  kydns replica promote [--yes]`
 
 const joinUsage = "usage: kydns replica join <address> <code> [--fingerprint <fp>] [--yes]"
+
+const promoteUsage = "usage: kydns replica promote [--yes]"
 
 func replicaCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -33,6 +36,8 @@ func replicaCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		return replicaList(c, stdout, stderr)
 	case "join":
 		return replicaJoin(c, args[1:], os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), stdout, stderr)
+	case "promote":
+		return replicaPromote(c, args[1:], os.Stdin, term.IsTerminal(int(os.Stdin.Fd())), stdout, stderr)
 	case "remove":
 		if len(args) != 2 {
 			fmt.Fprintln(stderr, "usage: kydns replica remove <node-id>")
@@ -132,15 +137,9 @@ func replicaJoin(c *Client, args []string, in io.Reader, tty bool, stdout, stder
 		confirmed = presented
 	}
 
-	// The unrelated confirmation --yes skips: joining hands this node's
-	// configuration over to the primary on the first pull.
-	if tty && !*yes {
-		fmt.Fprintf(stdout, "\nJoining replaces this node's configuration with the one on %s.\n", address)
-		if !ask(prompt, stdout, "Continue?") {
-			fmt.Fprintln(stderr, "kydns: cancelled")
-			codeWithheld(stderr)
-			return 1
-		}
+	if rc := confirmReplacement(c, address, prompt, tty, *yes, stdout, stderr); rc != 0 {
+		codeWithheld(stderr)
+		return rc
 	}
 
 	body := map[string]string{"address": address, "code": code, "fingerprint": confirmed}
@@ -158,6 +157,122 @@ func replicaJoin(c *Client, args []string, in io.Reader, tty bool, stdout, stder
 	}
 	fmt.Fprintf(stdout, "\npaired with %s\n", out.PrimaryNodeID)
 	fmt.Fprintf(stdout, "Set replication.primary to %s and restart to start following it.\n", address)
+	return 0
+}
+
+// confirmReplacement is the destructive half of joining, the one --yes covers:
+// the first pull replaces everything this node serves. On a primary that is a
+// demotion, so what goes is counted out in full and confirmed even where there
+// is no terminal to ask on.
+func confirmReplacement(c *Client, address string, prompt *bufio.Reader, tty, yes bool, stdout, stderr io.Writer) int {
+	demoting, services, records, err := localSummary(c)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if !demoting {
+		if yes || !tty {
+			return 0
+		}
+		fmt.Fprintf(stdout, "\nJoining replaces this node's configuration with the one on %s.\n", address)
+		if !ask(prompt, stdout, "Continue?") {
+			fmt.Fprintln(stderr, "kydns: cancelled")
+			return 1
+		}
+		return 0
+	}
+
+	fmt.Fprintf(stdout, "\nThis node is a primary. Joining makes it a replica, and its first pull\n")
+	fmt.Fprintln(stdout, "discards everything it holds now:")
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "  services  %d\n", services)
+	fmt.Fprintf(stdout, "  records   %d\n", records)
+	fmt.Fprintf(stdout, "  follows   %s\n", address)
+	fmt.Fprintln(stdout)
+	if yes {
+		return 0
+	}
+	if !tty {
+		fmt.Fprintln(stderr, "kydns: there is no terminal here to confirm discarding this node's configuration on.")
+		fmt.Fprintln(stderr, "Pass --yes if that is what you want.")
+		return 2
+	}
+	if !ask(prompt, stdout, "Discard this node's configuration and follow "+address+"?") {
+		fmt.Fprintln(stderr, "kydns: cancelled")
+		return 1
+	}
+	return 0
+}
+
+// localSummary is what this node would lose by joining: whether it is a
+// primary being demoted, and how much configuration is here to be replaced.
+func localSummary(c *Client) (primary bool, services, records int, err error) {
+	var status struct {
+		Role string `json:"role"`
+	}
+	if err := c.Do("GET", "/api/v1/replica/status", nil, &status); err != nil {
+		return false, 0, 0, err
+	}
+	if status.Role != "primary" {
+		return false, 0, 0, nil
+	}
+	var svcs struct {
+		Services []struct{} `json:"services"`
+	}
+	if err := c.Do("GET", "/api/v1/services", nil, &svcs); err != nil {
+		return false, 0, 0, err
+	}
+	var recs struct {
+		Records []struct{} `json:"records"`
+	}
+	if err := c.Do("GET", "/api/v1/records", nil, &recs); err != nil {
+		return false, 0, 0, err
+	}
+	return true, len(svcs.Services), len(recs.Records), nil
+}
+
+// replicaPromote makes this node the primary. The confirmation says what the
+// operator has to do to the old primary, because two primaries serving the
+// same replicas is the one state this design can neither detect nor reconcile.
+func replicaPromote(c *Client, args []string, in io.Reader, tty bool, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("replica promote", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	yes := fs.Bool("yes", false, "skip the confirmation")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, promoteUsage)
+		return 2
+	}
+
+	if !*yes {
+		fmt.Fprintln(stdout, "Promoting this node stops it following its primary and lets it accept writes.")
+		fmt.Fprintln(stdout, "The old primary must be demoted or rebuilt before it is switched back on:")
+		fmt.Fprintln(stdout, "two primaries serving the same replicas cannot be detected or undone.")
+		fmt.Fprintln(stdout, "Demote it with kydns replica join once this node is serving.")
+		if !tty {
+			fmt.Fprintln(stderr, "kydns: there is no terminal here to confirm the promotion on.")
+			fmt.Fprintln(stderr, "Pass --yes if that is what you want.")
+			return 2
+		}
+		if !ask(bufio.NewReader(in), stdout, "Promote this node to primary?") {
+			fmt.Fprintln(stderr, "kydns: cancelled")
+			return 1
+		}
+	}
+
+	var out struct {
+		Promoted bool `json:"promoted"`
+	}
+	if err := c.Do("POST", "/api/v1/replica/promote", nil, &out); err != nil {
+		return fail(stderr, err)
+	}
+	if !out.Promoted {
+		fmt.Fprintln(stdout, "this node was already a primary; nothing changed")
+		return 0
+	}
+	fmt.Fprintln(stdout, "this node is now the primary and accepts writes")
+	fmt.Fprintln(stdout, "Point its replicas at it, and do not switch the old primary back on until it is demoted.")
 	return 0
 }
 

@@ -54,6 +54,39 @@ func (a *API) WithReplicaJoiner(j ReplicaJoiner) *API {
 	return a
 }
 
+// ReplicaPromoter is this node's escape from being a replica: it stops
+// pulling, flips the live role, and records the promotion. app injects it, for
+// the same reason as the two above.
+type ReplicaPromoter interface {
+	// Promote reports whether anything changed. A node that is already a
+	// primary is not an error: the operator asked for a state it is in.
+	Promote() (promoted bool, err error)
+}
+
+// WithReplicaPromoter attaches promotion. It is optional, so the API still
+// constructs where replication is not wired.
+func (a *API) WithReplicaPromoter(p ReplicaPromoter) *API {
+	a.replicaPromoter = p
+	return a
+}
+
+// promoteThisNode makes this node the primary. It is exempt from the write
+// gate: a replica that cannot be promoted is useless in exactly the outage
+// promotion exists for.
+func (a *API) promoteThisNode(w http.ResponseWriter, _ *http.Request) {
+	if a.replicaPromoter == nil {
+		writeErr(w, http.StatusConflict, "replication_disabled", "",
+			"replication is not configured on this node, so there is no role to change")
+		return
+	}
+	promoted, err := a.replicaPromoter.Promote()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "promote_failed", "", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"role": "primary", "promoted": promoted})
+}
+
 type joinRequest struct {
 	Address     string `json:"address"`
 	Code        string `json:"code"`

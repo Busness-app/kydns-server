@@ -52,6 +52,10 @@ func startJoinServer(t *testing.T) (*Client, *joinRecorder) {
 				rec.codes = append(rec.codes, body.Code)
 			}
 			json.NewEncoder(w).Encode(map[string]string{"fingerprint": presentedFP})
+		case "/api/v1/replica/status":
+			// This node is not a primary, so joining it is not a demotion and the
+			// summary that names what a demotion discards never runs.
+			json.NewEncoder(w).Encode(map[string]string{"role": "replica"})
 		case "/api/v1/replica/join":
 			rec.codes = append(rec.codes, body.Code)
 			rec.joinFPs = append(rec.joinFPs, body.Fingerprint)

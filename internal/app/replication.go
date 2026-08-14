@@ -178,6 +178,38 @@ func (a *replicaAdmin) Peers() ([]store.Peer, error)  { return a.st.Peers() }
 func (a *replicaAdmin) Unpair(nodeID string) error    { return a.st.DeletePeer(nodeID) }
 func (a *replicaAdmin) ConfigVersion() (int64, error) { return a.st.ConfigVersion() }
 
+// replicaPromoter is the operator's escape from being a replica. Every step is
+// ordered so that a crash in the middle leaves a node that comes back a
+// primary, never one that quietly resumes following the primary it was
+// promoted away from.
+type replicaPromoter struct {
+	st   *store.Store
+	role *RoleHolder
+	// stopPull stops the pull loop and waits for it to exit. Nil on a node that
+	// never had one.
+	stopPull func()
+}
+
+func (p *replicaPromoter) Promote() (bool, error) {
+	if p.role.Current() != RoleReplica {
+		return false, nil // already what the operator asked for
+	}
+	// Recorded first: a crash from here on must still come back a primary.
+	if err := p.st.RecordPromotion(time.Now().Unix()); err != nil {
+		return false, err
+	}
+	// Before the role flips, so no pull can land between the two and overwrite
+	// the writes this node is about to start accepting.
+	if p.stopPull != nil {
+		p.stopPull()
+	}
+	if err := p.st.SetReplicaState("", 0); err != nil {
+		return false, err
+	}
+	p.role.Set(RolePrimary)
+	return true, nil
+}
+
 // replicaJoiner is this node's half of pairing. The fingerprint it pins is the
 // one the operator confirmed and nothing else: a peer naming its own key would
 // be authenticating itself.
@@ -191,28 +223,62 @@ func (j *replicaJoiner) Peek(ctx context.Context, address string) (string, error
 }
 
 func (j *replicaJoiner) Join(ctx context.Context, address, code, fingerprint string) (string, error) {
-	return replica.PairAsReplica(ctx, address, j.id, code,
+	nodeID, err := replica.PairAsReplica(ctx, address, j.id, code,
 		func(_ context.Context, presented string) (bool, error) { return presented == fingerprint, nil }, j.st)
+	if err != nil {
+		return "", err
+	}
+	// Joining is the demotion. A former primary that kept its promotion record
+	// would come back a primary on the next restart, which is the two-primaries
+	// state nothing downstream can reconcile.
+	return nodeID, j.st.ClearPromotion()
 }
 
-// startReplication starts whichever half of replication the config file asked
-// for. A standalone node does nothing here. The returned server is nil unless
-// this node is a primary, the returned puller is nil unless it is a replica,
-// and the returned identity is nil unless replication is configured at all.
-func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
-	ap replica.Applier, healthFn func() []health.Status, errs chan<- error, logger *slog.Logger) (*replica.Server, *replica.Puller, *replica.Identity, error) {
+// runPuller starts the pull loop and returns the function that stops it. Stop
+// waits for the loop to exit rather than only signalling it: promotion must
+// not race a poll that is already applying a snapshot over the writes this
+// node is about to accept.
+func runPuller(ctx context.Context, p *replica.Puller) func() {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.Run(ctx)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
+// replication is what startReplication built: at most one of srv and puller,
+// the identity if replication is configured at all, and stopPull, which stops
+// the pull loop and waits for it to exit.
+type replication struct {
+	srv      *replica.Server
+	puller   *replica.Puller
+	id       *replica.Identity
+	stopPull func()
+}
+
+// startReplication starts whichever half of replication this node's role calls
+// for. A standalone node does nothing here. role, not the config file, decides
+// whether to follow a primary: a promoted node still has replication.primary
+// in its file and must not pull from it.
+func startReplication(ctx context.Context, cfg *config.Config, role Role, st *store.Store,
+	ap replica.Applier, healthFn func() []health.Status, errs chan<- error, logger *slog.Logger) (replication, error) {
 	if cfg.Replication.Listen == "" && cfg.Replication.Primary == "" {
-		return nil, nil, nil, nil
+		return replication{}, nil
 	}
 	id, err := replica.LoadOrCreateIdentity(cfg.DataDir)
 	if err != nil {
-		return nil, nil, nil, err
+		return replication{}, err
 	}
 	// The node ID is what an operator confirms when pairing. It is also what
 	// the status endpoint and every invite report, so it is carried out of here.
 	logger.Info("replication identity", "node_id", id.NodeID)
 
-	if cfg.Replication.Primary != "" {
+	if role == RoleReplica {
 		// Without a pinned key there is nothing to authenticate the primary with,
 		// so dialling it would either fail forever or trust whoever answers.
 		fp, err := primaryFingerprint(st)
@@ -220,7 +286,7 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 			logger.Warn("replication.primary is set but this node is not paired; serving the configuration it already has",
 				"primary", cfg.Replication.Primary, "reason", err,
 				"fix", "pair this node with its primary")
-			return nil, nil, id, nil
+			return replication{id: id}, nil
 		}
 		puller := replica.NewPuller(replica.PullerConfig{
 			Dial: func(context.Context) (replica.Primary, error) {
@@ -234,14 +300,20 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 			Now:      time.Now,
 			Logger:   logger,
 		})
-		go puller.Run(ctx)
 		logger.Info("following primary", "primary", cfg.Replication.Primary, "primary_node_id", fp)
-		return nil, puller, id, nil
+		return replication{puller: puller, id: id, stopPull: runPuller(ctx, puller)}, nil
+	}
+
+	// A promoted node whose file still names a primary has no listener to
+	// start. It serves what it holds and accepts writes; the operator sets
+	// replication.listen when they are ready to serve replicas again.
+	if cfg.Replication.Listen == "" {
+		return replication{id: id}, nil
 	}
 
 	l, err := net.Listen("tcp", cfg.Replication.Listen)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
+		return replication{}, fmt.Errorf("replication.listen %s: %w", cfg.Replication.Listen, err)
 	}
 	srv := replica.NewServer(id, st, &storeSource{st: st, nodeID: id.NodeID, health: healthFn},
 		replica.NewInviteBook(inviteTTL, time.Now))
@@ -259,8 +331,8 @@ func startReplication(ctx context.Context, cfg *config.Config, st *store.Store,
 		// The caller registers its Close only on success, so this one closes here
 		// rather than leaking the listener and its goroutine.
 		srv.Close()
-		return nil, nil, nil, err
+		return replication{}, err
 	}
 	logger.Info("serving replicas", "listen", cfg.Replication.Listen, "node_id", id.NodeID, "paired", len(peers))
-	return srv, nil, id, nil
+	return replication{srv: srv, id: id}, nil
 }

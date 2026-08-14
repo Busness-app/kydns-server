@@ -32,6 +32,19 @@ func RoleFrom(cfg config.ReplicationConfig) Role {
 	}
 }
 
+// RoleAtBoot is RoleFrom with a recorded promotion taken into account.
+// Promotion records itself in the database rather than rewriting the
+// operator's config file, so replication.primary may still name the primary
+// this node used to follow. The promotion wins: this node has already accepted
+// writes as a primary, and following that key again would overwrite them.
+func RoleAtBoot(cfg config.ReplicationConfig, promoted bool) Role {
+	role := RoleFrom(cfg)
+	if promoted && role == RoleReplica {
+		return RolePrimary
+	}
+	return role
+}
+
 // RoleHolder is the role behind an accessor, not a constant: promotion
 // (Task 7) must flip a replica to primary the instant it happens, so the
 // write gates that read Current on every request stop refusing writes

@@ -165,3 +165,26 @@ func TestReplicaStateSurvivesRePairing(t *testing.T) {
 		t.Fatalf("ReplicaState() version = %d after a re-pair, want 42", version)
 	}
 }
+
+// A promotion is recorded here rather than by rewriting the operator's config
+// file, so this row is the only thing that can tell a restarted node it is no
+// longer a replica. Joining a primary clears it again.
+func TestPromotionIsRecordedAndCleared(t *testing.T) {
+	s := open(t)
+	if at, err := s.Promotion(); err != nil || at != 0 {
+		t.Fatalf("Promotion() = %d, %v on a node that was never promoted, want 0", at, err)
+	}
+	const promotedAt = 1786000000
+	if err := s.RecordPromotion(promotedAt); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.Promotion(); err != nil || at != promotedAt {
+		t.Fatalf("Promotion() = %d, %v, want %d", at, err, promotedAt)
+	}
+	if err := s.ClearPromotion(); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.Promotion(); err != nil || at != 0 {
+		t.Fatalf("Promotion() = %d, %v after ClearPromotion, want 0", at, err)
+	}
+}

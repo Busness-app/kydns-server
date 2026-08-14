@@ -97,6 +97,32 @@ func (s *Store) SetReplicaState(primaryNodeID string, version int64) error {
 	return err
 }
 
+// Promotion is when this node was promoted to primary, or 0 if it never was.
+// It is the answer that beats replication.primary in the config file, because
+// promotion records itself here rather than editing that file.
+func (s *Store) Promotion() (int64, error) {
+	var at int64
+	err := s.db.QueryRow(`SELECT promoted_at FROM promotion WHERE id = 1`).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return at, err
+}
+
+func (s *Store) RecordPromotion(at int64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO promotion(id, promoted_at) VALUES(1, ?)
+		ON CONFLICT(id) DO UPDATE SET promoted_at = excluded.promoted_at`, at)
+	return err
+}
+
+// ClearPromotion undoes a promotion. Joining a primary is the demotion, and a
+// node that kept the record would come back a primary on its next restart.
+func (s *Store) ClearPromotion() error {
+	_, err := s.db.Exec(`DELETE FROM promotion WHERE id = 1`)
+	return err
+}
+
 // TouchPeer records the outcome of a successful pull. version is the version
 // the peer reported holding; nil leaves the recorded one alone, so a peer that
 // reports nothing still updates its last-seen time.
