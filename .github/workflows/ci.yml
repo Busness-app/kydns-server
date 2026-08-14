@@ -416,6 +416,57 @@ jobs:
         if: failure()
         run: sudo journalctl -u kydns --no-pager -n 200 || true
 
+  # The SD image builder otherwise runs for the first time on a version tag,
+  # where a failure means a release that published everything but the image.
+  # A synthetic base of the same shape proves the download, loop, and staging
+  # steps without pulling 500 MB of Raspberry Pi OS on every pull request.
+  rpi-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: a base laid out like Raspberry Pi OS
+        run: |
+          set -eux
+          truncate -s 96M base.img
+          printf 'label: dos\nstart=2048, size=32768, type=c\nstart=34816, type=83\n' \
+            | sfdisk base.img
+          loop=$(sudo losetup --find --show --partscan base.img)
+          sudo mkfs.ext4 -q "${loop}p2"
+          sudo losetup -d "$loop"
+          # Compressed, and behind a name that does not end in .xz: that is
+          # what the published "latest" link serves.
+          xz -T0 -0 base.img
+          mv base.img.xz raspios_lite_arm64_latest
+
+      - name: build the image
+        run: |
+          set -eux
+          : > kydns_ci_arm64.deb
+          sudo ./scripts/build-rpi-image.sh kydns_ci_arm64.deb dist/kydns_ci_rpi64.img \
+            "file://$PWD/raspios_lite_arm64_latest"
+
+      - name: the package is staged to install on first boot
+        run: |
+          set -eux
+          loop=$(sudo losetup --find --show --partscan dist/kydns_ci_rpi64.img)
+          mkdir -p mnt
+          sudo mount "${loop}p2" mnt
+          sudo test -f mnt/opt/kydns/kydns.deb
+          sudo test -x mnt/usr/local/sbin/kydns-image-install
+          sudo test -L mnt/etc/systemd/system/multi-user.target.wants/kydns-image-install.service
+          sudo umount mnt
+          sudo losetup -d "$loop"
+
+      # The release compresses the image as the runner, not as the root that
+      # wrote it, and xz exits non-zero if it cannot carry the ownership over.
+      - name: the runner can compress what root wrote
+        run: |
+          set -eux
+          sudo chown "$(id -u):$(id -g)" dist/kydns_ci_rpi64.img
+          xz -T0 -0 dist/kydns_ci_rpi64.img
+          test -f dist/kydns_ci_rpi64.img.xz
+
   # Proves the rpm the way the deb job proves the deb: on a real systemd, not
   # by reading the manifest. Distribution varies the systemd version and
   # architecture varies the binary, so each axis is covered once rather than

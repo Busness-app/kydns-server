@@ -34,18 +34,25 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-base=$work/base
 curl -fL "$base_url" -o "$work/base.download"
-case "$base_url" in
-	*.xz|*/latest) xz -dc "$work/base.download" > "$base" ;;
-	*) cp "$work/base.download" "$base" ;;
-esac
 
 mkdir -p "$(dirname "$output")"
-cp "$base" "$output"
+# The download decides whether it is compressed, not the URL: the published
+# "latest" link names no file at all and still serves an .xz.
+if xz --list "$work/base.download" >/dev/null 2>&1; then
+	xz -dc "$work/base.download" > "$output"
+else
+	cp "$work/base.download" "$output"
+fi
+
 loop=$(losetup --find --show --partscan "$output")
 udevadm settle 2>/dev/null || true
-partx --add "$loop"
+# --partscan already creates the nodes on most kernels, and adding partitions
+# that are there is an error, so partx runs only where it is needed.
+if [ ! -b "${loop}p2" ]; then
+	partx --add "$loop"
+	udevadm settle 2>/dev/null || true
+fi
 
 mount "${loop}p2" "$root"
 install -d -m 0755 "$root/opt/kydns" "$root/usr/local/sbin" \
