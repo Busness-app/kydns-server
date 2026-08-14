@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 	"gopkg.in/yaml.v3"
@@ -162,9 +163,30 @@ func (c *Config) validate() error {
 		}
 	}
 	if c.Replication.Primary != "" {
-		if _, _, err := net.SplitHostPort(c.Replication.Primary); err != nil {
+		if err := dialAddress(c.Replication.Primary); err != nil {
 			return fmt.Errorf("replication.primary %q: %w", c.Replication.Primary, err)
 		}
+	}
+	return nil
+}
+
+// dialAddress checks a host:port this node will connect to, which the listen
+// addresses above are not: a listener with a bad port fails loudly at startup,
+// while a primary with one is pasted into a URL and fails on every poll, in a
+// log the operator is not reading.
+func dialAddress(raw string) error {
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return err
+	}
+	if host == "" {
+		return errors.New("needs a host to dial")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		// "8443/replica" lands here: a pasted URL splits into a host and a
+		// port that is not a number.
+		return fmt.Errorf("port must be a number from 1 to 65535, not %q", port)
 	}
 	return nil
 }

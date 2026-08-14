@@ -480,9 +480,14 @@ image needs network access on that boot. Read the setup token with:
 sudo cat /var/lib/kydns/setup-token
 ```
 
-The builder downloads the current official arm64 Lite image. Set
-`RPI_BASE_URL` to a pinned `.img.xz` URL for reproducible builds. The output is
-not safe to flash while compressed and is intentionally not a raw device path.
+The base is pinned. `packaging/rpi-base.pin` names one official arm64 Lite
+release and the SHA-256 Raspberry Pi published for it, and the builder refuses
+a download that does not match — a release is signed and attested, so what it
+was built on top of is a reviewed decision rather than whatever the mirror
+served that morning. A weekly job proposes the next release once it has been
+out for three days; `RPI_BASE_URL` and `RPI_BASE_SHA256` override the pin for
+a local build. The output is not safe to flash while compressed and is
+intentionally not a raw device path.
 
 ## Running it
 

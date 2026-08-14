@@ -2,14 +2,15 @@
 set -eu
 
 usage() {
-	echo "usage: $0 <arm64-deb> <output.img> [raspios-lite-url]" >&2
+	echo "usage: $0 <arm64-deb> <output.img> [raspios-lite-url] [sha256]" >&2
 }
 
-[ "$#" -ge 2 ] && [ "$#" -le 3 ] || { usage; exit 2; }
+[ "$#" -ge 2 ] && [ "$#" -le 4 ] || { usage; exit 2; }
 
 deb=$1
 output=$2
 base_url=${3:-https://downloads.raspberrypi.com/raspios_lite_arm64_latest}
+base_sha256=${4:-}
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root (the image must be mounted)" >&2; exit 1; }
 [ -f "$deb" ] || { echo "package not found: $deb" >&2; exit 1; }
@@ -20,6 +21,7 @@ command -v partx >/dev/null || { echo "partx is required" >&2; exit 1; }
 command -v mount >/dev/null || { echo "mount is required" >&2; exit 1; }
 command -v mountpoint >/dev/null || { echo "mountpoint is required" >&2; exit 1; }
 command -v xz >/dev/null || { echo "xz is required" >&2; exit 1; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
 
 work=$(mktemp -d)
 loop=
@@ -35,6 +37,17 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 curl -fL "$base_url" -o "$work/base.download"
+
+# The release signs and attests the image this builds, so the base it is built
+# from has to be the one this repository reviewed, not whatever the download
+# served today.
+if [ -n "$base_sha256" ]; then
+	echo "$base_sha256  $work/base.download" | sha256sum -c - >/dev/null || {
+		echo "base image does not match $base_sha256: refusing to build" >&2
+		exit 1; }
+else
+	echo "warning: no checksum given, so $base_url is unverified" >&2
+fi
 
 mkdir -p "$(dirname "$output")"
 # The download decides whether it is compressed, not the URL: the published

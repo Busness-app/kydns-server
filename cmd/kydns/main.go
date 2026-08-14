@@ -11,11 +11,16 @@ import (
 
 	"github.com/yoshiofthewire/kydns-server/internal/app"
 	"github.com/yoshiofthewire/kydns-server/internal/cli"
+	"github.com/yoshiofthewire/kydns-server/internal/web"
 )
 
 // version is set at link time with -X main.version. "dev" means someone built
 // straight from a source tree, which is exactly what a bug report needs to say.
 var version = "dev"
+
+// The web UI prints the same string. One stamp, one answer, whichever way an
+// operator asks.
+func init() { web.Version = version }
 
 const usage = `usage: kydns <command> [flags]
 
