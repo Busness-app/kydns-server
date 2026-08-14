@@ -227,14 +227,16 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	// A replica shows the health its primary reports, not what it probes
 	// itself: it sits on the other side of the network from the services, and
 	// its own verdict would keep reading "up" while the primary is unreachable.
-	// A promoted node owns the probes again, so it reads the local checker.
+	// The role decides, not the puller, so an unpaired replica reports unknown
+	// rather than falling back to its own probes. A promoted node owns the
+	// probes again, and reads the local checker.
 	healthFn := checker.Statuses
-	if repl.puller != nil {
+	if role == RoleReplica {
 		healthFn = func() []health.Status {
 			if roleHolder.Current() != RoleReplica {
 				return checker.Statuses()
 			}
-			return replicaHealth(st, repl.puller)
+			return replicaHealth(st, repl.puller, logger)
 		}
 	}
 

@@ -76,10 +76,17 @@ func (s *storeSource) HealthStatus() (map[string]string, error) {
 // the primary that owns the service, matched to local service IDs by name. A
 // replica probes from the other side of the network, and an unreachable
 // primary answers unknown for every service rather than the last value seen.
-func replicaHealth(st *store.Store, p *replica.Puller) []health.Status {
-	states := p.Health()
+// A nil puller is a replica that has never been paired: it has no source of
+// verdicts at all, so every service reads unknown rather than falling back to
+// probes taken from the wrong side of the network.
+func replicaHealth(st *store.Store, p *replica.Puller, logger *slog.Logger) []health.Status {
+	var states map[string]string
+	if p != nil {
+		states = p.Health()
+	}
 	svcs, err := st.Services()
 	if err != nil {
+		logger.Error("replica health: cannot list services", "error", err)
 		return nil
 	}
 	out := make([]health.Status, 0, len(svcs))

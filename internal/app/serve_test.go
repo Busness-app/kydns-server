@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/yoshiofthewire/kydns-server/internal/policy"
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 // freePorts reserves n distinct ports. Every reservation is held open until
@@ -118,7 +121,41 @@ func writeConfig(t *testing.T, dir string, extra string) (cfgPath string, dnsPor
 	t.Helper()
 	p := freePorts(t, 2)
 	dnsPort, adminPort = p[0], p[1]
+	quietBlacklists(t, dir)
 	return writeConfigOn(t, dir, dnsPort, adminPort, extra), dnsPort, adminPort
+}
+
+// quietBlacklists disables the built-in list before any daemon opens this data
+// dir. Every start seeds that list enabled and the refresher fetches it on the
+// spot, so an untouched dir downloads several megabytes from the internet and
+// inserts a hundred thousand rows — per daemon, in a package that starts a lot
+// of them. Seeding here rather than disabling afterwards means the daemon's own
+// SeedBuiltins finds the name and leaves it alone.
+//
+// This is the test path only: a real first run still gets filtering on.
+func quietBlacklists(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(dir, "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := policy.SeedBuiltins(st); err != nil {
+		t.Fatal(err)
+	}
+	lists, err := st.BlacklistListMetas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range lists {
+		l.Enabled = false
+		if _, err := st.PutBlacklistList(l); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // writeConfigOn rewrites a node's config on the ports it is already using, so
@@ -257,6 +294,7 @@ admin:
 	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	quietBlacklists(t, dir)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go Serve(ctx, cfg, nil)

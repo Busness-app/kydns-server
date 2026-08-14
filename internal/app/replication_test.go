@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -265,13 +267,21 @@ func TestUnpairedReplicaStartsAndServes(t *testing.T) {
 	dir, _ := nodeDir(t, "lonely")
 	primary := fmt.Sprintf("127.0.0.1:%d", freePort(t))
 	cfg, dnsPort, adminPort := writeConfig(t, dir,
-		fmt.Sprintf("replication:\n  primary: %q\n", primary))
+		fmt.Sprintf("replication:\n  primary: %q\nhealth:\n  interval: 2\n  timeout: 1\n", primary))
+
+	// Answers every probe, so a node reporting this service as up could only be
+	// reporting its own probe.
+	var probes atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		probes.Add(1)
+	}))
+	t.Cleanup(target.Close)
 
 	// Seeded through the store: a replica refuses admin writes, so the record
 	// it serves has to arrive the way a pull would deliver it.
 	seed := openDB(t, dir)
 	if _, err := seed.PutService(store.Service{
-		Name: "local", Addresses: []store.Address{{Address: "192.168.1.30"}},
+		Name: "local", Addresses: []store.Address{{Address: "192.168.1.30"}}, CheckURL: target.URL,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -297,5 +307,23 @@ func TestUnpairedReplicaStartsAndServes(t *testing.T) {
 	}
 	if out := logged(); !strings.Contains(out, "not paired") {
 		t.Errorf("startup log does not tell the operator this node is unpaired:\n%s", out)
+	}
+
+	// Two probes in, the first one's verdict is recorded, so what the health
+	// surface says now is a decision and not a race. A replica has no primary
+	// to hear a verdict from, paired or not, and its own probe leaves this
+	// machine by a path no client of the service takes.
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	deadline := time.After(30 * time.Second)
+	for probes.Load() < 2 {
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatalf("the local checker probed %d times; it never ran", probes.Load())
+		}
+	}
+	if got := healthOf(t, base, token, "local"); got != health.StateUnknown {
+		t.Errorf("an unpaired replica reports health %q for a service it probed itself, want unknown", got)
 	}
 }

@@ -155,8 +155,9 @@ logging; and DNS query history, ever.
 Health status replicates as operational metadata, outside the configuration
 version, and is what a replica renders for its own services: a replica sits on
 the far side of the network from the services, so its own probes would answer
-for a path no client takes. While its primary is unreachable it reports every
-service as unknown, never the last value it saw. Stale-good health would show
+for a path no client takes. While its primary is unreachable — or before it has
+been paired with one at all — it reports every service as unknown, never the
+last value it saw. Stale-good health would show
 a dead service as alive during exactly the outage an operator is reading it in.
 
 An invalid or truncated snapshot leaves a replica's previous configuration

@@ -110,8 +110,8 @@ func getJSON(t *testing.T, url, token string, out any) {
 	}
 }
 
-// healthOf is one service's state on this node's own health surface.
-func healthOf(t *testing.T, n *node, service string) string {
+// healthOf is one service's state on a node's own health surface.
+func healthOf(t *testing.T, base, token, service string) string {
 	t.Helper()
 	var out struct {
 		Health []struct {
@@ -119,7 +119,7 @@ func healthOf(t *testing.T, n *node, service string) string {
 			State string `json:"state"`
 		} `json:"health"`
 	}
-	getJSON(t, n.base+"/api/v1/health", n.token, &out)
+	getJSON(t, base+"/api/v1/health", token, &out)
 	for _, h := range out.Health {
 		if h.Name == service {
 			return h.State
@@ -135,7 +135,7 @@ func waitForHealth(t *testing.T, n *node, service, want string) {
 	deadline := time.After(e2eDeadline)
 	var got string
 	for {
-		if got = healthOf(t, n, service); got == want {
+		if got = healthOf(t, n.base, n.token, service); got == want {
 			return
 		}
 		select {
@@ -153,8 +153,10 @@ func waitForHealth(t *testing.T, n *node, service, want string) {
 func TestOperatorPairsWritesFailsOverAndPromotes(t *testing.T) {
 	// Reachable from both nodes for the whole test: the health assertions below
 	// are about where a status came from, never about the target being down.
+	// Cleanups run last-registered first, so this one closes after both nodes
+	// have stopped: Close blocks on connections a running checker still holds.
 	probe := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	defer probe.Close()
+	t.Cleanup(probe.Close)
 
 	primaryDir, primaryNodeID := nodeDir(t, "orchard")
 	secondDir, _ := nodeDir(t, "meadow")
