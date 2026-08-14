@@ -357,9 +357,21 @@ jobs:
           make package VERSION=9.9.9-upgrade ARCHES=${{ matrix.arch }}
           git checkout -- kydns.package.yaml
 
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+          # Not -qq: the assertion below reads what the maintainer scripts
+          # printed, and the quiet level is what would swallow it.
+          upgrade_out=$(sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             -o Dpkg::Options::=--force-confold \
-            ./dist/kydns_9.9.9-upgrade_${{ matrix.arch }}.deb
+            ./dist/kydns_9.9.9-upgrade_${{ matrix.arch }}.deb 2>&1)
+          echo "$upgrade_out"
+
+          # dpkg calls postrm with "upgrade" here, so its /var/lib/kydns notice
+          # has to stay behind the remove|purge guard. The purge step below
+          # asserts the same notice does print, which is what keeps this from
+          # passing just because no maintainer output reached us at all.
+          if echo "$upgrade_out" | grep -q "KyDNS data was left in"; then
+            echo "the upgrade printed the removal notice; the postrm guard broke"
+            exit 1
+          fi
 
           grep -q "operator edit, must survive" /etc/kydns/kydns.yaml || {
             echo "the upgrade clobbered the operator's config"; exit 1; }
@@ -385,7 +397,12 @@ jobs:
       - name: purge keeps the data
         run: |
           set -eux
-          sudo apt-get purge -y -qq kydns
+          # Not -qq, for the same reason as the upgrade step above.
+          purge_out=$(sudo apt-get purge -y kydns 2>&1)
+          echo "$purge_out"
+          echo "$purge_out" | grep -q "KyDNS data was left in" || {
+            echo "purge never printed the notice; the guard is too tight"
+            exit 1; }
           # Every check here needs sudo: the directory is 0700 kydns, so an
           # unprivileged test cannot traverse it and reads a surviving file as
           # a missing one.
