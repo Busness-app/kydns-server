@@ -66,6 +66,18 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: make package VERSION="$VERSION"
 
+      # The image is Raspberry Pi OS Lite arm64 with the tested arm64 package
+      # staged for installation on its first networked boot. Mounting a loop
+      # device needs root; the builder cleans it up on exit.
+      - name: build Raspberry Pi SD image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sudo ./scripts/build-rpi-image.sh \
+            "dist/kydns_${VERSION}_arm64.deb" \
+            "dist/kydns_${VERSION}_rpi64.img"
+          xz -T0 -9 "dist/kydns_${VERSION}_rpi64.img"
+
       - name: manifests are right
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -87,7 +99,7 @@ jobs:
         run: |
           set -eux
           cd dist
-          sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS
+          sha256sum *.tar.gz *.deb *.rpm *.img.xz > SHA256SUMS
           cat SHA256SUMS
 
       # Keyless, free, and verifiable with `gh attestation verify`. Signing
@@ -95,7 +107,7 @@ jobs:
       # are already downloading unsigned binaries.
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-path: "dist/*.tar.gz, dist/*.deb, dist/*.rpm, dist/SHA256SUMS"
+          subject-path: "dist/*.tar.gz, dist/*.deb, dist/*.rpm, dist/*.img.xz, dist/SHA256SUMS"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -104,6 +116,7 @@ jobs:
             dist/*.tar.gz
             dist/*.deb
             dist/*.rpm
+            dist/*.img.xz
             dist/SHA256SUMS
 
       # ref_type alone isn't enough: workflow_dispatch can be run against an
@@ -118,4 +131,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            dist/*.tar.gz dist/*.deb dist/*.rpm dist/SHA256SUMS
+            dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.img.xz dist/SHA256SUMS

@@ -44,6 +44,8 @@ Keep these aligned:
 - `LOGGING.md` — logging and privacy requirements.
 - `SECURITY.md` — security policy and trust boundaries.
 - `CONTRIBUTING.md` — contribution and verification workflow.
+- `Makefile`, `scripts/build-rpi-image.sh` — release artifacts, including the
+  Raspberry Pi OS Lite arm64 SD-image builder.
 - `docs/superpowers/specs/2026-08-11-kydns-v1-design.md` — approved v1 design.
   Single-node with per-subnet views; replication deferred to a later spec.
 - `docs/superpowers/specs/2026-08-12-kydns-blacklists.md` — approved DNS
@@ -80,4 +82,3 @@ Code, one concern per package:
 
 The build must stay cgo-free: the image is distroless, so the pure-Go SQLite
 driver is not optional.
-
