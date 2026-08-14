@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -325,5 +327,91 @@ func TestUnpairedReplicaStartsAndServes(t *testing.T) {
 	}
 	if got := healthOf(t, base, token, "local"); got != health.StateUnknown {
 		t.Errorf("an unpaired replica reports health %q for a service it probed itself, want unknown", got)
+	}
+}
+
+// replicationTestServer is the real listener half, built on a scratch node.
+func replicationTestServer(t *testing.T, name string) *replica.Server {
+	t.Helper()
+	dir, _ := nodeDir(t, name)
+	id, err := replica.LoadOrCreateIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, dir)
+	return replica.NewServer(id, db, &storeSource{st: db, nodeID: id.NodeID},
+		replica.NewInviteBook(inviteTTL, time.Now))
+}
+
+// An accept error on the replication listener at 3am must not end the process:
+// every name on the LAN would stop resolving because of a subsystem whose
+// failure is meant to be cosmetic. startReplication is handed no fatal channel
+// at all, so there is nowhere for this error to go but the log.
+func TestReplicationListenerFailureIsLoggedNotFatal(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Close() // the listener dying under a server that is already running
+
+	logger, logged := logCapture(t)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveReplicas(replicationTestServer(t, "broken"), l, logger)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serveReplicas did not return after its listener failed")
+	}
+	out := logged()
+	for _, want := range []string{"replication listener stopped", "level=ERROR", "DNS on this node is unaffected"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("a dead replication listener is not reported with %q:\n%s", want, out)
+		}
+	}
+}
+
+// A bind failure is different: the operator asked this node to serve replicas
+// and it cannot. That is a misconfiguration to meet at startup, not one line in
+// a log at 3am, so it still ends the process.
+func TestReplicationBindFailureIsFatal(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer taken.Close()
+
+	dir, _ := nodeDir(t, "clash")
+	cfg, _, _ := writeConfig(t, dir, fmt.Sprintf("replication:\n  listen: %q\n", taken.Addr().String()))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err = Serve(ctx, cfg, slog.New(slog.DiscardHandler))
+	if err == nil {
+		t.Fatal("a node that could not bind its replication listener started anyway")
+	}
+	if !strings.Contains(err.Error(), "replication.listen") {
+		t.Errorf("the refusal does not name the key that is wrong: %v", err)
+	}
+}
+
+// An ordinary shutdown is not an incident, and logging one as an error at every
+// restart is how an operator learns to ignore the line above.
+func TestReplicationShutdownIsNotLogged(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := replicationTestServer(t, "orderly")
+	// Closed before Serve, which is a state the http server carries forward: it
+	// answers ErrServerClosed whenever Serve gets there.
+	if err := srv.Close(); err != nil {
+		t.Fatal(err)
+	}
+	logger, logged := logCapture(t)
+	serveReplicas(srv, l, logger)
+	if out := logged(); out != "" {
+		t.Errorf("a clean shutdown logged:\n%s", out)
 	}
 }

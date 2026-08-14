@@ -319,12 +319,31 @@ type replication struct {
 	stopPull func()
 }
 
+// serving is the half of *replica.Server serveReplicas runs.
+type serving interface {
+	Serve(net.Listener) error
+}
+
+// serveReplicas runs the replication listener until it stops. Once the bind has
+// succeeded, its failure is logged and nothing else: this node keeps resolving
+// names, which is what it is for. A bind failure is a different thing, and
+// startReplication still returns that as fatal, because the operator asked for
+// a listener and did not get one.
+func serveReplicas(srv serving, l net.Listener, logger *slog.Logger) {
+	if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
+		logger.Error("replication listener stopped; no replica can sync from this node until it is restarted",
+			"error", err, "fix", "restart kydns when convenient; DNS on this node is unaffected")
+	}
+}
+
 // startReplication starts whichever half of replication this node's role calls
 // for. A standalone node does nothing here. role, not the config file, decides
 // whether to follow a primary: a promoted node still has replication.primary
 // in its file and must not pull from it.
+// It takes no fatal channel: nothing it starts may end the process after it
+// returns.
 func startReplication(ctx context.Context, cfg *config.Config, role Role, st *store.Store,
-	ap replica.Applier, healthFn func() []health.Status, errs chan<- error, logger *slog.Logger) (replication, error) {
+	ap replica.Applier, healthFn func() []health.Status, logger *slog.Logger) (replication, error) {
 	if cfg.Replication.Listen == "" && cfg.Replication.Primary == "" {
 		return replication{}, nil
 	}
@@ -379,15 +398,7 @@ func startReplication(ctx context.Context, cfg *config.Config, role Role, st *st
 	}
 	srv := replica.NewServer(id, st, &storeSource{st: st, nodeID: id.NodeID, health: healthFn},
 		replica.NewInviteBook(inviteTTL, time.Now))
-	go func() {
-		// ponytail: errs is the process's fatal channel, so a replication
-		// listener that dies at runtime takes DNS down with it. A later task
-		// should downgrade the post-startup case to a logged error and a banner;
-		// replication failing must never make local DNS unavailable.
-		if err := srv.Serve(l); !errors.Is(err, http.ErrServerClosed) {
-			errs <- err
-		}
-	}()
+	go serveReplicas(srv, l, logger)
 	peers, err := st.Peers()
 	if err != nil {
 		// The caller registers its Close only on success, so this one closes here
