@@ -25,9 +25,9 @@ jobs:
       id-token: write     # keyless attestation
       attestations: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -105,11 +105,11 @@ jobs:
       # Keyless, free, and verifiable with `gh attestation verify`. Signing
       # from the first release is far cheaper than retrofitting it once people
       # are already downloading unsigned binaries.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/*.tar.gz, dist/*.deb, dist/*.rpm, dist/*.img.xz, dist/SHA256SUMS"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kydns-${{ steps.version.outputs.version }}
           path: |
