@@ -66,4 +66,7 @@ ln -s ../kydns-image-install.service \
 	"$root/etc/systemd/system/multi-user.target.wants/kydns-image-install.service"
 
 sync
+# The mount needed root, the image does not. Left owned by root it is a file
+# the caller cannot compress, copy, or delete without sudo of their own.
+[ -z "${SUDO_UID:-}" ] || chown "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$output"
 echo "wrote $output"

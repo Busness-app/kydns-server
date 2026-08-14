@@ -443,6 +443,9 @@ jobs:
         run: |
           set -eux
           : > kydns_ci_arm64.deb
+          # `make rpi-image` builds the package first, so dist belongs to the
+          # caller by the time the image lands in it.
+          mkdir -p dist
           sudo ./scripts/build-rpi-image.sh kydns_ci_arm64.deb dist/kydns_ci_rpi64.img \
             "file://$PWD/raspios_lite_arm64_latest"
 
@@ -459,11 +462,10 @@ jobs:
           sudo losetup -d "$loop"
 
       # The release compresses the image as the runner, not as the root that
-      # wrote it, and xz exits non-zero if it cannot carry the ownership over.
-      - name: the runner can compress what root wrote
+      # built it, and xz exits non-zero if it cannot carry the ownership over.
+      - name: the runner can compress the image
         run: |
           set -eux
-          sudo chown "$(id -u):$(id -g)" dist/kydns_ci_rpi64.img
           xz -T0 -0 dist/kydns_ci_rpi64.img
           test -f dist/kydns_ci_rpi64.img.xz
 
