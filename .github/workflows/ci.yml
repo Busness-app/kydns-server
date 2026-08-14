@@ -386,9 +386,13 @@ jobs:
         run: |
           set -eux
           sudo apt-get purge -y -qq kydns
-          test -d /var/lib/kydns || {
+          # Every check here needs sudo: the directory is 0700 kydns, so an
+          # unprivileged test cannot traverse it and reads a surviving file as
+          # a missing one.
+          sudo ls -la /var/lib/kydns
+          sudo test -d /var/lib/kydns || {
             echo "purge destroyed the registry"; exit 1; }
-          test -f /var/lib/kydns/kydns.db || {
+          sudo test -f /var/lib/kydns/kydns.db || {
             echo "purge destroyed the database"; exit 1; }
 
       - name: logs on failure
