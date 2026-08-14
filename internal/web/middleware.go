@@ -70,11 +70,11 @@ type ReplicaStatus struct {
 const roleReplica = "replica"
 
 // The POST paths a replica must still answer, named so the exemption list and
-// route registration cannot drift apart. PathPromote has no handler yet: the
-// replication screen registers it in Task 8, and reserving it here means the
-// one button that ends a replica's read-only life is never refused by this
-// gate. Promotion goes through the web transport, not the API's own exempt
-// path, because the screen calls adminapi in-process.
+// route registration cannot drift apart. The replication screen registers its
+// promote button at PathPromote, so the one button that ends a replica's
+// read-only life is never refused by this gate. Promotion goes through the web
+// transport, not the API's own exempt path, because the screen calls adminapi
+// in-process.
 const (
 	PathSetup   = "/setup"
 	PathLogin   = "/login"

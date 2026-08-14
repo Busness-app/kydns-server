@@ -82,16 +82,21 @@ type inviteView struct {
 }
 
 func (s *Server) getReplication(w http.ResponseWriter, r *http.Request) {
-	s.renderReplication(w, r, nil)
+	s.renderReplication(w, r, http.StatusOK, nil)
 }
 
 // renderReplication draws the screen with whatever a POST has to add. A
 // standalone node has no screen: it goes to the dashboard rather than to a
-// page with nothing on it.
-func (s *Server) renderReplication(w http.ResponseWriter, r *http.Request, extra map[string]any) {
+// page with nothing on it, which is why status is passed in rather than
+// written by the caller: a refusal that turns into a redirect would otherwise
+// be a status with no body behind it.
+func (s *Server) renderReplication(w http.ResponseWriter, r *http.Request, status int, extra map[string]any) {
 	if !s.replicating() {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
+	}
+	if status != http.StatusOK {
+		w.WriteHeader(status)
 	}
 	data := s.replicationData()
 	maps.Copy(data, extra)
@@ -120,34 +125,36 @@ func (s *Server) replicationData() map[string]any {
 // and nowhere else, which is why this renders rather than redirects.
 func (s *Server) postReplicaInvite(w http.ResponseWriter, r *http.Request) {
 	if s.o.API == nil {
-		w.WriteHeader(http.StatusConflict)
-		s.renderReplication(w, r, map[string]any{"Error": adminapi.ErrReplicationDisabled.Error()})
+		s.renderReplication(w, r, http.StatusConflict, replicationOff)
 		return
 	}
 	code, expires, fingerprint, err := s.o.API.InviteReplica()
 	if err != nil {
-		w.WriteHeader(http.StatusConflict)
-		s.renderReplication(w, r, map[string]any{"Error": err.Error()})
+		s.renderReplication(w, r, http.StatusConflict, map[string]any{"Error": err.Error()})
 		return
 	}
-	s.renderReplication(w, r, map[string]any{"Invite": inviteView{
+	// The page holds a credential good for ten minutes. Nothing is meant to
+	// keep it, but a shared browser's back button and bfcache would.
+	w.Header().Set("Cache-Control", "no-store")
+	s.renderReplication(w, r, http.StatusOK, map[string]any{"Invite": inviteView{
 		Code: code, Fingerprint: fingerprint, ExpiresIn: shortDuration(time.Until(expires)),
 	}})
 }
 
 func (s *Server) postReplicaRemove(w http.ResponseWriter, r *http.Request) {
 	if s.o.API == nil {
-		w.WriteHeader(http.StatusConflict)
-		s.renderReplication(w, r, map[string]any{"Error": adminapi.ErrReplicationDisabled.Error()})
+		s.renderReplication(w, r, http.StatusConflict, replicationOff)
 		return
 	}
 	if err := s.o.API.RemoveReplica(r.PostFormValue("node_id")); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		s.renderReplication(w, r, map[string]any{"Error": err.Error()})
+		s.renderReplication(w, r, http.StatusBadRequest, map[string]any{"Error": err.Error()})
 		return
 	}
 	http.Redirect(w, r, "/replication", http.StatusSeeOther)
 }
+
+// replicationOff is what a screen with no replication wiring behind it says.
+var replicationOff = map[string]any{"Error": adminapi.ErrReplicationDisabled.Error()}
 
 const promoteUnconfirmed = "Nothing changed: the promotion was not confirmed."
 
@@ -157,22 +164,19 @@ const promoteUnconfirmed = "Nothing changed: the promotion was not confirmed."
 // it must not turn on a stray click or a replayed form.
 func (s *Server) postReplicaPromote(w http.ResponseWriter, r *http.Request) {
 	if r.PostFormValue("confirm") == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		s.renderReplication(w, r, map[string]any{"Error": promoteUnconfirmed})
+		s.renderReplication(w, r, http.StatusBadRequest, map[string]any{"Error": promoteUnconfirmed})
 		return
 	}
 	if s.o.API == nil {
-		w.WriteHeader(http.StatusConflict)
-		s.renderReplication(w, r, map[string]any{"Error": adminapi.ErrReplicationDisabled.Error()})
+		s.renderReplication(w, r, http.StatusConflict, replicationOff)
 		return
 	}
 	role, promoted, err := s.o.API.PromoteThisNode()
 	if err != nil {
-		w.WriteHeader(http.StatusConflict)
-		s.renderReplication(w, r, map[string]any{"Error": err.Error()})
+		s.renderReplication(w, r, http.StatusConflict, map[string]any{"Error": err.Error()})
 		return
 	}
-	s.renderReplication(w, r, map[string]any{"Promoted": promoted, "RoleAfter": role})
+	s.renderReplication(w, r, http.StatusOK, map[string]any{"Promoted": promoted, "RoleAfter": role})
 }
 
 // replicationLine is the dashboard's one line about replication: what this

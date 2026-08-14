@@ -215,12 +215,13 @@ func TestRemoveControlUnpairsThatPeer(t *testing.T) {
 
 func TestReplicaScreenNamesItsPrimaryAndSyncAge(t *testing.T) {
 	fp := thisFingerprint
-	st := &ReplicaStatus{
-		Role: roleReplica, PrimaryAddr: replicaPrimaryAddr,
-		LastSyncUnix: time.Now().Add(-45 * time.Second).Unix(),
-	}
+	st := &ReplicaStatus{Role: roleReplica, PrimaryAddr: replicaPrimaryAddr}
 	h, _, c, _, _ := replicationWeb(t, st, &fp, nil, &fakePromoter{status: st})
 
+	// Set after the fixture is built, not before: .Unix() floors and
+	// shortDuration truncates, so any delay between the two rolls 45s over to
+	// 46s. The closure reads this pointer per request.
+	st.LastSyncUnix = time.Now().Add(-45 * time.Second).Unix()
 	rec := get(t, h, "/replication", c)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /replication on a replica = %d, want 200:\n%s", rec.Code, rec.Body)
@@ -299,6 +300,11 @@ func TestInviteDisplaysCodeAndFingerprintTogether(t *testing.T) {
 	if strings.Contains(logs.String(), inviteCode) {
 		t.Errorf("the pairing code was written to the log:\n%s", logs)
 	}
+	// Nothing is meant to keep this page, so say so: a shared browser's back
+	// button would otherwise hand the next person a live credential.
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("Cache-Control = %q on a page holding a pairing code, want no-store", cc)
+	}
 }
 
 // The two halves of the warning: what the operator must do to the old primary,
@@ -334,6 +340,13 @@ func TestPromoteButtonCarriesTheWarning(t *testing.T) {
 	}
 	if st.Role != roleReplica {
 		t.Fatalf("role = %q after an unconfirmed promote, want replica", st.Role)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST %s unconfirmed = %d, want 400", PathPromote, rec.Code)
+	}
+	// A button that appears to do nothing is a button an operator clicks again.
+	if !strings.Contains(rec.Body.String(), promoteUnconfirmed) {
+		t.Errorf("the unconfirmed promote does not say why nothing happened:\n%s", rec.Body)
 	}
 
 	rec = postForm(t, h, PathPromote, url.Values{"csrf_token": {csrf}, "confirm": {"yes"}}, c)
@@ -377,12 +390,20 @@ func TestPromoteIsRegisteredAtTheReservedPathAndNotRefused(t *testing.T) {
 func TestStandaloneNodeHidesTheScreen(t *testing.T) {
 	fp := ""
 	for _, st := range []*ReplicaStatus{nil, {Role: "standalone"}} {
-		h, _, c, _, _ := replicationWeb(t, st, &fp, nil, nil)
+		h, _, c, csrf, _ := replicationWeb(t, st, &fp, nil, nil)
+
+		// A POST that ends in the redirect must not have written a refusal
+		// status first: the operator would get a bare 400 with no page behind it.
+		rec := postForm(t, h, PathPromote, url.Values{"csrf_token": {csrf}}, c)
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+			t.Errorf("POST %s on a standalone node = %d to %q, want 303 to /:\n%s",
+				PathPromote, rec.Code, rec.Header().Get("Location"), rec.Body)
+		}
 
 		if body := get(t, h, "/", c).Body.String(); strings.Contains(body, `href="/replication"`) {
 			t.Errorf("a standalone node shows the Replication nav entry:\n%s", body)
 		}
-		rec := get(t, h, "/replication", c)
+		rec = get(t, h, "/replication", c)
 		if rec.Code != http.StatusSeeOther {
 			t.Errorf("GET /replication on a standalone node = %d, want 303:\n%s", rec.Code, rec.Body)
 		}
@@ -425,11 +446,12 @@ func TestDashboardLineNamesTheRoleAndPeerCount(t *testing.T) {
 
 func TestDashboardLineOnAReplicaShowsSyncAge(t *testing.T) {
 	fp := thisFingerprint
-	st := &ReplicaStatus{
-		Role: roleReplica, PrimaryAddr: replicaPrimaryAddr,
-		LastSyncUnix: time.Now().Add(-45 * time.Second).Unix(),
-	}
+	st := &ReplicaStatus{Role: roleReplica, PrimaryAddr: replicaPrimaryAddr}
 	h, _, c, _, _ := replicationWeb(t, st, &fp, nil, &fakePromoter{status: st})
+
+	// Set immediately before the request: see the note in the replica screen
+	// test. Login runs argon2id, which is long enough to cross the second.
+	st.LastSyncUnix = time.Now().Add(-45 * time.Second).Unix()
 	role, detail := dashboardReplication(t, h, c)
 	if role != roleReplica {
 		t.Errorf("dashboard role = %q, want replica", role)
