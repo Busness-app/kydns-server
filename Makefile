@@ -15,6 +15,11 @@ up: setup
 # Debian versions must start with a digit, so a tag's leading "v" is stripped
 # by the caller. This default is what a local build gets.
 VERSION ?= 0.0.0-dev
+
+# rpm forbids "-" in a version and nfpm rewrites it to "~", so the file name
+# has to be built from the same substitution or it disagrees with the metadata
+# inside the package.
+RPMVERSION = $(subst -,~,$(VERSION))
 ARCHES := amd64 arm64
 DIST := dist
 
@@ -38,6 +43,14 @@ package: dist
 		ARCH=$$arch VERSION=$(VERSION) \
 			go tool nfpm package -f nfpm.yaml -p deb \
 				-t $(DIST)/kydns_$(VERSION)_$$arch.deb || exit 1; \
+		case $$arch in \
+		amd64) rpmarch=x86_64 ;; \
+		arm64) rpmarch=aarch64 ;; \
+		*) echo "no rpm arch known for $$arch"; exit 1 ;; \
+		esac; \
+		ARCH=$$arch VERSION=$(VERSION) \
+			go tool nfpm package -f nfpm.yaml -p rpm \
+				-t $(DIST)/kydns-$(RPMVERSION)-1.$$rpmarch.rpm || exit 1; \
 	done
 
 clean:

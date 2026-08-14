@@ -52,14 +52,36 @@ contents:
   # licence text at all, which Policy forbids and the AGPL does not allow.
   - src: LICENSE
     dst: /usr/share/doc/kydns/copyright
+    packager: deb
+    file_info:
+      mode: 0644
+
+  # rpm has the License field, set above, and its own place for the text.
+  # `type: license` is what sets the flag `rpm -qL` reads.
+  - src: LICENSE
+    dst: /usr/share/licenses/kydns/LICENSE
+    type: license
+    packager: rpm
     file_info:
       mode: 0644
 
 # /var/lib/kydns is deliberately not listed. systemd's StateDirectory creates
 # it with the right owner and mode, and dpkg never learns to remove it.
 
-scripts:
-  preinstall: packaging/preinst.sh
-  postinstall: packaging/postinst.sh
-  preremove: packaging/prerm.sh
-  postremove: packaging/postrm.sh
+# The two formats run different state machines, not the same one by different
+# means: dpkg gets deb-systemd-helper, mask-instead-of-disable, and enable on
+# install; rpm gets presets and disable on uninstall. One file holding both
+# would leave half of every script unreachable on any given host.
+overrides:
+  deb:
+    scripts:
+      preinstall: packaging/preinst.sh
+      postinstall: packaging/postinst.sh
+      preremove: packaging/prerm.sh
+      postremove: packaging/postrm.sh
+  rpm:
+    scripts:
+      preinstall: packaging/rpm/preinstall.sh
+      postinstall: packaging/rpm/postinstall.sh
+      preremove: packaging/rpm/preuninstall.sh
+      postremove: packaging/rpm/postuninstall.sh
