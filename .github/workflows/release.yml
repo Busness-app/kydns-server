@@ -1,0 +1,78 @@
+name: Release
+
+# Separate from ci.yml so the write permissions a release needs never apply to
+# a pull request build.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create the release
+      id-token: write     # keyless attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Debian versions must start with a digit, so the tag's leading v goes.
+      # A manual run is not a release; it just proves the workflow still works.
+      - name: resolve the version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-dev+${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: build binaries and packages
+        run: make package VERSION=${{ steps.version.outputs.version }}
+
+      - name: manifests are right
+        run: |
+          set -eux
+          v=${{ steps.version.outputs.version }}
+          ./scripts/verify-package.sh dist/kydns_${v}_amd64.deb amd64
+          ./scripts/verify-package.sh dist/kydns_${v}_arm64.deb arm64
+
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.deb > SHA256SUMS
+          cat SHA256SUMS
+
+      # Keyless, free, and verifiable with `gh attestation verify`. Signing
+      # from the first release is far cheaper than retrofitting it once people
+      # are already downloading unsigned binaries.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*.tar.gz, dist/*.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kydns-${{ steps.version.outputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+
+      - name: publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.tar.gz dist/*.deb dist/SHA256SUMS
