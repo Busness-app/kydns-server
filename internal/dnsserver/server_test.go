@@ -452,6 +452,23 @@ func TestAuthoritativeAnswerNeverCarriesAD(t *testing.T) {
 	}
 }
 
+// A link-local peer reports as fe80::1%eth0. netip.Prefix.Contains is false
+// for any zoned address, so a zone that survives here silently makes
+// fe80::/10 in allow_query unmatchable and drops the client into the
+// default view.
+func TestSourceAddrStripsIPv6Zone(t *testing.T) {
+	w := &fakeResponseWriter{remote: &net.UDPAddr{
+		IP: net.ParseIP("fe80::1"), Zone: "eth0", Port: 12345,
+	}}
+	got := sourceAddr(w)
+	if got.Zone() != "" {
+		t.Errorf("sourceAddr kept zone %q, want none", got.Zone())
+	}
+	if !netip.MustParsePrefix("fe80::/10").Contains(got) {
+		t.Errorf("fe80::/10 does not contain %v", got)
+	}
+}
+
 // fakeResponseWriter drives ServeDNS synchronously with a fixed client
 // address, so the caller can inspect logger output right after the call
 // returns without racing the goroutine a real listener would use.
