@@ -342,4 +342,3 @@ func (s *Server) clearSSOCookies(w http.ResponseWriter, r *http.Request) {
 	s.clearSSOCookie(w, r, cookieSSOVerifier)
 	s.clearSSOCookie(w, r, cookieSSOLink)
 }
-

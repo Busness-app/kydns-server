@@ -549,4 +549,3 @@ func TestSSOSettingsSaveAndUnlink(t *testing.T) {
 		t.Errorf("expected unlinked SSO, got: %+v", ident)
 	}
 }
-

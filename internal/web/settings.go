@@ -221,4 +221,3 @@ func (s *Server) postSSOUnlink(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
-
