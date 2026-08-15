@@ -139,6 +139,29 @@ func (a *API) peekPrimary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"fingerprint": fp})
 }
 
+// ErrFingerprintRequired is pairing asked to trust whatever answers. Exported
+// so the web screen refuses it in the same words as the JSON path.
+var ErrFingerprintRequired = errors.New("pairing needs the fingerprint the operator confirmed; peek first")
+
+// CanPair reports whether this node has a pairing surface at all, so a screen
+// can leave the form out rather than render one that answers every submit
+// with the same refusal.
+func (a *API) CanPair() bool { return a.replicaJoiner != nil }
+
+// JoinPrimary pairs this node with the primary at address, pinned to the
+// fingerprint the operator confirmed. Exported because the web screen's
+// pairing form runs the same rules: a second implementation of them is a
+// second thing to get wrong.
+func (a *API) JoinPrimary(ctx context.Context, address, code, fingerprint string) (primaryNodeID string, err error) {
+	if a.replicaJoiner == nil {
+		return "", ErrReplicationDisabled
+	}
+	if strings.TrimSpace(fingerprint) == "" {
+		return "", ErrFingerprintRequired
+	}
+	return a.replicaJoiner.Join(ctx, address, code, strings.TrimSpace(fingerprint))
+}
+
 // joinPrimary pairs with address, pinned to the fingerprint the operator
 // confirmed. The fingerprint is required: there is no prompt-free default that
 // trusts whatever answered, here or in the CLI above it.
@@ -147,14 +170,12 @@ func (a *API) joinPrimary(w http.ResponseWriter, r *http.Request) {
 	if !a.pairingRequest(w, r, &req, &req.Address) {
 		return
 	}
-	fingerprint := strings.TrimSpace(req.Fingerprint)
-	if fingerprint == "" {
-		writeErr(w, http.StatusBadRequest, "fingerprint_required", "fingerprint",
-			"pairing needs the fingerprint the operator confirmed; peek first")
-		return
-	}
-	nodeID, err := a.replicaJoiner.Join(r.Context(), req.Address, req.Code, fingerprint)
+	nodeID, err := a.JoinPrimary(r.Context(), req.Address, req.Code, req.Fingerprint)
 	if err != nil {
+		if errors.Is(err, ErrFingerprintRequired) {
+			writeErr(w, http.StatusBadRequest, "fingerprint_required", "fingerprint", err.Error())
+			return
+		}
 		// Its own code: a rejected fingerprint may mean something is in the path,
 		// which reads nothing like a peer that failed to answer.
 		if errors.Is(err, replica.ErrFingerprintRejected) {

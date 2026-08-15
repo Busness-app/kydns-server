@@ -346,7 +346,10 @@ refused with the address of the primary to make them on: in the API, in the
 CLI, and in the UI, whose editing controls are disabled with the same reason.
 
 The Replication screen in the web UI does all of this too: minting an invite,
-listing replicas with their lag, removing one, and promoting.
+pairing a replica with the primary its config names, listing replicas with
+their lag, removing one, and promoting. The screen pairs with
+`replication.primary` and never an address you type, because that is the
+address the pull loop dials.
 
 ### When the primary is down
 

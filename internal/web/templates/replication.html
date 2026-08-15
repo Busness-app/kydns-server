@@ -9,6 +9,12 @@
 </div>
 {{end}}
 
+{{with .Joined}}
+<div class="banner">
+  <strong>{{.}}</strong>
+</div>
+{{end}}
+
 {{if eq .Role "replica"}}
 <div class="card">
   <table class="grid">
@@ -19,6 +25,33 @@
   <p class="muted">This node is read-only. Every change is made on the primary
      and arrives here on the next pull.</p>
 </div>
+
+{{if .CanPair}}
+<div class="card">
+  <h3>{{if .Paired}}Pair with a primary again{{else}}Pair with a primary{{end}}</h3>
+  <form method="post" action="/replication/join" class="stack">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <p>On {{.PrimaryAddr}}, open Replication and add a replica. Copy both
+       values it shows: this node pairs with {{.PrimaryAddr}} and nothing else,
+       because that is the address it polls.</p>
+    <label for="join-code">Invite code</label>
+    <input id="join-code" name="code" type="text" autocomplete="off"
+           spellcheck="false" placeholder="quiet-otter-lantern-42" required>
+    <label for="join-fp">Fingerprint shown on {{.PrimaryAddr}}</label>
+    <input id="join-fp" name="fingerprint" type="text" autocomplete="off"
+           spellcheck="false" required>
+    <p>The fingerprint must match exactly. If it does not, something is
+       answering in the primary's place: stop, and do not reuse the code
+       anywhere until you know why.</p>
+    {{if .Paired}}
+    <label><input type="checkbox" name="confirm" value="yes" required>
+      This node is already paired. Pairing again discards that link and
+      replaces this node's configuration on the first pull.</label>
+    {{end}}
+    <button type="submit">Pair this node</button>
+  </form>
+</div>
+{{end}}
 
 <div class="card">
   <h3>Promote this node</h3>

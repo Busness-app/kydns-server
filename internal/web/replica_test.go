@@ -80,9 +80,14 @@ func TestReplicaRefusesEveryPostRoute(t *testing.T) {
 // The exempt set is this gate's whole attack surface, so it is pinned by value
 // rather than by whatever the map happens to hold. Adding an entry here has to
 // be a deliberate edit to this test.
-func TestExemptSetIsExactlyTheFourNamedPaths(t *testing.T) {
+//
+// PathJoin was added deliberately: the gate refuses writes because the next
+// pull discards them, and pairing is the write that creates the pull. Without
+// it an unpaired replica has no way to start and a removed one no way back.
+func TestExemptSetIsExactlyTheFiveNamedPaths(t *testing.T) {
 	want := map[string]bool{
-		PathSetup: true, PathLogin: true, PathLogout: true, PathPromote: true,
+		PathSetup: true, PathLogin: true, PathLogout: true,
+		PathPromote: true, PathJoin: true,
 	}
 	if !maps.Equal(webWriteExempt, want) {
 		t.Fatalf("webWriteExempt = %v, want %v", webWriteExempt, want)
@@ -90,7 +95,7 @@ func TestExemptSetIsExactlyTheFourNamedPaths(t *testing.T) {
 
 	_, _, srv, _, _, _ := replicaWeb(t)
 	registered := registeredPostRoutes(t, srv)
-	for _, p := range []string{PathSetup, PathLogin, PathLogout, PathPromote} {
+	for _, p := range []string{PathSetup, PathLogin, PathLogout, PathPromote, PathJoin} {
 		if !slices.Contains(registered, p) {
 			t.Errorf("exempt path %s is not a registered route: the exemption is dead or misspelled", p)
 		}
@@ -240,7 +245,9 @@ func TestStaleBannerCarriesTheLastError(t *testing.T) {
 	if strings.Contains(body, "is reachable from this node") {
 		t.Errorf("a refused replica is told to check reachability:\n%s", body)
 	}
-	if !strings.Contains(body, "kydns replica join") {
+	// Where to pair, not which command: the Replication screen now carries the
+	// form, so a browser-only operator is no longer sent to a terminal.
+	if !strings.Contains(body, "Replication screen") {
 		t.Errorf("the banner does not say how to pair this node again:\n%s", body)
 	}
 

@@ -136,7 +136,7 @@ func ReplicaStaleBanner(st ReplicaStatus, now time.Time) *Banner {
 	if st.LastError != "" {
 		b.Body += " The last attempt failed: " + st.LastError + "."
 		b.Fix = "That is what the attempt reported, not a network failure. " +
-			"If this node was removed on " + st.managedBy() + ", pair it again with kydns replica join."
+			"If this node was removed on " + st.managedBy() + ", pair it again from the Replication screen."
 	}
 	return b
 }

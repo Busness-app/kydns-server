@@ -68,6 +68,11 @@ type ReplicaStatus struct {
 	// unlinked replica and a schema mismatch both read as "unreachable" without
 	// it, which sends the operator to check a network that is working.
 	LastError string
+	// Paired is whether this node has a primary's key pinned. An unpaired
+	// replica has never synced and never will, which renders exactly like one
+	// that has merely fallen behind; the pairing form reads this to decide
+	// whether it is offering a first pairing or discarding a working one.
+	Paired bool
 	// Stale is the puller's own verdict, so the threshold is decided once.
 	Stale bool
 }
@@ -86,14 +91,21 @@ const (
 	PathLogin   = "/login"
 	PathLogout  = "/logout"
 	PathPromote = "/replication/promote"
+	PathJoin    = "/replication/join"
 )
 
 // webWriteExempt is the whole exemption list. Signing in is how an operator
 // reaches the promote button, being unable to sign out of a replica would be
 // its own trap, and a replica that refuses to be promoted is the outage this
 // feature exists to end.
+//
+// Pairing is exempt for the reason the gate exists: it refuses edits because
+// the next pull discards them, and pairing is what creates that pull. Refusing
+// it strands an unpaired replica with no way to start, and a replica the
+// primary has removed with no way to come back.
 var webWriteExempt = map[string]bool{
-	PathSetup: true, PathLogin: true, PathLogout: true, PathPromote: true,
+	PathSetup: true, PathLogin: true, PathLogout: true,
+	PathPromote: true, PathJoin: true,
 }
 
 // managedBy names the box to make the change on.

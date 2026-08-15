@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
+	"github.com/yoshiofthewire/kydns-server/internal/replica"
 )
 
 // roleStandalone mirrors app.Role's standalone value, for the same reason
@@ -113,6 +114,9 @@ func (s *Server) replicationData() map[string]any {
 		// The screen an operator opens when replication looks wrong is this one,
 		// so what the last poll reported belongs on it.
 		data["LastError"] = st.LastError
+		data["Paired"] = st.Paired
+		// A form with no pairing surface behind it is a button that cannot work.
+		data["CanPair"] = s.o.API != nil && s.o.API.CanPair()
 		return data
 	}
 	rows, err := s.peerRows(time.Now())
@@ -190,6 +194,58 @@ func (s *Server) postReplicaPromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderReplication(w, r, http.StatusOK, map[string]any{"Promoted": promoted, "RoleAfter": role})
+}
+
+const (
+	joinUnconfirmed = "Nothing changed: re-pairing was not confirmed."
+	joinPaired      = "Paired. This node does not start following its primary until KyDNS is restarted."
+	joinCodeUnsent  = "The code was not sent, so it is still good."
+	joinNotReplica  = "Only a replica pairs with a primary. Set replication.primary in this node's config and restart."
+)
+
+// postReplicaJoin pairs this node with the primary its config already names.
+// Registered at PathJoin, the second write the replica gate exempts.
+//
+// The address is this node's configured primary and never the operator's
+// input: the pull loop dials replication.primary, so pairing with anything
+// else produces a node that is paired and polls someone else forever.
+func (s *Server) postReplicaJoin(w http.ResponseWriter, r *http.Request) {
+	if s.o.API == nil {
+		s.renderReplication(w, r, http.StatusConflict, replicationOff)
+		return
+	}
+	st, isReplica := s.replica()
+	if !isReplica {
+		s.renderReplication(w, r, http.StatusConflict, map[string]any{"Error": joinNotReplica})
+		return
+	}
+	// Pairing again discards a link that works, which the operator has to mean,
+	// the way promotion does. A node with nothing pinned has nothing to lose.
+	if st.Paired && r.PostFormValue("confirm") == "" {
+		s.renderReplication(w, r, http.StatusBadRequest, map[string]any{"Error": joinUnconfirmed})
+		return
+	}
+	// The request carried a live code, so the page it produces is not one for a
+	// shared browser to keep.
+	w.Header().Set("Cache-Control", "no-store")
+	_, err := s.o.API.JoinPrimary(r.Context(), st.PrimaryAddr,
+		r.PostFormValue("code"), r.PostFormValue("fingerprint"))
+	switch {
+	case err == nil:
+		s.renderReplication(w, r, http.StatusOK, map[string]any{"Joined": joinPaired})
+	case errors.Is(err, adminapi.ErrFingerprintRequired):
+		s.renderReplication(w, r, http.StatusBadRequest, map[string]any{"Error": err.Error()})
+	case errors.Is(err, adminapi.ErrReplicationDisabled):
+		s.renderReplication(w, r, http.StatusConflict, replicationOff)
+	case errors.Is(err, replica.ErrFingerprintRejected):
+		// Something may be answering in the primary's place. Saying the code
+		// survived is the difference between retrying and minting another.
+		s.renderReplication(w, r, http.StatusConflict, map[string]any{
+			"Error": err.Error() + ". " + joinCodeUnsent,
+		})
+	default:
+		s.renderReplication(w, r, http.StatusBadGateway, map[string]any{"Error": err.Error()})
+	}
 }
 
 // replicationLine is the dashboard's one line about replication: what this
