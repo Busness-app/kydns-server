@@ -49,6 +49,7 @@ func (s *Server) pageRoutes(mux registrar) {
 	// exempts that constant, and a button anywhere else is refused with 409 on
 	// the one node that needs it.
 	mux.HandleFunc("POST "+PathPromote, s.requireCSRF(s.postReplicaPromote))
+	mux.HandleFunc("POST "+PathJoin, s.requireCSRF(s.postReplicaJoin))
 
 	mux.HandleFunc("GET /settings", s.requireSession(s.getSettings))
 	mux.HandleFunc("GET /settings/export", s.requireSession(s.getExport))

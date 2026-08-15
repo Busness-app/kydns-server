@@ -2,6 +2,8 @@ package web
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
+	"github.com/yoshiofthewire/kydns-server/internal/replica"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -37,6 +40,9 @@ const (
 	inviteCode = "quiet-otter-lantern-42"
 
 	replicaPrimaryAddr = "198.51.100.7:9443"
+	// Distinct from every other fixture: an assertion that the screen paired
+	// with the configured address cannot be satisfied by a peer's address.
+	primaryNodeIDFixture = "aabbccdd11223344"
 )
 
 // fakeReplicaAdmin is the primary half. The web layer must go through
@@ -96,11 +102,44 @@ func (f *fakePromoter) Promote() (bool, error) {
 	return true, nil
 }
 
+// joinCall is one pairing attempt as the joiner received it, so a test can
+// prove which address the screen paired with rather than only that it paired.
+type joinCall struct{ Address, Code, Fingerprint string }
+
+// fakeJoiner is the replica half of pairing. It compares the fingerprint the
+// way the real joiner does, so a mismatch here fails for the real reason.
+type fakeJoiner struct {
+	presents string // what the node at the far end actually shows
+	status   *ReplicaStatus
+	calls    []joinCall
+}
+
+func (f *fakeJoiner) Peek(_ context.Context, _ string) (string, error) {
+	return f.presents, nil
+}
+
+func (f *fakeJoiner) Join(_ context.Context, address, code, fingerprint string) (string, error) {
+	f.calls = append(f.calls, joinCall{address, code, fingerprint})
+	if fingerprint != f.presents {
+		return "", fmt.Errorf("%w: %s presented %s", replica.ErrFingerprintRejected, address, f.presents)
+	}
+	f.status.Paired = true
+	return primaryNodeIDFixture, nil
+}
+
 // replicationWeb wires a logged-in server whose API carries the replica
 // surface, behind the real web write gate. fingerprint is a pointer so a test
 // can prove the screen reads this node's key rather than a fixed string.
 func replicationWeb(t *testing.T, st *ReplicaStatus, fingerprint *string,
 	admin *fakeReplicaAdmin, prom *fakePromoter,
+) (http.Handler, *Server, *http.Cookie, string, *bytes.Buffer) {
+	t.Helper()
+	return replicationWebJoining(t, st, fingerprint, admin, prom, nil)
+}
+
+// replicationWebJoining is replicationWeb with the pairing surface attached.
+func replicationWebJoining(t *testing.T, st *ReplicaStatus, fingerprint *string,
+	admin *fakeReplicaAdmin, prom *fakePromoter, joiner *fakeJoiner,
 ) (http.Handler, *Server, *http.Cookie, string, *bytes.Buffer) {
 	t.Helper()
 	var logs bytes.Buffer
@@ -124,6 +163,9 @@ func replicationWeb(t *testing.T, st *ReplicaStatus, fingerprint *string,
 		}
 		if prom != nil {
 			api = api.WithReplicaPromoter(prom)
+		}
+		if joiner != nil {
+			api = api.WithReplicaJoiner(joiner)
 		}
 		o.API = api
 	})
@@ -384,6 +426,163 @@ func TestPromoteIsRegisteredAtTheReservedPathAndNotRefused(t *testing.T) {
 	}
 	if prom.calls != 1 || st.Role != "primary" {
 		t.Fatalf("promote through the gate ran %d times, role = %q", prom.calls, st.Role)
+	}
+}
+
+// joiningWeb is an unpaired replica: config names a primary, nothing is
+// pinned yet. This is a freshly installed node before its first pairing.
+func joiningWeb(t *testing.T, paired bool) (http.Handler, *Server, *fakeJoiner, *http.Cookie, string) {
+	t.Helper()
+	fp := thisFingerprint
+	st := &ReplicaStatus{Role: roleReplica, PrimaryAddr: replicaPrimaryAddr, Paired: paired}
+	j := &fakeJoiner{presents: otherFingerprint, status: st}
+	h, srv, c, csrf, _ := replicationWebJoining(t, st, &fp, nil, &fakePromoter{status: st}, j)
+	return h, srv, j, c, csrf
+}
+
+func TestUnpairedReplicaOffersThePairingForm(t *testing.T) {
+	h, _, _, c, _ := joiningWeb(t, false)
+	body := get(t, h, "/replication", c).Body.String()
+
+	if !strings.Contains(body, `action="`+PathJoin+`"`) {
+		t.Fatalf("no pairing form posting to %s:\n%s", PathJoin, body)
+	}
+	// The address is the config's, shown and not asked for: the puller reads
+	// replication.primary, so pairing with anything else pairs a node that
+	// then polls a different one forever.
+	if !strings.Contains(body, replicaPrimaryAddr) {
+		t.Errorf("the pairing form does not name the primary from the config:\n%s", body)
+	}
+	if regexp.MustCompile(`<input[^>]+name="address"`).MatchString(body) {
+		t.Errorf("the pairing form takes a typed address; it must use the configured one:\n%s", body)
+	}
+	// An unpaired node has nothing to discard, so it must not demand the
+	// re-pairing confirmation that would otherwise block a first pairing.
+	if strings.Contains(body, joinUnconfirmed) {
+		t.Errorf("an unpaired replica is asked to confirm re-pairing:\n%s", body)
+	}
+}
+
+func TestPairingUsesTheConfiguredAddressAndAsksForARestart(t *testing.T) {
+	h, _, j, c, csrf := joiningWeb(t, false)
+	rec := postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode}, "fingerprint": {otherFingerprint},
+	}, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST %s = %d, want 200:\n%s", PathJoin, rec.Code, rec.Body)
+	}
+	want := []joinCall{{replicaPrimaryAddr, inviteCode, otherFingerprint}}
+	if !slices.Equal(j.calls, want) {
+		t.Fatalf("joined with %+v, want %+v", j.calls, want)
+	}
+	// Pairing alone changes nothing an operator can see: the pull loop is built
+	// at startup, so a page that only says "paired" reads as a broken feature.
+	if body := rec.Body.String(); !strings.Contains(body, "restart") {
+		t.Errorf("the page after pairing does not say a restart is needed:\n%s", body)
+	}
+	// The code is a live credential for as long as it is unspent.
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("Cache-Control = %q on a page that carried a pairing code, want no-store", cc)
+	}
+}
+
+func TestPairingRefusesAMismatchedFingerprint(t *testing.T) {
+	h, _, _, c, csrf := joiningWeb(t, false)
+	rec := postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode}, "fingerprint": {thisFingerprint},
+	}, c)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST %s with the wrong fingerprint = %d, want 409:\n%s", PathJoin, rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	// A mismatch may mean something is answering in the primary's place, so the
+	// operator has to be told the code survived rather than left guessing.
+	if !strings.Contains(body, joinCodeUnsent) {
+		t.Errorf("the mismatch does not say the code was not sent:\n%s", body)
+	}
+	if !strings.Contains(body, otherFingerprint) {
+		t.Errorf("the mismatch does not show what was actually presented:\n%s", body)
+	}
+}
+
+func TestPairingRequiresAFingerprint(t *testing.T) {
+	h, _, j, c, csrf := joiningWeb(t, false)
+	rec := postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode}, "fingerprint": {"  "},
+	}, c)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST %s with no fingerprint = %d, want 400:\n%s", PathJoin, rec.Code, rec.Body)
+	}
+	// Not dialled at all: a blank fingerprint is pairing asked to trust whoever
+	// answers, which must fail before the code leaves this node.
+	if len(j.calls) != 0 {
+		t.Errorf("pairing ran with no fingerprint: %+v", j.calls)
+	}
+}
+
+func TestRepairingAPairedReplicaNeedsConfirmation(t *testing.T) {
+	h, _, j, c, csrf := joiningWeb(t, true)
+
+	rec := postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode}, "fingerprint": {otherFingerprint},
+	}, c)
+	if len(j.calls) != 0 {
+		t.Fatalf("re-pairing ran unconfirmed: %+v", j.calls)
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unconfirmed re-pair = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), joinUnconfirmed) {
+		t.Errorf("the unconfirmed re-pair does not say why nothing happened:\n%s", rec.Body)
+	}
+
+	rec = postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode},
+		"fingerprint": {otherFingerprint}, "confirm": {"yes"},
+	}, c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirmed re-pair = %d, want 200:\n%s", rec.Code, rec.Body)
+	}
+	if len(j.calls) != 1 {
+		t.Fatalf("confirmed re-pair ran %d times, want 1", len(j.calls))
+	}
+}
+
+// The exemption this feature adds to the replica write gate has to actually
+// hold: registered anywhere else, the gate answers the form with 409 and the
+// node can never pair.
+func TestJoinIsRegisteredAtTheReservedPathAndNotRefused(t *testing.T) {
+	h, srv, j, c, csrf := joiningWeb(t, false)
+
+	if routes := registeredPostRoutes(t, srv); !slices.Contains(routes, PathJoin) {
+		t.Fatalf("no POST route at %s; the gate would refuse the pairing form: %v", PathJoin, routes)
+	}
+	rec := postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode}, "fingerprint": {otherFingerprint},
+	}, c)
+	if rec.Code == http.StatusConflict {
+		t.Fatalf("POST %s = 409 on a replica; the write gate refused pairing:\n%s", PathJoin, rec.Body)
+	}
+	if len(j.calls) != 1 {
+		t.Fatalf("pairing through the gate ran %d times, want 1", len(j.calls))
+	}
+}
+
+// A replica with no pairing surface wired is a node with no replication
+// identity: it must say so rather than render a form that cannot work.
+func TestPairingFormAbsentWithNoJoinerWired(t *testing.T) {
+	fp := thisFingerprint
+	st := &ReplicaStatus{Role: roleReplica, PrimaryAddr: replicaPrimaryAddr}
+	h, _, c, csrf, _ := replicationWeb(t, st, &fp, nil, &fakePromoter{status: st})
+
+	if body := get(t, h, "/replication", c).Body.String(); strings.Contains(body, `action="`+PathJoin+`"`) {
+		t.Errorf("a node with no pairing surface still shows the form:\n%s", body)
+	}
+	rec := postForm(t, h, PathJoin, url.Values{
+		"csrf_token": {csrf}, "code": {inviteCode}, "fingerprint": {otherFingerprint},
+	}, c)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("POST %s with no joiner = %d, want 409:\n%s", PathJoin, rec.Code, rec.Body)
 	}
 }
 

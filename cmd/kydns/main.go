@@ -32,6 +32,7 @@ commands:
   token     manage API tokens
   blacklist manage domain filtering
   settings  view or change server settings
+  replica   manage replication and pairing
   export    write registry contents to YAML or JSON
   import    load registry contents from YAML or JSON
   admin     local recovery: reset-password
@@ -76,12 +77,15 @@ func run(args []string, stdout io.Writer) int {
 			return 1
 		}
 		return 0
-	case "service", "record", "view", "token", "blacklist", "settings", "export", "import":
-		return cli.Run(args, stdout, os.Stderr)
 	case "version":
 		fmt.Fprintln(stdout, version)
 		return 0
 	default:
+		// Asking the cli package rather than repeating its command list here:
+		// the list was duplicated once and the copies drifted.
+		if cli.Lookup(args[0]) != nil {
+			return cli.Run(args, stdout, os.Stderr)
+		}
 		fmt.Fprintf(stdout, "kydns: unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yoshiofthewire/kydns-server/internal/cli"
 	"github.com/yoshiofthewire/kydns-server/internal/web"
 )
 
@@ -18,9 +19,27 @@ func TestRunUnknownSubcommand(t *testing.T) {
 	}
 }
 
-// Every command the usage text advertises has to route. A command listed here
-// but missing from the switch is unreachable from the compiled binary, which is
-// exactly how "kydns blacklist" went missing.
+// Every command the CLI implements has to be reachable from the binary and
+// listed in the usage text. This reads cli.Commands and not the usage text on
+// purpose: a command missing from both was invisible to the check below, which
+// is how "kydns replica" shipped implemented but unroutable.
+func TestEveryCLICommandRoutesAndIsAdvertised(t *testing.T) {
+	for _, cmd := range cli.Commands {
+		t.Run(cmd.Name, func(t *testing.T) {
+			var out bytes.Buffer
+			run([]string{cmd.Name}, &out)
+			if strings.Contains(out.String(), "unknown command") {
+				t.Errorf("%q is implemented but the binary does not route it", cmd.Name)
+			}
+			if !strings.Contains(usage, cmd.Name) {
+				t.Errorf("%q is implemented but the usage text does not list it", cmd.Name)
+			}
+		})
+	}
+}
+
+// The other direction: a command the usage text advertises has to route, which
+// covers the ones main implements itself and cli.Commands does not know about.
 func TestEveryAdvertisedCommandRoutes(t *testing.T) {
 	for _, line := range strings.Split(usage, "\n") {
 		name, _, ok := strings.Cut(strings.TrimSpace(line), " ")

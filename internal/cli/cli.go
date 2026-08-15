@@ -84,36 +84,54 @@ func (c *Client) Do(method, path string, body, out any) error {
 	return nil
 }
 
+// Command is one subcommand: the name it is invoked by, the one-line summary
+// the binary's usage text prints for it, and what runs it.
+type Command struct {
+	Name    string
+	Summary string
+	Run     func(c *Client, args []string, stdout, stderr io.Writer) int
+}
+
+// Commands is every subcommand this package implements. It is the one list:
+// Run dispatches on it and the binary routes and advertises on it, so a
+// command cannot be implemented here and still be unreachable. It was two
+// lists before, which is how "kydns blacklist" and then "kydns replica" ended
+// up implemented but missing from the compiled binary.
+var Commands = []Command{
+	{"service", "manage services", serviceCmd},
+	{"record", "manage records", recordCmd},
+	{"view", "manage views", viewCmd},
+	{"token", "manage API tokens", tokenCmd},
+	{"blacklist", "manage domain filtering", blacklistCmd},
+	{"settings", "view or change server settings", settingsCmd},
+	{"replica", "manage replication and pairing", replicaCmd},
+	{"export", "write registry contents to YAML or JSON", exportCmd},
+	{"import", "load registry contents from YAML or JSON", importCmd},
+}
+
+// Lookup finds a subcommand by name, so a caller can tell "not mine" from a
+// command that ran and failed.
+func Lookup(name string) *Command {
+	for i := range Commands {
+		if Commands[i].Name == name {
+			return &Commands[i]
+		}
+	}
+	return nil
+}
+
 // Run dispatches a subcommand and returns a process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "kydns: a subcommand is required")
 		return 2
 	}
-	c := NewClient()
-	switch args[0] {
-	case "service":
-		return serviceCmd(c, args[1:], stdout, stderr)
-	case "record":
-		return recordCmd(c, args[1:], stdout, stderr)
-	case "blacklist":
-		return blacklistCmd(c, args[1:], stdout, stderr)
-	case "settings":
-		return settingsCmd(c, args[1:], stdout, stderr)
-	case "replica":
-		return replicaCmd(c, args[1:], stdout, stderr)
-	case "view":
-		return viewCmd(c, args[1:], stdout, stderr)
-	case "token":
-		return tokenCmd(c, args[1:], stdout, stderr)
-	case "export":
-		return exportCmd(c, args[1:], stdout, stderr)
-	case "import":
-		return importCmd(c, args[1:], stdout, stderr)
-	default:
+	cmd := Lookup(args[0])
+	if cmd == nil {
 		fmt.Fprintf(stderr, "kydns: unknown subcommand %q\n", args[0])
 		return 2
 	}
+	return cmd.Run(NewClient(), args[1:], stdout, stderr)
 }
 
 func fail(stderr io.Writer, err error) int {

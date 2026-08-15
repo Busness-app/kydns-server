@@ -131,6 +131,10 @@ func (s ReplicaStatus) toWeb() web.ReplicaStatus {
 	return web.ReplicaStatus{
 		Role: string(s.Role), PrimaryAddr: s.PrimaryAddr, LastSyncUnix: s.LastSyncUnix,
 		LastError: s.LastError, Stale: s.Stale,
+		// A pinned primary is what pairing writes, so its node ID is the one
+		// durable mark of having paired: an unpaired replica has no puller and
+		// so never reports one.
+		Paired: s.PrimaryNodeID != "",
 	}
 }
 
