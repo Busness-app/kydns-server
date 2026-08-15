@@ -17,12 +17,13 @@ import (
 
 // SSOTokenClaims represents the verified claims from KySignOn.
 type SSOTokenClaims struct {
-	Sub         string `json:"sub"`
-	Username    string `json:"username"`
-	Email       string `json:"email"`
-	DisplayName string `json:"name"`
-	Role        string `json:"role"`
-	Issuer      string `json:"iss"`
+	Sub               string `json:"sub"`
+	Username          string `json:"username"`
+	PreferredUsername string `json:"preferred_username"`
+	Email             string `json:"email"`
+	DisplayName       string `json:"name"`
+	Role              string `json:"role"`
+	Issuer            string `json:"iss"`
 }
 
 // SSOClient manages OAuth 2.0 PKCE Authorization Code flow with KySignOn.
@@ -152,6 +153,10 @@ func (c *SSOClient) ExchangeCode(ctx context.Context, redirectURI, code, codeVer
 				_ = json.NewDecoder(uResp.Body).Decode(&claims)
 			}
 		}
+	}
+
+	if claims.Username == "" && claims.PreferredUsername != "" {
+		claims.Username = claims.PreferredUsername
 	}
 
 	return &claims, nil
