@@ -249,22 +249,24 @@ func (s *Server) getSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Role enforcement: Must be Admin in KySignOn
-	if claims.Role != "admin" {
-		s.o.Logger.Warn("sso non-admin rejected", "sub", claims.Sub, "role", claims.Role, "username", claims.Username)
-		w.WriteHeader(http.StatusForbidden)
-		s.renderBare(w, "login.html", map[string]any{
-			"Title":      "Sign in",
-			"SSOEnabled": sso.Enabled,
-			"Error":      "Access denied: KyDNS requires an Administrator account in KySignOn.",
-		})
-		return
-	}
-
 	ident, err := s.o.Store.AdminIdentity()
 	if err != nil {
 		s.o.Logger.Error("failed to load admin identity", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	isAlreadyLinked := (ident != nil && ident.SSOSub != "" && ident.SSOSub == claims.Sub)
+
+	// 1. Role enforcement: Must be Admin in IdP (or already linked to this local Admin)
+	if !isLink && !isAlreadyLinked && !claims.IsAdmin() {
+		s.o.Logger.Warn("sso non-admin rejected", "sub", claims.Sub, "role", claims.Role, "groups", claims.Groups, "username", claims.Username)
+		w.WriteHeader(http.StatusForbidden)
+		s.renderBare(w, "login.html", map[string]any{
+			"Title":      "Sign in",
+			"SSOEnabled": true,
+			"Error":      "Access denied: KyDNS requires an Administrator account or a linked identity.",
+		})
 		return
 	}
 

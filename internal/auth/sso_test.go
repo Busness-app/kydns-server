@@ -83,4 +83,58 @@ func TestSSOAuthURLAndExchangeCode(t *testing.T) {
 	if claims.Sub != "user-uuid-12345" || claims.Username != "admin_yoshi" || claims.Role != "admin" {
 		t.Errorf("unexpected claims: %+v", claims)
 	}
+	if !claims.IsAdmin() {
+		t.Errorf("expected claims.IsAdmin() == true")
+	}
+}
+
+func TestAuthentikOIDCDiscoveryAndGroups(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"authorization_endpoint": "https://authentik.urlxl.com/application/o/authorize/",
+				"token_endpoint":         "https://authentik.urlxl.com/application/o/token/",
+				"userinfo_endpoint":      "https://authentik.urlxl.com/application/o/userinfo/",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockServer.Close()
+
+	client := NewSSOClient(mockServer.URL, "authentik-client", "secret")
+	endpoints := client.DiscoverEndpoints(context.Background())
+	if endpoints.AuthorizationEndpoint != "https://authentik.urlxl.com/application/o/authorize/" {
+		t.Errorf("unexpected discovered auth endpoint: %s", endpoints.AuthorizationEndpoint)
+	}
+
+	// Test Authentik group claims
+	authentikClaims := map[string]any{
+		"sub":                "authentik-sub-123",
+		"preferred_username": "akadmin",
+		"email":              "admin@urlxl.com",
+		"groups":             []string{"authentik default admins", "kydns_admin"},
+	}
+	parsed := parseClaimsMap(authentikClaims)
+	if !parsed.IsAdmin() {
+		t.Errorf("expected Authentik admin groups to satisfy IsAdmin()")
+	}
+	if parsed.Username != "akadmin" {
+		t.Errorf("expected username 'akadmin', got %q", parsed.Username)
+	}
+
+	// Test Keycloak realm_access claims
+	keycloakClaims := map[string]any{
+		"sub":      "kc-sub-456",
+		"username": "kcadmin",
+		"realm_access": map[string]any{
+			"roles": []any{"admin", "offline_access"},
+		},
+	}
+	kcParsed := parseClaimsMap(keycloakClaims)
+	if !kcParsed.IsAdmin() {
+		t.Errorf("expected Keycloak realm_access.roles to satisfy IsAdmin()")
+	}
 }
