@@ -92,10 +92,12 @@ func (s *Server) getLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sso, _ := s.o.Store.SSOSettings()
+	ident, _ := s.o.Store.AdminIdentity()
+	ssoEnabled := sso.Enabled || (ident != nil && ident.SSOSub != "")
 	errMsg := r.URL.Query().Get("error")
 	s.renderBare(w, "login.html", map[string]any{
 		"Title":      "Sign in",
-		"SSOEnabled": sso.Enabled,
+		"SSOEnabled": ssoEnabled,
 		"Error":      errMsg,
 	})
 }
@@ -116,9 +118,11 @@ func (s *Server) postLogin(w http.ResponseWriter, r *http.Request) {
 		s.o.Logger.Warn("failed login", "source", key)
 		w.WriteHeader(http.StatusUnauthorized)
 		sso, _ := s.o.Store.SSOSettings()
+		ident, _ := s.o.Store.AdminIdentity()
+		ssoEnabled := sso.Enabled || (ident != nil && ident.SSOSub != "")
 		s.renderBare(w, "login.html", map[string]any{
 			"Title":      "Sign in",
-			"SSOEnabled": sso.Enabled,
+			"SSOEnabled": ssoEnabled,
 			"Error":      "That password is not correct.",
 		})
 		return
@@ -152,7 +156,9 @@ const (
 
 func (s *Server) getSSOLogin(w http.ResponseWriter, r *http.Request) {
 	sso, err := s.o.Store.SSOSettings()
-	if err != nil || (!sso.Enabled && r.URL.Query().Get("link") != "true") {
+	ident, _ := s.o.Store.AdminIdentity()
+	ssoActive := sso.Enabled || (ident != nil && ident.SSOSub != "") || r.URL.Query().Get("link") == "true"
+	if err != nil || !ssoActive {
 		http.Redirect(w, r, "/login?error=SSO+is+not+enabled", http.StatusSeeOther)
 		return
 	}
@@ -273,6 +279,8 @@ func (s *Server) getSSOCallback(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/settings?error=Failed+to+link+identity", http.StatusSeeOther)
 			return
 		}
+		sso.Enabled = true
+		_ = s.o.Store.SetSSOSettings(sso)
 		s.o.Logger.Info("sso identity linked to admin", "sub", claims.Sub, "username", claims.Username)
 		http.Redirect(w, r, "/settings", http.StatusSeeOther)
 		return
@@ -285,7 +293,7 @@ func (s *Server) getSSOCallback(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 			s.renderBare(w, "login.html", map[string]any{
 				"Title":      "Sign in",
-				"SSOEnabled": sso.Enabled,
+				"SSOEnabled": true,
 				"Error":      "This KySignOn account (" + claims.Username + ") is not linked to the KyDNS Admin. Log in with your password to manage SSO settings.",
 			})
 			return
@@ -293,6 +301,8 @@ func (s *Server) getSSOCallback(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// First-time SSO login: Auto-link since KySignOn verified admin role
 		_ = s.o.Store.LinkAdminSSO(claims.Sub, claims.Username, claims.Email)
+		sso.Enabled = true
+		_ = s.o.Store.SetSSOSettings(sso)
 		s.o.Logger.Info("sso first-time auto-linked admin", "sub", claims.Sub, "username", claims.Username)
 	}
 
