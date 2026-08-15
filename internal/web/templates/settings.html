@@ -202,20 +202,20 @@
   <h3>Single Sign-On & OIDC (KySignOn / Authentik / Keycloak)</h3>
   <p class="muted">Connect KySignOn, Authentik, Keycloak, or any standard OpenID Connect provider with PKCE.</p>
 
-  {{if .AdminIdentity}}
-    {{if .AdminIdentity.SSOSub}}
+  {{with .AdminIdentity}}
+    {{if .SSOSub}}
     <div style="background: rgba(77, 238, 234, 0.08); border: 1px solid rgba(77, 238, 234, 0.3); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem;">
       <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
         <div>
           <strong style="color: #4deeea;">SSO Identity Linked</strong>
           <div class="muted" style="font-size: 0.85rem; margin-top: 0.25rem;">
-            Account: <code>{{.AdminIdentity.SSOUsername}}</code> ({{.AdminIdentity.SSOEmail}})<br>
-            Subject: <code>{{.AdminIdentity.SSOSub}}</code> &middot; Linked at: {{.AdminIdentity.SSOLinkedAt.Format "2006-01-02 15:04:05 MST"}}
+            Account: <code>{{.SSOUsername}}</code> {{if .SSOEmail}}({{.SSOEmail}}){{end}}<br>
+            Subject: <code>{{.SSOSub}}</code>
           </div>
         </div>
         <form method="post" action="/settings/sso/unlink" style="margin: 0;">
-          <input type="hidden" name="csrf_token" value="{{.CSRF}}">
-          <button type="submit" class="ghost warn"{{template "ro" .}}>Unlink SSO Account</button>
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <button type="submit" class="ghost" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);"{{template "ro" $}}>Unlink SSO Account</button>
         </form>
       </div>
     </div>

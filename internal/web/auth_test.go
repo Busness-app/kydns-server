@@ -549,3 +549,28 @@ func TestSSOSettingsSaveAndUnlink(t *testing.T) {
 		t.Errorf("expected unlinked SSO, got: %+v", ident)
 	}
 }
+
+func TestSettingsPageRendersWithLinkedSSO(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+
+	// 1. Render when unlinked
+	rec := get(t, h, "/settings", c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings page status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Link SSO Identity") {
+		t.Errorf("expected 'Link SSO Identity' in unlinked settings HTML")
+	}
+
+	// 2. Link identity and render again
+	_ = srv.o.Store.LinkAdminSSO("sso-sub-xyz", "yoshi_admin", "yoshi@urlxl.com")
+	rec = get(t, h, "/settings", c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settings page status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "SSO Identity Linked") || !strings.Contains(rec.Body.String(), "yoshi_admin") {
+		t.Errorf("expected 'SSO Identity Linked' and 'yoshi_admin' in settings HTML, got: %s", rec.Body.String())
+	}
+}
