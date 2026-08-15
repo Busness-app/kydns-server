@@ -199,6 +199,59 @@
 </div>
 
 <div class="card">
+  <h3>KySecurity SSO (KySignOn)</h3>
+  <p class="muted">Central identity authority and Single Sign-On for the KyDNS Administrator.</p>
+
+  {{with .AdminIdentity}}
+    {{if .SSOSub}}
+    <div class="banner" style="margin-bottom: 1.5rem; background: rgba(77, 238, 234, 0.08); border-left: 3px solid #4deeea;">
+      <strong>✓ Linked to KySignOn Identity</strong>
+      <p style="margin: 0.25rem 0;">Username: <strong>{{.SSOUsername}}</strong> {{if .SSOEmail}}({{.SSOEmail}}){{end}}</p>
+      <p class="muted" style="font-size: 0.8rem; margin: 0.25rem 0 0.75rem 0;">Subject ID: <code>{{.SSOSub}}</code></p>
+      <form method="post" action="/settings/sso/unlink">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button type="submit" class="ghost" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);"{{template "ro" $}}>Unlink KySignOn Account</button>
+      </form>
+    </div>
+    {{else}}
+    <div style="margin-bottom: 1.5rem;">
+      <p class="muted" style="margin-bottom: 0.75rem;">No KySignOn identity is linked to this administrator account.</p>
+      <a href="/auth/sso/login?link=true" class="button" style="display: inline-flex; align-items: center; gap: 0.5rem; text-decoration: none; padding: 0.5rem 1rem; background: rgba(77, 238, 234, 0.15); border: 1px solid #4deeea; color: #4deeea; border-radius: 4px; font-weight: bold;">
+        Link KySignOn Account
+      </a>
+    </div>
+    {{end}}
+  {{end}}
+
+  <form method="post" action="/settings/sso">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <div class="field-grid">
+      <fieldset class="field-set"{{template "ro" .}}>
+        <legend>SSO Settings</legend>
+        <div class="fields">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" name="enabled" value="1" {{if .SSOSettings.Enabled}}checked{{end}}>
+            <strong>Enable KySignOn SSO Login</strong>
+          </label>
+
+          <label for="issuer_url">Issuer URL</label>
+          <input id="issuer_url" name="issuer_url" type="url" value="{{.SSOSettings.IssuerURL}}" placeholder="https://auth.urlxl.com">
+
+          <label for="client_id">OAuth Client ID</label>
+          <input id="client_id" name="client_id" type="text" value="{{.SSOSettings.ClientID}}" placeholder="kydns">
+
+          <label for="client_secret">Client Secret (optional for PKCE public clients)</label>
+          <input id="client_secret" name="client_secret" type="password" value="{{.SSOSettings.ClientSecret}}">
+        </div>
+      </fieldset>
+    </div>
+    <div style="margin-top: 1rem;">
+      <button type="submit"{{template "ro" .}}>Save SSO Settings</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
   <h3>Backup and maintenance</h3>
   <p><a href="/settings/export?format=yaml">Download YAML export</a> &middot;
      <a href="/settings/export?format=json">Download JSON export</a></p>

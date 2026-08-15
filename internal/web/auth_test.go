@@ -1,6 +1,8 @@
 package web
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -354,3 +356,197 @@ func TestCSRFMiddlewareRedirectsAnonymous(t *testing.T) {
 		t.Errorf("anonymous POST = %d, want a redirect to /login", rec.Code)
 	}
 }
+
+func fakeIDToken(sub, username, email, role string) string {
+	claims := map[string]any{
+		"sub":      sub,
+		"username": username,
+		"email":    email,
+		"role":     role,
+		"iss":      "https://auth.urlxl.com",
+	}
+	claimsJSON, _ := json.Marshal(claims)
+	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
+	return "header." + encodedClaims + ".signature"
+}
+
+func TestSSOLoginButtonShownWhenEnabled(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+
+	// Disabled by default: login page doesn't show SSO button
+	rec := get(t, h, "/login", nil)
+	if strings.Contains(rec.Body.String(), "Sign in with KySignOn") {
+		t.Error("SSO button shown when SSO is disabled")
+	}
+
+	// Enable SSO
+	_ = srv.o.Store.SetSSOSettings(store.SSOSettings{
+		Enabled:   true,
+		IssuerURL: "https://auth.urlxl.com",
+		ClientID:  "kydns",
+	})
+
+	rec = get(t, h, "/login", nil)
+	if !strings.Contains(rec.Body.String(), "Sign in with KySignOn") {
+		t.Error("SSO button missing when SSO is enabled")
+	}
+}
+
+func TestSSOGetLoginSetsPKCEAndRedirects(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	_ = srv.o.Store.SetSSOSettings(store.SSOSettings{
+		Enabled:   true,
+		IssuerURL: "https://auth.urlxl.com",
+		ClientID:  "kydns",
+	})
+
+	req := httptest.NewRequest("GET", "/auth/sso/login", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 redirect", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://auth.urlxl.com/oauth/authorize") {
+		t.Errorf("unexpected redirect: %s", loc)
+	}
+
+	// Verify cookies were set
+	var stateCookie, verifierCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == cookieSSOState {
+			stateCookie = c
+		}
+		if c.Name == cookieSSOVerifier {
+			verifierCookie = c
+		}
+	}
+	if stateCookie == nil || verifierCookie == nil {
+		t.Fatalf("missing PKCE / state cookies")
+	}
+}
+
+func TestSSOCallbackRejectsNonAdminRole(t *testing.T) {
+	mockSSOServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok",
+			"id_token":     fakeIDToken("sub-1", "regular_bob", "bob@urlxl.com", "user"),
+			"token_type":   "Bearer",
+		})
+	}))
+	defer mockSSOServer.Close()
+
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	_ = srv.o.Store.SetSSOSettings(store.SSOSettings{
+		Enabled:   true,
+		IssuerURL: mockSSOServer.URL,
+		ClientID:  "kydns",
+	})
+
+	req := httptest.NewRequest("GET", "/auth/sso/callback?code=mock_code&state=test_state", nil)
+	req.AddCookie(&http.Cookie{Name: cookieSSOState, Value: "test_state"})
+	req.AddCookie(&http.Cookie{Name: cookieSSOVerifier, Value: "test_verifier"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("callback status = %d, want 403 Forbidden for non-admin", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "requires an Administrator account") {
+		t.Errorf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestSSOCallbackAutoLinksAdminAndLogsIn(t *testing.T) {
+	mockSSOServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "tok",
+			"id_token":     fakeIDToken("sso-sub-admin-999", "admin_yoshi", "yoshi@urlxl.com", "admin"),
+			"token_type":   "Bearer",
+		})
+	}))
+	defer mockSSOServer.Close()
+
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	_ = srv.o.Store.SetSSOSettings(store.SSOSettings{
+		Enabled:   true,
+		IssuerURL: mockSSOServer.URL,
+		ClientID:  "kydns",
+	})
+
+	req := httptest.NewRequest("GET", "/auth/sso/callback?code=mock_code&state=test_state", nil)
+	req.AddCookie(&http.Cookie{Name: cookieSSOState, Value: "test_state"})
+	req.AddCookie(&http.Cookie{Name: cookieSSOVerifier, Value: "test_verifier"})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303 redirect", rec.Code)
+	}
+	if rec.Header().Get("Location") != "/" {
+		t.Errorf("redirect = %s, want /", rec.Header().Get("Location"))
+	}
+
+	// Verify session cookie was set
+	var sessCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == auth.CookieName && c.Value != "" {
+			sessCookie = c
+		}
+	}
+	if sessCookie == nil {
+		t.Fatalf("expected session cookie set after SSO login")
+	}
+
+	// Verify AdminIdentity was auto-linked
+	ident, err := srv.o.Store.AdminIdentity()
+	if err != nil || ident.SSOSub != "sso-sub-admin-999" || ident.SSOUsername != "admin_yoshi" {
+		t.Errorf("unexpected linked identity: %+v, err: %v", ident, err)
+	}
+}
+
+func TestSSOSettingsSaveAndUnlink(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+	sess, _ := srv.o.Sessions.Get(c.Value)
+
+	// Save settings
+	rec := postForm(t, h, "/settings/sso", url.Values{
+		"csrf_token":    {sess.CSRF},
+		"enabled":       {"1"},
+		"issuer_url":    {"https://auth.urlxl.com"},
+		"client_id":     {"kydns-prod"},
+		"client_secret": {"sec123"},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want redirect", rec.Code)
+	}
+
+	sso, _ := srv.o.Store.SSOSettings()
+	if !sso.Enabled || sso.ClientID != "kydns-prod" || sso.ClientSecret != "sec123" {
+		t.Errorf("unexpected SSOSettings: %+v", sso)
+	}
+
+	// Link admin and then unlink
+	_ = srv.o.Store.LinkAdminSSO("sub-123", "user1", "user1@urlxl.com")
+	rec = postForm(t, h, "/settings/sso/unlink", url.Values{"csrf_token": {sess.CSRF}}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want redirect", rec.Code)
+	}
+
+	ident, _ := srv.o.Store.AdminIdentity()
+	if ident.SSOSub != "" || ident.SSOUsername != "" {
+		t.Errorf("expected unlinked SSO, got: %+v", ident)
+	}
+}
+

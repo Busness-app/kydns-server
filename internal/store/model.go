@@ -103,3 +103,21 @@ type Settings struct {
 	HealthTimeout     int
 	HealthWorkers     int
 }
+
+// AdminIdentity holds the admin credentials and linked KySignOn SSO identity.
+type AdminIdentity struct {
+	PasswordHash string
+	SSOSub       string
+	SSOUsername  string
+	SSOEmail     string
+	SSOLinkedAt  int64
+	UpdatedAt    int64
+}
+
+// SSOSettings holds the KySignOn SSO configuration.
+type SSOSettings struct {
+	Enabled      bool
+	IssuerURL    string
+	ClientID     string
+	ClientSecret string
+}

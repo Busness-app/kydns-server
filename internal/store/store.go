@@ -71,8 +71,21 @@ CREATE TABLE IF NOT EXISTS tokens (
 CREATE TABLE IF NOT EXISTS admin (
   id            INTEGER PRIMARY KEY CHECK (id = 1),
   password_hash TEXT NOT NULL,
+  sso_sub       TEXT NOT NULL DEFAULT '',
+  sso_username  TEXT NOT NULL DEFAULT '',
+  sso_email     TEXT NOT NULL DEFAULT '',
+  sso_linked_at INTEGER NOT NULL DEFAULT 0,
   updated_at    INTEGER NOT NULL DEFAULT (unixepoch())
 );
+CREATE TABLE IF NOT EXISTS sso_settings (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled       INTEGER NOT NULL DEFAULT 0,
+  issuer_url    TEXT NOT NULL DEFAULT '',
+  client_id     TEXT NOT NULL DEFAULT 'kydns',
+  client_secret TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO sso_settings(id, enabled, issuer_url, client_id, client_secret)
+  VALUES(1, 0, 'https://auth.urlxl.com', 'kydns', '');
 CREATE TABLE IF NOT EXISTS blacklist_settings (
   id        INTEGER PRIMARY KEY CHECK (id = 1),
   enabled   INTEGER NOT NULL DEFAULT 1,
@@ -263,6 +276,19 @@ var migrations = []string{
 	   health_timeout     INTEGER NOT NULL,
 	   health_workers     INTEGER NOT NULL
 	 );`,
+	`ALTER TABLE admin ADD COLUMN sso_sub TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE admin ADD COLUMN sso_username TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE admin ADD COLUMN sso_email TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE admin ADD COLUMN sso_linked_at INTEGER NOT NULL DEFAULT 0;
+	 CREATE TABLE IF NOT EXISTS sso_settings (
+	   id            INTEGER PRIMARY KEY CHECK (id = 1),
+	   enabled       INTEGER NOT NULL DEFAULT 0,
+	   issuer_url    TEXT NOT NULL DEFAULT '',
+	   client_id     TEXT NOT NULL DEFAULT 'kydns',
+	   client_secret TEXT NOT NULL DEFAULT ''
+	 );
+	 INSERT OR IGNORE INTO sso_settings(id, enabled, issuer_url, client_id, client_secret)
+	   VALUES(1, 0, 'https://auth.urlxl.com', 'kydns', '');`,
 }
 
 // migrate runs against a transaction Open already holds, so a crash
@@ -286,8 +312,16 @@ func migrate(tx *sql.Tx, freshDB bool) error {
 		return err
 	}
 	for i := version; i < len(migrations); i++ {
-		if _, err := tx.Exec(migrations[i]); err != nil {
-			return fmt.Errorf("migration %d: %w", i+1, err)
+		for _, stmt := range strings.Split(migrations[i], ";") {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			if _, err := tx.Exec(stmt); err != nil {
+				if !strings.Contains(err.Error(), "duplicate column name") {
+					return fmt.Errorf("migration %d: %w", i+1, err)
+				}
+			}
 		}
 	}
 	_, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, len(migrations)))
@@ -669,6 +703,77 @@ func (s *Store) AdminHash() (string, error) {
 		return "", fmt.Errorf("%w: admin account", ErrNotFound)
 	}
 	return hash, err
+}
+
+func (s *Store) AdminIdentity() (*AdminIdentity, error) {
+	var a AdminIdentity
+	err := s.db.QueryRow(`
+		SELECT password_hash, sso_sub, sso_username, sso_email, sso_linked_at, updated_at
+		FROM admin WHERE id = 1
+	`).Scan(&a.PasswordHash, &a.SSOSub, &a.SSOUsername, &a.SSOEmail, &a.SSOLinkedAt, &a.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: admin account", ErrNotFound)
+	}
+	return &a, err
+}
+
+func (s *Store) LinkAdminSSO(sub, username, email string) error {
+	res, err := s.db.Exec(`
+		UPDATE admin
+		SET sso_sub = ?, sso_username = ?, sso_email = ?, sso_linked_at = unixepoch(), updated_at = unixepoch()
+		WHERE id = 1
+	`, sub, username, email)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: admin account", ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Store) UnlinkAdminSSO() error {
+	res, err := s.db.Exec(`
+		UPDATE admin
+		SET sso_sub = '', sso_username = '', sso_email = '', sso_linked_at = 0, updated_at = unixepoch()
+		WHERE id = 1
+	`)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: admin account", ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Store) SSOSettings() (SSOSettings, error) {
+	var sso SSOSettings
+	var enabled int
+	err := s.db.QueryRow(`SELECT enabled, issuer_url, client_id, client_secret FROM sso_settings WHERE id = 1`).
+		Scan(&enabled, &sso.IssuerURL, &sso.ClientID, &sso.ClientSecret)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SSOSettings{Enabled: false, IssuerURL: "https://auth.urlxl.com", ClientID: "kydns"}, nil
+	}
+	sso.Enabled = enabled == 1
+	return sso, err
+}
+
+func (s *Store) SetSSOSettings(sso SSOSettings) error {
+	enabledInt := 0
+	if sso.Enabled {
+		enabledInt = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO sso_settings(id, enabled, issuer_url, client_id, client_secret)
+		VALUES(1, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			enabled = excluded.enabled,
+			issuer_url = excluded.issuer_url,
+			client_id = excluded.client_id,
+			client_secret = excluded.client_secret
+	`, enabledInt, sso.IssuerURL, sso.ClientID, sso.ClientSecret)
+	return err
 }
 
 func (s *Store) HasAdmin() (bool, error) {

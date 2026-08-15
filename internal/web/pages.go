@@ -59,4 +59,6 @@ func (s *Server) pageRoutes(mux registrar) {
 	mux.HandleFunc("POST /settings/tokens/new", s.requireCSRF(s.postTokenNew))
 	mux.HandleFunc("POST /settings/tokens/delete", s.requireCSRF(s.postTokenDelete))
 	mux.HandleFunc("POST /settings/cache/flush", s.requireCSRF(s.postCacheFlush))
+	mux.HandleFunc("POST /settings/sso", s.requireCSRF(s.postSSOSettings))
+	mux.HandleFunc("POST /settings/sso/unlink", s.requireCSRF(s.postSSOUnlink))
 }

@@ -89,13 +89,18 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 	}
 
 	toks, _ := s.o.Registry.Tokens()
+	ident, _ := s.o.Store.AdminIdentity()
+	sso, _ := s.o.Store.SSOSettings()
+
 	data := map[string]any{
 		"Title": "Settings", "Nav": "settings",
 		"Views": rows, "Tokens": toks, "NewToken": newToken,
 		"Config": s.configRows(), "RestartNote": restartNote, "Error": errMsg,
-		"Upstreams":    s.upstreams(),
-		"Restart":      s.restartPending(),
-		"PublicRanges": s.publicRanges(),
+		"Upstreams":     s.upstreams(),
+		"Restart":       s.restartPending(),
+		"PublicRanges":  s.publicRanges(),
+		"AdminIdentity": ident,
+		"SSOSettings":   sso,
 	}
 	// Absent rather than zero when the service is not wired: the template then
 	// renders the read-only view instead of a form full of empty boxes.
@@ -182,3 +187,38 @@ func (s *Server) getExport(w http.ResponseWriter, r *http.Request) {
 		s.o.Logger.Error("export", "error", err)
 	}
 }
+
+func (s *Server) postSSOSettings(w http.ResponseWriter, r *http.Request) {
+	enabled := r.PostFormValue("enabled") == "1"
+	issuerURL := strings.TrimSpace(r.PostFormValue("issuer_url"))
+	clientID := strings.TrimSpace(r.PostFormValue("client_id"))
+	clientSecret := strings.TrimSpace(r.PostFormValue("client_secret"))
+
+	if issuerURL == "" {
+		issuerURL = "https://auth.urlxl.com"
+	}
+	if clientID == "" {
+		clientID = "kydns"
+	}
+
+	err := s.o.Store.SetSSOSettings(store.SSOSettings{
+		Enabled:      enabled,
+		IssuerURL:    issuerURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+	})
+	if err != nil {
+		s.settingsError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+func (s *Server) postSSOUnlink(w http.ResponseWriter, r *http.Request) {
+	if err := s.o.Store.UnlinkAdminSSO(); err != nil {
+		s.settingsError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
