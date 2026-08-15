@@ -169,7 +169,9 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 // sourceAddr extracts the client address, unmapped so v4-in-v6 peers match
-// v4 rules.
+// v4 rules and unzoned because netip.Prefix matches no zoned address at all:
+// a link-local peer arrives as fe80::1%eth0, which would otherwise make
+// fe80::/10 in allow_query unmatchable and miss every view.
 func sourceAddr(w dns.ResponseWriter) netip.Addr {
 	host, _, err := net.SplitHostPort(w.RemoteAddr().String())
 	if err != nil {
@@ -179,7 +181,7 @@ func sourceAddr(w dns.ResponseWriter) netip.Addr {
 	if err != nil {
 		return netip.Addr{}
 	}
-	return a.Unmap()
+	return a.Unmap().WithZone("")
 }
 
 // writeErrText renders a WriteMsg error for logging. A *net.OpError's
