@@ -51,7 +51,8 @@ Named here so they are refused rather than re-litigated:
 
 - **DHCPv6 and router advertisements.** SLAAC means we would not own IPv6
   addressing anyway, and the surface is larger than the rest of this
-  document combined.
+  document combined. This has a consequence on dual-stack networks; see
+  below.
 - **Multiple scopes.**
 - **Relay support (`giaddr`) and option 82.** Serving a subnet we are not
   attached to requires scope selection, which requires multiple scopes.
@@ -61,6 +62,45 @@ Named here so they are refused rather than re-litigated:
 - **Failover or HA between linked servers.** See "Replication" for what
   happens instead.
 - **BOOTP.**
+
+### Known limitation: dual-stack networks leak to the router's resolver
+
+Leaving IPv6 out means DHCP does not fully deliver what it promises on a
+dual-stack LAN, and that is expected behaviour rather than a bug.
+
+In IPv4, disabling the router's DHCP server leaves clients nowhere else to
+go, so they take our option 6. IPv6 configuration comes from the router's
+Router Advertisements instead, and an RA carrying an RDNSS option (RFC 8106)
+hands clients the router's resolver directly. A client on such a network ends
+up holding both: KyDNS over IPv4 from us, and the router over IPv6 from the
+RA. Stub resolvers commonly prefer the IPv6 server.
+
+The symptoms are intermittent rather than total, which is what makes this
+worth writing down. Filtering appears to work and then does not. A local
+service name resolves and then does not. Nothing in KyDNS's own logs shows a
+query, because the query never arrived.
+
+This is not hypothetical for the networks we target: residential IPv6 is
+widely deployed, including on Verizon's consumer service.
+
+The operator-side workarounds, in order of preference:
+
+1. Turn off the RDNSS/IPv6-DNS advertisement on the router, keeping IPv6
+   addressing.
+2. Failing that, turn off IPv6 on the router entirely — a real cost, and
+   some consumer routers offer no finer control.
+3. Accept the leak and treat filtering as best-effort.
+
+The DHCP tab says this where an operator will see it, rather than leaving it
+in a spec. When DHCP is enabled and the host has a global IPv6 address —
+evidence the segment is dual-stack — the tab shows a short note naming the
+leak and the first workaround. It is informational, never a blocker.
+
+The fix, if it is ever wanted, is an RA sender advertising ourselves as an
+RDNSS with Router Lifetime 0 (options without becoming a default router),
+plus stateless DHCPv6 for clients that ignore RDNSS. That is IPv6 DNS
+advertisement, and it is a much smaller feature than DHCPv6 addressing. It
+is out of scope here and deliberately not scheduled.
 
 ## Deployment constraints
 
