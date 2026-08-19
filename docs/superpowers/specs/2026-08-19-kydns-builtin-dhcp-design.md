@@ -1,6 +1,6 @@
 # Built-in DHCPv4 server
 
-Status: draft
+Status: approved
 Date: 2026-08-19
 
 ## Why
