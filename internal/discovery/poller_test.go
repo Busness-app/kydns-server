@@ -323,3 +323,62 @@ func TestNewPollerToleratesNilSource(t *testing.T) {
 		t.Fatalf("leases = %+v, want none", got)
 	}
 }
+
+// SetSource is driven from a different goroutine than Poll and Run in production,
+// so a concurrent test ensures the lock actually protects both call sites.
+func TestSetSourceConcurrentWithRun(t *testing.T) {
+	srcA := &namedSource{name: "a", leases: []dhcp.Lease{{MAC: "aa", IP: "192.168.1.1", Hostname: "host-a"}}}
+	srcB := &namedSource{name: "b", leases: []dhcp.Lease{{MAC: "bb", IP: "192.168.1.2", Hostname: "host-b"}}}
+	srcC := &namedSource{name: "c", leases: []dhcp.Lease{{MAC: "cc", IP: "192.168.1.3", Hostname: "host-c"}}}
+
+	changed := make(chan struct{}, 10) // buffered so onChange doesn't block
+	p := NewPoller(srcA, 5*time.Millisecond, func() { changed <- struct{}{} }, slog.New(slog.DiscardHandler))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	// Wait for the initial poll to complete.
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("initial poll did not complete in time")
+	}
+
+	// Swap to source B while Run is polling.
+	p.SetSource(srcB)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("poll after swap to B did not complete in time")
+	}
+
+	// Swap to nil to retire all leases.
+	p.SetSource(nil)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("poll after swap to nil did not complete in time")
+	}
+
+	// Verify the final state reflects the nil source.
+	leases := p.Leases()
+	if len(leases) != 0 {
+		t.Errorf("Leases() = %+v after nil swap, want empty", leases)
+	}
+
+	// Swap back to source C to verify recovery.
+	p.SetSource(srcC)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("poll after swap to C did not complete in time")
+	}
+
+	leases = p.Leases()
+	if len(leases) != 1 || leases[0].Hostname != "host-c" {
+		t.Errorf("Leases() = %+v after swap to C, want host-c", leases)
+	}
+
+	cancel()
+}

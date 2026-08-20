@@ -14,7 +14,8 @@ import (
 
 // Poller reads a lease Source on an interval and calls onChange only when the
 // lease set actually differs, so an idle network does not rebuild the snapshot
-// every cycle.
+// every cycle. The source can be swapped at runtime or set to nil to turn
+// discovery off.
 type Poller struct {
 	onChange func()
 	logger   *slog.Logger
