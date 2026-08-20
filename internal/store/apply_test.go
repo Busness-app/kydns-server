@@ -245,10 +245,11 @@ func TestApplySnapshotAppliesBlacklistSettingsAndRules(t *testing.T) {
 	}
 }
 
-// dhcp_lease_file, discovery_interval, log_queries and log_client_ip are
-// node-local and must survive an apply even when the incoming Settings
-// carries different values for them (e.g. a caller forwarding a pulled
-// document verbatim).
+// dhcp_lease_file, discovery_interval, log_queries, log_client_ip and every
+// dhcp_* field are node-local and must survive an apply even when the
+// incoming Settings carries different values for them (e.g. a caller
+// forwarding a pulled document verbatim, or a primary's own DHCP config
+// arriving inside a snapshot pulled for an unrelated replicated change).
 func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	s := open(t)
 	local := baseSettings()
@@ -256,6 +257,13 @@ func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	local.DiscoveryInterval = 45
 	local.LogQueries = true
 	local.LogClientIP = true
+	local.DHCPEnabled = true
+	local.DHCPInterface = "eth0"
+	local.DHCPRangeStart = "192.168.1.128"
+	local.DHCPRangeEnd = "192.168.1.254"
+	local.DHCPGateway = "192.168.1.1"
+	local.DHCPLeaseSeconds = 43200
+	local.DHCPSecondaryDNS = "192.168.1.3"
 	if err := s.PutSettings(local); err != nil {
 		t.Fatal(err)
 	}
@@ -265,6 +273,13 @@ func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	incoming.DiscoveryInterval = 999
 	incoming.LogQueries = false
 	incoming.LogClientIP = false
+	incoming.DHCPEnabled = true
+	incoming.DHCPInterface = "wlan0"
+	incoming.DHCPRangeStart = "10.0.0.128"
+	incoming.DHCPRangeEnd = "10.0.0.254"
+	incoming.DHCPGateway = "10.0.0.1"
+	incoming.DHCPLeaseSeconds = 7200
+	incoming.DHCPSecondaryDNS = "10.0.0.3"
 	if err := s.ApplySnapshot(SnapshotInput{Settings: incoming}); err != nil {
 		t.Fatal(err)
 	}
@@ -276,5 +291,10 @@ func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	if got.DHCPLeaseFile != local.DHCPLeaseFile || got.DiscoveryInterval != local.DiscoveryInterval ||
 		!got.LogQueries || !got.LogClientIP {
 		t.Fatalf("Settings() = %+v after apply, want node-local fields untouched", got)
+	}
+	if got.DHCPInterface != local.DHCPInterface || got.DHCPRangeStart != local.DHCPRangeStart ||
+		got.DHCPRangeEnd != local.DHCPRangeEnd || got.DHCPGateway != local.DHCPGateway ||
+		got.DHCPLeaseSeconds != local.DHCPLeaseSeconds || got.DHCPSecondaryDNS != local.DHCPSecondaryDNS {
+		t.Fatalf("Settings() = %+v after apply, want DHCP fields untouched by the incoming snapshot", got)
 	}
 }

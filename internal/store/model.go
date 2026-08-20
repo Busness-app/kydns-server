@@ -102,6 +102,17 @@ type Settings struct {
 	HealthInterval    int
 	HealthTimeout     int
 	HealthWorkers     int
+
+	// DHCP settings drive the built-in server. They are node-local: no cv_
+	// trigger names them, so a replica never hears about them, and two DHCP
+	// servers on one segment is exactly what that prevents.
+	DHCPEnabled      bool
+	DHCPInterface    string
+	DHCPRangeStart   string
+	DHCPRangeEnd     string
+	DHCPGateway      string
+	DHCPLeaseSeconds int
+	DHCPSecondaryDNS string
 }
 
 // AdminIdentity holds the admin credentials and linked KySignOn SSO identity.
@@ -120,4 +131,15 @@ type SSOSettings struct {
 	IssuerURL    string
 	ClientID     string
 	ClientSecret string
+}
+
+// DHCPLease is one address the built-in server has handed out. It is stored
+// so a restart cannot re-issue an address that is still in use. Times are
+// Unix seconds.
+type DHCPLease struct {
+	MAC       string
+	IP        string
+	Hostname  string
+	ExpiresAt int64
+	LastSeen  int64
 }

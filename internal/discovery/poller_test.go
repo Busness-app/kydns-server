@@ -260,3 +260,125 @@ func waitForPolls(t *testing.T, src *countingSource, n int) {
 	}
 	t.Fatal("condition not met within two seconds")
 }
+
+type namedSource struct {
+	name   string
+	leases []dhcp.Lease
+}
+
+func (s *namedSource) Leases(context.Context) ([]dhcp.Lease, error) { return s.leases, nil }
+func (s *namedSource) Name() string                                 { return s.name }
+
+func TestSetSourceSwapsWithoutRestart(t *testing.T) {
+	a := &namedSource{name: "a", leases: []dhcp.Lease{{MAC: "aa", IP: "192.168.1.10", Hostname: "one"}}}
+	b := &namedSource{name: "b", leases: []dhcp.Lease{{MAC: "bb", IP: "192.168.1.11", Hostname: "two"}}}
+
+	p := NewPoller(a, time.Hour, func() {}, slog.New(slog.DiscardHandler))
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if got := p.Leases(); len(got) != 1 || got[0].Hostname != "one" {
+		t.Fatalf("before swap = %+v, want the source-a lease", got)
+	}
+
+	p.SetSource(b)
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if got := p.Leases(); len(got) != 1 || got[0].Hostname != "two" {
+		t.Fatalf("after swap = %+v, want the source-b lease", got)
+	}
+}
+
+func TestNilSourceRetiresPublishedLeases(t *testing.T) {
+	changed := 0
+	p := NewPoller(
+		&namedSource{name: "a", leases: []dhcp.Lease{{MAC: "aa", IP: "192.168.1.10", Hostname: "one"}}},
+		time.Hour, func() { changed++ }, slog.New(slog.DiscardHandler))
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("onChange called %d times after the first poll, want 1", changed)
+	}
+
+	p.SetSource(nil)
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("poll with no source: %v", err)
+	}
+	if got := p.Leases(); len(got) != 0 {
+		t.Fatalf("leases after clearing the source = %+v, want none", got)
+	}
+	if changed != 2 {
+		t.Fatalf("onChange called %d times, want 2: retiring every lease is a change", changed)
+	}
+}
+
+func TestNewPollerToleratesNilSource(t *testing.T) {
+	p := NewPoller(nil, time.Hour, func() {}, slog.New(slog.DiscardHandler))
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("poll with no source: %v", err)
+	}
+	if got := p.Leases(); len(got) != 0 {
+		t.Fatalf("leases = %+v, want none", got)
+	}
+}
+
+// SetSource is driven from a different goroutine than Poll and Run in production,
+// so a concurrent test ensures the lock actually protects both call sites.
+func TestSetSourceConcurrentWithRun(t *testing.T) {
+	srcA := &namedSource{name: "a", leases: []dhcp.Lease{{MAC: "aa", IP: "192.168.1.1", Hostname: "host-a"}}}
+	srcB := &namedSource{name: "b", leases: []dhcp.Lease{{MAC: "bb", IP: "192.168.1.2", Hostname: "host-b"}}}
+	srcC := &namedSource{name: "c", leases: []dhcp.Lease{{MAC: "cc", IP: "192.168.1.3", Hostname: "host-c"}}}
+
+	changed := make(chan struct{}, 10) // buffered so onChange doesn't block
+	p := NewPoller(srcA, 5*time.Millisecond, func() { changed <- struct{}{} }, slog.New(slog.DiscardHandler))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	// Wait for the initial poll to complete.
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("initial poll did not complete in time")
+	}
+
+	// Swap to source B while Run is polling.
+	p.SetSource(srcB)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("poll after swap to B did not complete in time")
+	}
+
+	// Swap to nil to retire all leases.
+	p.SetSource(nil)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("poll after swap to nil did not complete in time")
+	}
+
+	// Verify the final state reflects the nil source.
+	leases := p.Leases()
+	if len(leases) != 0 {
+		t.Errorf("Leases() = %+v after nil swap, want empty", leases)
+	}
+
+	// Swap back to source C to verify recovery.
+	p.SetSource(srcC)
+	select {
+	case <-changed:
+	case <-time.After(time.Second):
+		t.Fatal("poll after swap to C did not complete in time")
+	}
+
+	leases = p.Leases()
+	if len(leases) != 1 || leases[0].Hostname != "host-c" {
+		t.Errorf("Leases() = %+v after swap to C, want host-c", leases)
+	}
+
+	cancel()
+}
