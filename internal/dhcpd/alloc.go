@@ -86,9 +86,11 @@ func (a *Allocator) SetReservations(r map[string]netip.Addr) {
 	}
 }
 
-// Allocate returns the address this client should get, committing it. The
-// bool is false only when the pool is exhausted.
-func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr) (Lease, bool) {
+// Allocate returns the address this client should get, committing it for
+// ttl. The caller decides the hold: a full lease term for an ACK, a short
+// tentative hold for an OFFER that may never be followed by one. The bool is
+// false only when the pool is exhausted.
+func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr, ttl time.Duration) (Lease, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
@@ -100,7 +102,7 @@ func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr) (Lease,
 		if prev, ok := a.byMAC[mac]; ok && prev.IP != ip {
 			delete(a.byIP, prev.IP)
 		}
-		l := Lease{MAC: mac, IP: ip, Hostname: hostname, Expires: now.Add(a.cfg.LeaseTime)}
+		l := Lease{MAC: mac, IP: ip, Hostname: hostname, Expires: now.Add(ttl)}
 		a.byMAC[mac] = l
 		a.byIP[ip] = mac
 		return l, true

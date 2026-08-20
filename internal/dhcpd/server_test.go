@@ -1,6 +1,7 @@
 package dhcpd
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -109,6 +110,33 @@ func newTestServer(t *testing.T) (*Server, *memStore) {
 	})
 	return s, ms
 }
+
+// newTestServerWithClock is newTestServer with a mutable clock, for tests
+// that must advance time (offerHold expiry).
+func newTestServerWithClock(t *testing.T) (*Server, *memStore, *time.Time) {
+	t.Helper()
+	ms := newMemStore()
+	cfg := testConfig()
+	now := epoch
+	s := New(Options{
+		Iface:  IfaceInfo{Name: "test0", Addr: cfg.Host, Subnet: cfg.Subnet, Gateway: cfg.Gateway},
+		Cfg:    cfg,
+		DNS:    []netip.Addr{cfg.Host},
+		Domain: "home.arpa",
+		Alloc:  NewAllocator(cfg, func() time.Time { return now }),
+		Prober: nopProber{},
+		Store:  ms,
+		Now:    func() time.Time { return now },
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	return s, ms, &now
+}
+
+// stubProber reports exactly one address as already in use, exercising the
+// probe-hit branch nopProber can never reach.
+type stubProber struct{ inUse netip.Addr }
+
+func (p stubProber) InUse(ip netip.Addr) bool { return ip == p.inUse }
 
 func discover(mac string, hostname string) *dhcpv4.DHCPv4 {
 	hw, err := net.ParseMAC(mac)
@@ -337,5 +365,150 @@ func TestSanitizeHostname(t *testing.T) {
 		if got := sanitizeHostname(c.in); got != c.want {
 			t.Fatalf("sanitizeHostname(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestDiscoverNeverAppearsInLeases(t *testing.T) {
+	s, _ := newTestServer(t)
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+
+	ls, err := s.Leases(t.Context())
+	if err != nil {
+		t.Fatalf("Leases: %v", err)
+	}
+	if len(ls) != 0 {
+		t.Fatalf("Leases returned %d after a bare DISCOVER, want 0: an offer is a hold, not a lease", len(ls))
+	}
+}
+
+func TestDiscoverHoldExpiresAndAddressBecomesAllocatable(t *testing.T) {
+	s, _, now := newTestServerWithClock(t)
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+	first := c.replies(t)[0].YourIPAddr
+
+	*now = now.Add(offerHold + time.Second)
+
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, discover("bb:bb:bb:bb:bb:bb", "other"))
+	second := c2.replies(t)[0].YourIPAddr
+	if !second.Equal(first) {
+		t.Fatalf("offer after the hold expired = %v, want the expired hold %v reused", second, first)
+	}
+}
+
+func TestDiscoverHostnameIsNotClaimed(t *testing.T) {
+	s, ms := newTestServer(t)
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request("bb:bb:bb:bb:bb:bb", "laptop", netip.Addr{}))
+	if got := c.replies(t)[0].MessageType(); got != dhcpv4.MessageTypeAck {
+		t.Fatalf("second client's REQUEST for the name got %v, want ACK", got)
+	}
+	got, _ := ms.DHCPLeases()
+	if len(got) != 1 || got[0].Hostname != "laptop" || got[0].MAC != "bb:bb:bb:bb:bb:bb" {
+		t.Fatalf("leases = %+v, want the REQUESTing client alone to hold the name laptop", got)
+	}
+}
+
+func TestAckGrantsTheFullLeaseTerm(t *testing.T) {
+	s, ms := newTestServer(t)
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
+
+	got, _ := ms.DHCPLeases()
+	if len(got) != 1 {
+		t.Fatalf("persisted %d leases, want 1", len(got))
+	}
+	if want := epoch.Add(24 * time.Hour).Unix(); got[0].ExpiresAt != want {
+		t.Fatalf("ExpiresAt = %d, want %d: an ACK grants the full configured lease term", got[0].ExpiresAt, want)
+	}
+}
+
+func TestProbeHitSkipsToTheNextAddressAndQuarantines(t *testing.T) {
+	s, _ := newTestServer(t)
+	hit := netip.MustParseAddr("192.168.1.10")
+	s.opts.Prober = stubProber{inUse: hit}
+
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+	replies := c.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.Equal(net.IP(hit.AsSlice())) {
+		t.Fatalf("offered %v, the address the probe reported in use", got)
+	}
+
+	// The probed address must be quarantined, not merely skipped this once.
+	l, _ := s.opts.Alloc.Allocate("cc:cc:cc:cc:cc:cc", "", hit, time.Hour)
+	if l.IP == hit {
+		t.Fatalf("Allocate handed out %v after the probe quarantined it", hit)
+	}
+}
+
+func TestProbeHitWithNoFallbackAddressDrawsNoReply(t *testing.T) {
+	ms := newMemStore()
+	cfg := testConfig()
+	cfg.End = cfg.Start // a single-address pool
+	s := New(Options{
+		Iface:  IfaceInfo{Name: "test0", Addr: cfg.Host, Subnet: cfg.Subnet, Gateway: cfg.Gateway},
+		Cfg:    cfg,
+		Alloc:  NewAllocator(cfg, func() time.Time { return epoch }),
+		Prober: stubProber{inUse: cfg.Start},
+		Store:  ms,
+		Logger: slog.New(slog.DiscardHandler),
+	})
+
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+	if n := len(c.replies(t)); n != 0 {
+		t.Fatalf("got %d replies for a one-address pool whose only address failed the probe, want 0", n)
+	}
+}
+
+func TestNormalizeMAC(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff"},
+		{"aa-bb-cc-dd-ee-ff", "aa:bb:cc:dd:ee:ff"},
+		{"aabb.ccdd.eeff", "aa:bb:cc:dd:ee:ff"},
+		{"  aa:bb:cc:dd:ee:ff  ", "aa:bb:cc:dd:ee:ff"},
+		{"a:b:c:d:e:f", "a:b:c:d:e:f"}, // does not parse; falls back lowercased
+		{"not-a-mac", "not-a-mac"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeMAC(c.in); got != c.want {
+			t.Fatalf("normalizeMAC(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestStopCancelsAndIsIdempotent drives Stop directly, without Start, so it
+// never binds a socket. It pins the two things Start/Stop must get right:
+// Stop cancels the run context (so the watcher goroutine started by Start
+// can exit, and Serve's error after Close is recognized as intentional), and
+// a second Stop -- called both by an admin action and by that same watcher
+// goroutine -- is a no-op rather than a double-cancel or a panic.
+func TestStopCancelsAndIsIdempotent(t *testing.T) {
+	s, _ := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	called := false
+	s.mu.Lock()
+	s.cancel = func() { called = true; cancel() }
+	s.mu.Unlock()
+
+	if err := s.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !called {
+		t.Fatal("Stop did not call cancel")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("Stop's cancel had no effect on the run context")
+	}
+
+	if err := s.Stop(); err != nil {
+		t.Fatalf("second Stop: %v", err)
 	}
 }

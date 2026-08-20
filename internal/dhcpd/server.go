@@ -19,6 +19,12 @@ import (
 // lease-file discovery already uses.
 var _ idhcp.Source = (*Server)(nil)
 
+// offerHold is how long a DISCOVER's tentative address is held. Most
+// DISCOVERs are never followed by a REQUEST, so an OFFER is a short
+// reservation, not a lease: holding the full lease term for one would let a
+// flood of forged DISCOVERs exhaust the pool with no ACK ever sent.
+const offerHold = 60 * time.Second
+
 // LeaseStore is the store slice this package needs, named here so the
 // package does not depend on the whole store.
 type LeaseStore interface {
@@ -49,8 +55,9 @@ type Server struct {
 	opts Options
 	now  func() time.Time
 
-	mu  sync.Mutex
-	srv *server4.Server
+	mu     sync.Mutex
+	srv    *server4.Server
+	cancel context.CancelFunc
 }
 
 func New(o Options) *Server {
@@ -101,27 +108,41 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Start owns its own cancellation, not just the caller's: Stop must be
+	// able to end the watcher goroutine below on its own, whether or not the
+	// caller ever cancels ctx (Task 10 calls Start(context.Background())).
+	runCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
 	s.srv = srv
+	s.cancel = cancel
 	s.mu.Unlock()
 
 	go func() {
-		<-ctx.Done()
+		<-runCtx.Done()
 		_ = s.Stop()
 	}()
 	go func() {
-		if err := srv.Serve(); err != nil && ctx.Err() == nil {
+		if err := srv.Serve(); err != nil && runCtx.Err() == nil {
 			s.opts.Logger.Error("dhcp server stopped", "error", err)
 		}
 	}()
 	return nil
 }
 
+// Stop is idempotent: it is called both by an admin-initiated reconfigure and
+// by the watcher goroutine started in Start. cancel runs before srv.Close so
+// the watcher's context is already done, and Serve's resulting read error is
+// recognized as an intentional stop rather than logged as a crash.
 func (s *Server) Stop() error {
 	s.mu.Lock()
 	srv := s.srv
+	cancel := s.cancel
 	s.srv = nil
+	s.cancel = nil
 	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if srv == nil {
 		return nil
 	}
@@ -229,19 +250,27 @@ func (s *Server) ack(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac s
 }
 
 // allocate runs the pool rules and the hostname arbitration. commit is false
-// for an OFFER, which does not persist and does not claim a name.
+// for an OFFER: it holds the address for offerHold only and never claims a
+// name, because only a client that reaches REQUEST is trusted enough for
+// either. Option 12 is client-chosen, so a bare DISCOVER must not be able to
+// plant a name in Leases() by itself.
 func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, bool) {
-	hostname := sanitizeHostname(m.HostName())
-	if hostname != "" && s.opts.Alloc.NameTaken(hostname, mac) {
-		s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
-			"hostname", hostname, "mac", mac)
-		hostname = ""
+	var hostname string
+	ttl := offerHold
+	if commit {
+		hostname = sanitizeHostname(m.HostName())
+		if hostname != "" && s.opts.Alloc.NameTaken(hostname, mac) {
+			s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
+				"hostname", hostname, "mac", mac)
+			hostname = ""
+		}
+		ttl = s.opts.Cfg.LeaseTime
 	}
 	var requested netip.Addr
 	if ip, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
 		requested = ip.Unmap()
 	}
-	l, ok := s.opts.Alloc.Allocate(mac, hostname, requested)
+	l, ok := s.opts.Alloc.Allocate(mac, hostname, requested, ttl)
 	if !ok {
 		return Lease{}, false
 	}
@@ -251,7 +280,7 @@ func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, boo
 		s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
 		s.opts.Alloc.Quarantine(l.IP)
 		s.opts.Alloc.Release(mac)
-		return s.opts.Alloc.Allocate(mac, hostname, netip.Addr{})
+		return s.opts.Alloc.Allocate(mac, hostname, netip.Addr{}, ttl)
 	}
 	return l, true
 }
@@ -318,10 +347,18 @@ func toIPs(as []netip.Addr) []net.IP {
 	return out
 }
 
-// normalizeMAC is the one form a MAC is stored and compared in: lowercase,
-// colon-separated. Reservations in Part 2 normalize the same way, so the two
-// always compare directly.
-func normalizeMAC(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+// normalizeMAC is the one form a MAC is stored and compared in. It parses so
+// that a reservation typed with dashes, without zero-padding, or with no
+// separators at all still compares equal to what ClientHWAddr.String()
+// produces; a MAC that does not parse falls back to a trimmed, lowercased
+// copy rather than being dropped.
+func normalizeMAC(s string) string {
+	s = strings.TrimSpace(s)
+	if hw, err := net.ParseMAC(s); err == nil {
+		return hw.String()
+	}
+	return strings.ToLower(s)
+}
 
 // sanitizeHostname reduces option 12 to something safe to publish as a DNS
 // label, or to "" if it cannot be. Option 12 is chosen by any device on the

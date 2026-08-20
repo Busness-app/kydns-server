@@ -27,14 +27,14 @@ func newTestAllocator(t *testing.T) (*Allocator, *time.Time) {
 
 func TestAllocateTakesTheLowestFreeAddress(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the first client on an empty pool")
 	}
 	if want := netip.MustParseAddr("192.168.1.10"); l.IP != want {
 		t.Fatalf("first address = %v, want %v", l.IP, want)
 	}
-	l2, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	l2, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the second client")
 	}
@@ -45,9 +45,9 @@ func TestAllocateTakesTheLowestFreeAddress(t *testing.T) {
 
 func TestAllocateRenewsTheSameClient(t *testing.T) {
 	a, now := newTestAllocator(t)
-	first, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	first, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	*now = now.Add(time.Hour)
-	second, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	second, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused a renewal")
 	}
@@ -62,7 +62,7 @@ func TestAllocateRenewsTheSameClient(t *testing.T) {
 func TestAllocateHonoursARequestedAddress(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	want := netip.MustParseAddr("192.168.1.12")
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", want)
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", want, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused a free requested address")
 	}
@@ -73,8 +73,8 @@ func TestAllocateHonoursARequestedAddress(t *testing.T) {
 
 func TestAllocateIgnoresARequestedAddressThatIsTaken(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	taken, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
-	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", taken.IP)
+	taken, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
+	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", taken.IP, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the second client entirely")
 	}
@@ -85,7 +85,7 @@ func TestAllocateIgnoresARequestedAddressThatIsTaken(t *testing.T) {
 
 func TestAllocateIgnoresARequestedAddressOutsideTheRange(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.MustParseAddr("192.168.1.200"))
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.MustParseAddr("192.168.1.200"), 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the client")
 	}
@@ -98,7 +98,7 @@ func TestReservationWinsOverEverything(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	reserved := netip.MustParseAddr("192.168.1.50") // deliberately outside the range
 	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": reserved})
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.MustParseAddr("192.168.1.11"))
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.MustParseAddr("192.168.1.11"), 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused a reserved client")
 	}
@@ -111,7 +111,7 @@ func TestAReservedAddressIsNotHandedOutDynamically(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	// Reserve an address that sits inside the dynamic range.
 	a.SetReservations(map[string]netip.Addr{"cc:cc:cc:cc:cc:cc": netip.MustParseAddr("192.168.1.10")})
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the client")
 	}
@@ -125,7 +125,7 @@ func TestAllocateSkipsTheHostAndGateway(t *testing.T) {
 	cfg.Start = netip.MustParseAddr("192.168.1.1") // range now covers gateway and host
 	cfg.End = netip.MustParseAddr("192.168.1.6")
 	a := NewAllocator(cfg, func() time.Time { return epoch })
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the client")
 	}
@@ -140,14 +140,14 @@ func TestAllocateSkipsTheHostAndGateway(t *testing.T) {
 func TestQuarantinedAddressIsSkippedThenReleased(t *testing.T) {
 	a, now := newTestAllocator(t)
 	a.Quarantine(netip.MustParseAddr("192.168.1.10"))
-	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if want := netip.MustParseAddr("192.168.1.11"); l.IP != want {
 		t.Fatalf("address = %v, want %v while .10 is quarantined", l.IP, want)
 	}
 
 	*now = now.Add(quarantineFor + time.Second)
 	a.Release("aa:aa:aa:aa:aa:aa")
-	l2, _ := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	l2, _ := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if want := netip.MustParseAddr("192.168.1.10"); l2.IP != want {
 		t.Fatalf("address = %v, want %v once the quarantine has expired", l2.IP, want)
 	}
@@ -155,9 +155,9 @@ func TestQuarantinedAddressIsSkippedThenReleased(t *testing.T) {
 
 func TestDeclineQuarantines(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	a.Decline(l.IP)
-	l2, _ := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	l2, _ := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if l2.IP == l.IP {
 		t.Fatalf("Allocate re-offered %v after it was declined", l.IP)
 	}
@@ -165,9 +165,9 @@ func TestDeclineQuarantines(t *testing.T) {
 
 func TestExpiredLeasesAreReusable(t *testing.T) {
 	a, now := newTestAllocator(t)
-	first, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	first, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	*now = now.Add(25 * time.Hour)
-	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused a client after every lease had expired")
 	}
@@ -179,11 +179,11 @@ func TestExpiredLeasesAreReusable(t *testing.T) {
 func TestExhaustionRefuses(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	for _, mac := range []string{"aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"} {
-		if _, ok := a.Allocate(mac, "x", netip.Addr{}); !ok {
+		if _, ok := a.Allocate(mac, "x", netip.Addr{}, 24*time.Hour); !ok {
 			t.Fatalf("Allocate refused %s while the pool still had room", mac)
 		}
 	}
-	if _, ok := a.Allocate("dd:dd:dd:dd:dd:dd", "x", netip.Addr{}); ok {
+	if _, ok := a.Allocate("dd:dd:dd:dd:dd:dd", "x", netip.Addr{}, 24*time.Hour); ok {
 		t.Fatal("Allocate handed out a fourth address from a three-address pool")
 	}
 }
@@ -195,7 +195,7 @@ func TestLoadRestoresLeasesAcrossARestart(t *testing.T) {
 		MAC: "aa:aa:aa:aa:aa:aa", IP: held, Hostname: "one",
 		Expires: epoch.Add(12 * time.Hour),
 	}})
-	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the new client")
 	}
@@ -206,7 +206,7 @@ func TestLoadRestoresLeasesAcrossARestart(t *testing.T) {
 
 func TestNameTaken(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	if _, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}); !ok {
+	if _, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}, 24*time.Hour); !ok {
 		t.Fatal("Allocate refused the first client")
 	}
 	if !a.NameTaken("laptop", "bb:bb:bb:bb:bb:bb") {
@@ -224,7 +224,7 @@ func TestAReservedGatewayFallsBackToADynamicAddress(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	cfg := testConfig()
 	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": cfg.Gateway})
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the client entirely")
 	}
@@ -240,7 +240,7 @@ func TestAReservedHostFallsBackToADynamicAddress(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	cfg := testConfig()
 	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": cfg.Host})
-	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the client entirely")
 	}
@@ -254,13 +254,13 @@ func TestAReservedHostFallsBackToADynamicAddress(t *testing.T) {
 
 func TestAReservationAddedLaterMovesTheClientsAddress(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	first, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	first, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the first client")
 	}
 	reserved := netip.MustParseAddr("192.168.1.20") // deliberately outside the range
 	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": reserved})
-	moved, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	moved, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the reserved client")
 	}
@@ -270,7 +270,7 @@ func TestAReservationAddedLaterMovesTheClientsAddress(t *testing.T) {
 
 	// The vacated address must be genuinely free, not just unreachable through
 	// this MAC: a different client can take it, and byMAC/byIP must agree.
-	other, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	other, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused a second client after the first moved")
 	}
@@ -286,12 +286,12 @@ func TestAReservationAddedLaterMovesTheClientsAddress(t *testing.T) {
 
 func TestAReservationStealsAnAddressFromAnotherClientsLease(t *testing.T) {
 	a, _ := newTestAllocator(t)
-	victim, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	victim, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the first client")
 	}
 	a.SetReservations(map[string]netip.Addr{"bb:bb:bb:bb:bb:bb": victim.IP})
-	thief, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	thief, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the reserved client")
 	}
@@ -307,7 +307,7 @@ func TestAReservationStealsAnAddressFromAnotherClientsLease(t *testing.T) {
 			t.Fatalf("Leases still lists the client whose address was stolen: %+v", l)
 		}
 	}
-	again, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	again, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
 	if !ok {
 		t.Fatal("Allocate refused the dispossessed client entirely")
 	}
