@@ -42,8 +42,12 @@ spec-and-quality review after each, a fix loop capped at five rounds, then a who
 
 The live ledger is at `.superpowers/sdd/2026-08-19-kydns-builtin-dhcp-part1/progress.md`. **That
 directory is git-ignored**, so it does not survive a clone or a `git clean -fdx` — which is why every
-ruling is reproduced in this document. Task briefs and review packages for all 11 tasks are already
-extracted there.
+ruling is reproduced in this document.
+
+For continuing on another machine, a copy of that workspace — the ledger, all 11 task briefs, and the
+implementer reports for tasks 1–7 — is committed at
+`docs/superpowers/handoff/2026-08-19-kydns-builtin-dhcp-part1/`. Its README has the restore steps.
+Review diffs are not copied: every commit is pushed on this branch, so they regenerate from git.
 
 Next actions, in order:
 
