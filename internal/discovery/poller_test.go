@@ -260,3 +260,66 @@ func waitForPolls(t *testing.T, src *countingSource, n int) {
 	}
 	t.Fatal("condition not met within two seconds")
 }
+
+type namedSource struct {
+	name   string
+	leases []dhcp.Lease
+}
+
+func (s *namedSource) Leases(context.Context) ([]dhcp.Lease, error) { return s.leases, nil }
+func (s *namedSource) Name() string                                 { return s.name }
+
+func TestSetSourceSwapsWithoutRestart(t *testing.T) {
+	a := &namedSource{name: "a", leases: []dhcp.Lease{{MAC: "aa", IP: "192.168.1.10", Hostname: "one"}}}
+	b := &namedSource{name: "b", leases: []dhcp.Lease{{MAC: "bb", IP: "192.168.1.11", Hostname: "two"}}}
+
+	p := NewPoller(a, time.Hour, func() {}, slog.New(slog.DiscardHandler))
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if got := p.Leases(); len(got) != 1 || got[0].Hostname != "one" {
+		t.Fatalf("before swap = %+v, want the source-a lease", got)
+	}
+
+	p.SetSource(b)
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if got := p.Leases(); len(got) != 1 || got[0].Hostname != "two" {
+		t.Fatalf("after swap = %+v, want the source-b lease", got)
+	}
+}
+
+func TestNilSourceRetiresPublishedLeases(t *testing.T) {
+	changed := 0
+	p := NewPoller(
+		&namedSource{name: "a", leases: []dhcp.Lease{{MAC: "aa", IP: "192.168.1.10", Hostname: "one"}}},
+		time.Hour, func() { changed++ }, slog.New(slog.DiscardHandler))
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("first poll: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("onChange called %d times after the first poll, want 1", changed)
+	}
+
+	p.SetSource(nil)
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("poll with no source: %v", err)
+	}
+	if got := p.Leases(); len(got) != 0 {
+		t.Fatalf("leases after clearing the source = %+v, want none", got)
+	}
+	if changed != 2 {
+		t.Fatalf("onChange called %d times, want 2: retiring every lease is a change", changed)
+	}
+}
+
+func TestNewPollerToleratesNilSource(t *testing.T) {
+	p := NewPoller(nil, time.Hour, func() {}, slog.New(slog.DiscardHandler))
+	if err := p.Poll(context.Background()); err != nil {
+		t.Fatalf("poll with no source: %v", err)
+	}
+	if got := p.Leases(); len(got) != 0 {
+		t.Fatalf("leases = %+v, want none", got)
+	}
+}
