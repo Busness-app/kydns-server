@@ -84,3 +84,4 @@ Code, one concern per package:
 
 The build must stay cgo-free: the image is distroless, so the pure-Go SQLite
 driver is not optional.
+- `zero_code_pairing_handoff_spec.md`: contract for pairing this service to KyRecovery with an ephemeral 6-digit PIN, then pushing backups plus a declarative verification recipe. This repo owns the client half (`POST /api/pairing/claim`, `POST /api/backup/push`); KyRecovery owns the spec.
