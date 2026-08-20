@@ -106,8 +106,9 @@ func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr) (Lease,
 		return l, true
 	}
 
-	// 1. A reservation always wins, in or out of the dynamic range.
-	if ip, ok := a.reserved[mac]; ok {
+	// 1. A reservation always wins, in or out of the dynamic range, but
+	// never our own address or the gateway.
+	if ip, ok := a.reserved[mac]; ok && !a.protected(ip) {
 		return commit(ip)
 	}
 	// 2. Renew what this client already holds, if it is still ours to give.
@@ -209,7 +210,13 @@ func (a *Allocator) free(ip netip.Addr, mac string, now time.Time) bool {
 
 // usable reports whether ip is one this server may hand out at all.
 func (a *Allocator) usable(ip netip.Addr) bool {
-	return a.inRange(ip) && ip != a.cfg.Host && ip != a.cfg.Gateway
+	return a.inRange(ip) && !a.protected(ip)
+}
+
+// protected reports whether ip is one this server must never hand to a
+// client whatever the configuration says: our own address, and the router's.
+func (a *Allocator) protected(ip netip.Addr) bool {
+	return ip == a.cfg.Host || ip == a.cfg.Gateway
 }
 
 func (a *Allocator) inRange(ip netip.Addr) bool {

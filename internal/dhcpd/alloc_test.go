@@ -219,3 +219,99 @@ func TestNameTaken(t *testing.T) {
 		t.Fatal("NameTaken said an unused name was taken")
 	}
 }
+
+func TestAReservedGatewayFallsBackToADynamicAddress(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	cfg := testConfig()
+	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": cfg.Gateway})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the client entirely")
+	}
+	if l.IP == cfg.Gateway {
+		t.Fatalf("Allocate handed out the gateway %v because a reservation named it", l.IP)
+	}
+	if want := netip.MustParseAddr("192.168.1.10"); l.IP != want {
+		t.Fatalf("address = %v, want the dynamic fallback %v", l.IP, want)
+	}
+}
+
+func TestAReservedHostFallsBackToADynamicAddress(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	cfg := testConfig()
+	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": cfg.Host})
+	l, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the client entirely")
+	}
+	if l.IP == cfg.Host {
+		t.Fatalf("Allocate handed out our own address %v because a reservation named it", l.IP)
+	}
+	if want := netip.MustParseAddr("192.168.1.10"); l.IP != want {
+		t.Fatalf("address = %v, want the dynamic fallback %v", l.IP, want)
+	}
+}
+
+func TestAReservationAddedLaterMovesTheClientsAddress(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	first, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the first client")
+	}
+	reserved := netip.MustParseAddr("192.168.1.20") // deliberately outside the range
+	a.SetReservations(map[string]netip.Addr{"aa:aa:aa:aa:aa:aa": reserved})
+	moved, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the reserved client")
+	}
+	if moved.IP != reserved {
+		t.Fatalf("address = %v, want the newly reserved %v", moved.IP, reserved)
+	}
+
+	// The vacated address must be genuinely free, not just unreachable through
+	// this MAC: a different client can take it, and byMAC/byIP must agree.
+	other, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused a second client after the first moved")
+	}
+	if other.IP != first.IP {
+		t.Fatalf("vacated address = %v, want the second client to get %v", other.IP, first.IP)
+	}
+	for _, l := range a.Leases() {
+		if l.MAC == "aa:aa:aa:aa:aa:aa" && l.IP != reserved {
+			t.Fatalf("Leases still lists the old address %v for the moved client", l.IP)
+		}
+	}
+}
+
+func TestAReservationStealsAnAddressFromAnotherClientsLease(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	victim, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the first client")
+	}
+	a.SetReservations(map[string]netip.Addr{"bb:bb:bb:bb:bb:bb": victim.IP})
+	thief, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the reserved client")
+	}
+	if thief.IP != victim.IP {
+		t.Fatalf("address = %v, want the reserved %v taken from the other client", thief.IP, victim.IP)
+	}
+
+	// The original holder must be gone from both indexes, not just orphaned:
+	// it should no longer show up in Leases, and a fresh Allocate for it must
+	// not be treated as a renewal of the address it just lost.
+	for _, l := range a.Leases() {
+		if l.MAC == "aa:aa:aa:aa:aa:aa" {
+			t.Fatalf("Leases still lists the client whose address was stolen: %+v", l)
+		}
+	}
+	again, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{})
+	if !ok {
+		t.Fatal("Allocate refused the dispossessed client entirely")
+	}
+	if again.IP == victim.IP {
+		t.Fatalf("Allocate renewed %v for the dispossessed client, but it now belongs to another MAC", again.IP)
+	}
+}
