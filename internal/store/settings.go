@@ -29,12 +29,16 @@ func (s *Store) Settings() (Settings, bool, error) {
 SELECT private_domain, reverse_zones, upstreams, allow_query, allow_tailscale,
        ttl, cache_min_ttl, cache_max_ttl, negative_max_ttl, cache_entries,
        log_queries, log_client_ip, dhcp_lease_file, discovery_interval,
-       health_interval, health_timeout, health_workers
+       health_interval, health_timeout, health_workers,
+       dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
+       dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns
 FROM settings WHERE id = 1`).Scan(
 		&v.PrivateDomain, &rz, &up, &aq, &v.AllowTailscale,
 		&v.TTL, &v.CacheMinTTL, &v.CacheMaxTTL, &v.NegativeMaxTTL, &v.CacheEntries,
 		&v.LogQueries, &v.LogClientIP, &v.DHCPLeaseFile, &v.DiscoveryInterval,
-		&v.HealthInterval, &v.HealthTimeout, &v.HealthWorkers)
+		&v.HealthInterval, &v.HealthTimeout, &v.HealthWorkers,
+		&v.DHCPEnabled, &v.DHCPInterface, &v.DHCPRangeStart, &v.DHCPRangeEnd,
+		&v.DHCPGateway, &v.DHCPLeaseSeconds, &v.DHCPSecondaryDNS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Settings{}, false, nil
 	}
@@ -62,8 +66,10 @@ func putSettings(db execer, v Settings) error {
 INSERT INTO settings (id, private_domain, reverse_zones, upstreams, allow_query,
   allow_tailscale, ttl, cache_min_ttl, cache_max_ttl, negative_max_ttl,
   cache_entries, log_queries, log_client_ip, dhcp_lease_file,
-  discovery_interval, health_interval, health_timeout, health_workers)
-VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  discovery_interval, health_interval, health_timeout, health_workers,
+  dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
+  dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns)
+VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   private_domain=excluded.private_domain, reverse_zones=excluded.reverse_zones,
   upstreams=excluded.upstreams, allow_query=excluded.allow_query,
@@ -74,12 +80,18 @@ ON CONFLICT(id) DO UPDATE SET
   dhcp_lease_file=excluded.dhcp_lease_file,
   discovery_interval=excluded.discovery_interval,
   health_interval=excluded.health_interval, health_timeout=excluded.health_timeout,
-  health_workers=excluded.health_workers`,
+  health_workers=excluded.health_workers,
+  dhcp_enabled=excluded.dhcp_enabled, dhcp_interface=excluded.dhcp_interface,
+  dhcp_range_start=excluded.dhcp_range_start, dhcp_range_end=excluded.dhcp_range_end,
+  dhcp_gateway=excluded.dhcp_gateway, dhcp_lease_seconds=excluded.dhcp_lease_seconds,
+  dhcp_secondary_dns=excluded.dhcp_secondary_dns`,
 		v.PrivateDomain, packList(v.ReverseZones), packList(v.Upstreams),
 		packList(v.AllowQuery), v.AllowTailscale, v.TTL, v.CacheMinTTL,
 		v.CacheMaxTTL, v.NegativeMaxTTL, v.CacheEntries, v.LogQueries,
 		v.LogClientIP, v.DHCPLeaseFile, v.DiscoveryInterval, v.HealthInterval,
-		v.HealthTimeout, v.HealthWorkers)
+		v.HealthTimeout, v.HealthWorkers,
+		v.DHCPEnabled, v.DHCPInterface, v.DHCPRangeStart, v.DHCPRangeEnd,
+		v.DHCPGateway, v.DHCPLeaseSeconds, v.DHCPSecondaryDNS)
 	return err
 }
 

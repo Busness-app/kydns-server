@@ -135,7 +135,23 @@ CREATE TABLE IF NOT EXISTS settings (
   discovery_interval INTEGER NOT NULL,
   health_interval    INTEGER NOT NULL,
   health_timeout     INTEGER NOT NULL,
-  health_workers     INTEGER NOT NULL
+  health_workers     INTEGER NOT NULL,
+  dhcp_enabled       INTEGER NOT NULL DEFAULT 0,
+  dhcp_interface     TEXT NOT NULL DEFAULT '',
+  dhcp_range_start   TEXT NOT NULL DEFAULT '',
+  dhcp_range_end     TEXT NOT NULL DEFAULT '',
+  dhcp_gateway       TEXT NOT NULL DEFAULT '',
+  dhcp_lease_seconds INTEGER NOT NULL DEFAULT 86400,
+  dhcp_secondary_dns TEXT NOT NULL DEFAULT ''
+);
+-- Node-local: no config_version trigger. A lease is this node's own DHCP
+-- state, never a peer's, same as the tables below.
+CREATE TABLE IF NOT EXISTS dhcp_leases (
+  mac        TEXT PRIMARY KEY,
+  ip         TEXT NOT NULL UNIQUE,
+  hostname   TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_seen  INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS config_version (
   id      INTEGER PRIMARY KEY CHECK (id = 1),
@@ -201,7 +217,8 @@ WHEN old.name IS NOT new.name
   OR old.interval_seconds IS NOT new.interval_seconds
 BEGIN UPDATE config_version SET version = version + 1 WHERE id = 1; END;
 -- Replicated settings columns only. dhcp_lease_file, discovery_interval,
--- log_queries and log_client_ip are absent on purpose: they are node-local.
+-- log_queries, log_client_ip and every dhcp_* column are absent on purpose:
+-- they are node-local.
 CREATE TRIGGER IF NOT EXISTS cv_settings_i AFTER INSERT ON settings BEGIN
   UPDATE config_version SET version = version + 1 WHERE id = 1; END;
 CREATE TRIGGER IF NOT EXISTS cv_settings_u AFTER UPDATE ON settings
@@ -289,6 +306,20 @@ var migrations = []string{
 	 );
 	 INSERT OR IGNORE INTO sso_settings(id, enabled, issuer_url, client_id, client_secret)
 	   VALUES(1, 0, 'https://auth.urlxl.com', 'kydns', '');`,
+	`ALTER TABLE settings ADD COLUMN dhcp_enabled INTEGER NOT NULL DEFAULT 0;
+	 ALTER TABLE settings ADD COLUMN dhcp_interface TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE settings ADD COLUMN dhcp_range_start TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE settings ADD COLUMN dhcp_range_end TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE settings ADD COLUMN dhcp_gateway TEXT NOT NULL DEFAULT '';
+	 ALTER TABLE settings ADD COLUMN dhcp_lease_seconds INTEGER NOT NULL DEFAULT 86400;
+	 ALTER TABLE settings ADD COLUMN dhcp_secondary_dns TEXT NOT NULL DEFAULT '';
+	 CREATE TABLE IF NOT EXISTS dhcp_leases (
+	   mac        TEXT PRIMARY KEY,
+	   ip         TEXT NOT NULL UNIQUE,
+	   hostname   TEXT NOT NULL,
+	   expires_at INTEGER NOT NULL,
+	   last_seen  INTEGER NOT NULL
+	 );`,
 }
 
 // migrate runs against a transaction Open already holds, so a crash
@@ -899,22 +930,32 @@ func (s *Store) ApplySnapshot(in SnapshotInput) error {
 	if err := replaceAll(tx, in.Views, in.Services, in.Records); err != nil {
 		return err
 	}
-	// dhcp_lease_file, discovery_interval, log_queries and log_client_ip are
-	// node-local and never replicated. Enforced here rather than trusted to
-	// the caller, so a later caller that forwards a pulled Settings verbatim
-	// cannot wipe them out.
+	// dhcp_lease_file, discovery_interval, log_queries, log_client_ip and every
+	// dhcp_* column are node-local and never replicated. Enforced here rather
+	// than trusted to the caller, so a later caller that forwards a pulled
+	// Settings verbatim cannot wipe them out.
 	settings := in.Settings
-	var dhcpLeaseFile string
-	var discoveryInterval int
-	var logQueries, logClientIP bool
-	err = tx.QueryRow(`SELECT dhcp_lease_file, discovery_interval, log_queries, log_client_ip FROM settings WHERE id = 1`).
-		Scan(&dhcpLeaseFile, &discoveryInterval, &logQueries, &logClientIP)
+	var dhcpLeaseFile, dhcpInterface, dhcpRangeStart, dhcpRangeEnd, dhcpGateway, dhcpSecondaryDNS string
+	var discoveryInterval, dhcpLeaseSeconds int
+	var logQueries, logClientIP, dhcpEnabled bool
+	err = tx.QueryRow(`
+SELECT dhcp_lease_file, discovery_interval, log_queries, log_client_ip,
+       dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
+       dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns
+FROM settings WHERE id = 1`).
+		Scan(&dhcpLeaseFile, &discoveryInterval, &logQueries, &logClientIP,
+			&dhcpEnabled, &dhcpInterface, &dhcpRangeStart, &dhcpRangeEnd,
+			&dhcpGateway, &dhcpLeaseSeconds, &dhcpSecondaryDNS)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	if err == nil {
 		settings.DHCPLeaseFile, settings.DiscoveryInterval = dhcpLeaseFile, discoveryInterval
 		settings.LogQueries, settings.LogClientIP = logQueries, logClientIP
+		settings.DHCPEnabled, settings.DHCPInterface = dhcpEnabled, dhcpInterface
+		settings.DHCPRangeStart, settings.DHCPRangeEnd = dhcpRangeStart, dhcpRangeEnd
+		settings.DHCPGateway, settings.DHCPLeaseSeconds = dhcpGateway, dhcpLeaseSeconds
+		settings.DHCPSecondaryDNS = dhcpSecondaryDNS
 	}
 	if err := putSettings(tx, settings); err != nil {
 		return err

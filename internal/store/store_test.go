@@ -252,6 +252,35 @@ func TestOpenMigratesAnOlderDatabase(t *testing.T) {
 	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
 		t.Errorf("migrated row = %+v, want the new fields at their zero values", svcs[0])
 	}
+
+	// The DHCP settings columns and the lease table are the second schema
+	// change since v1; both must also arrive on this same upgrade. Insert a
+	// settings row without naming the DHCP columns, so their values come from
+	// the ALTER's own DEFAULT rather than from Go.
+	if _, err := s.db.Exec(`
+INSERT INTO settings (id, private_domain, reverse_zones, upstreams, allow_query,
+  allow_tailscale, ttl, cache_min_ttl, cache_max_ttl, negative_max_ttl,
+  cache_entries, log_queries, log_client_ip, dhcp_lease_file,
+  discovery_interval, health_interval, health_timeout, health_workers)
+VALUES (1, 'home.arpa', '', '', '', 0, 60, 5, 3600, 300, 100, 0, 0, '', 30, 30, 5, 8)`); err != nil {
+		t.Fatalf("insert into migrated settings table: %v", err)
+	}
+	v, ok, err := s.Settings()
+	if err != nil || !ok {
+		t.Fatalf("Settings() after migration: ok=%v err=%v", ok, err)
+	}
+	if v.DHCPEnabled || v.DHCPInterface != "" || v.DHCPRangeStart != "" ||
+		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" {
+		t.Errorf("migrated DHCP settings = %+v, want the zero-value defaults", v)
+	}
+	if v.DHCPLeaseSeconds != 86400 {
+		t.Errorf("DHCPLeaseSeconds = %d, want the documented default of 86400", v.DHCPLeaseSeconds)
+	}
+	if _, err := s.db.Exec(`INSERT INTO dhcp_leases (mac, ip, hostname, expires_at, last_seen)
+VALUES ('aa:bb:cc:dd:ee:ff', '192.168.1.50', 'printer', 0, 0)`); err != nil {
+		t.Fatalf("dhcp_leases table missing after migration: %v", err)
+	}
+
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}

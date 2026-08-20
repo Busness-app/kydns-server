@@ -6,6 +6,61 @@ import (
 	"testing"
 )
 
+func TestSettingsRoundTripsDHCPFields(t *testing.T) {
+	s := open(t)
+	v, _, err := s.Settings()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	v.DHCPEnabled = true
+	v.DHCPInterface = "eth0"
+	v.DHCPRangeStart = "192.168.1.128"
+	v.DHCPRangeEnd = "192.168.1.254"
+	v.DHCPGateway = "192.168.1.1"
+	v.DHCPLeaseSeconds = 86400
+	v.DHCPSecondaryDNS = "192.168.1.3"
+	if err := s.PutSettings(v); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, ok, err := s.Settings()
+	if err != nil || !ok {
+		t.Fatalf("read back: %v ok=%v", err, ok)
+	}
+	if !reflect.DeepEqual(got, v) {
+		t.Fatalf("round trip = %+v, want %+v", got, v)
+	}
+}
+
+func TestDHCPSettingsDoNotBumpConfigVersion(t *testing.T) {
+	s := open(t)
+	v, _, err := s.Settings()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := s.PutSettings(v); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	before, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+
+	v.DHCPEnabled = true
+	v.DHCPInterface = "eth0"
+	if err := s.PutSettings(v); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	after, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatalf("version: %v", err)
+	}
+	if after != before {
+		t.Fatalf("config version moved from %d to %d; DHCP settings are node-local and must not replicate", before, after)
+	}
+}
+
 func TestSettingsRoundTrip(t *testing.T) {
 	st := open(t)
 
