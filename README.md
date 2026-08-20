@@ -464,7 +464,7 @@ reverse proxy in front of it.
 | `/etc/kydns/kydns.yaml` | Configuration. Your edits survive upgrades. |
 | `/var/lib/kydns` | Database and tokens. **Back this up.** |
 | `/usr/share/doc/kydns/kydns.example.yaml` | Every setting, documented. |
-| `/usr/share/doc/kydns/copyright`, `/usr/share/licenses/kydns/LICENSE` | The AGPL text, deb and rpm respectively. |
+| `/usr/share/doc/kydns/copyright`, `/usr/share/licenses/kydns/LICENSE.txt` | The MIT licence text, deb and rpm respectively. |
 
 Removing the package leaves `/var/lib/kydns` in place — with `apt purge` and
 with `dnf remove` alike. It holds your whole registry and every credential.
@@ -703,6 +703,6 @@ public name over the default DoT upstream.
 
 ## License
 
-KyDNS is licensed under the [GNU AGPL v3](LICENSE). The web UI carries the
+KyDNS is licensed under the [MIT License](LICENSE.txt). The web UI carries the
 notice and serves the full license text from its About popover, so an operator
-running a modified copy over a network can always see what they are running.
+can always see the terms of what they are running.

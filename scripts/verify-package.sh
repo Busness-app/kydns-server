@@ -64,7 +64,7 @@ case "$pkg" in
 	*) echo "no rpm arch known for $arch"; exit 2 ;;
 	esac
 	wantscripts="preinstall postinstall preuninstall postuninstall"
-	licpath=/usr/share/licenses/kydns/LICENSE
+	licpath=/usr/share/licenses/kydns/LICENSE.txt
 
 	# The licence has to carry rpm's %license flag, not just live at the
 	# right path, or `rpm -qL` and the doc-stripping tools ignore it.
@@ -92,7 +92,7 @@ check '^-rwxr-xr-x /usr/bin/kydns$' '/usr/bin/kydns mode 0755'
 check '^-rw-r--r-- /lib/systemd/system/kydns\.service$' 'the systemd unit, mode 0644'
 check '^-rw-r--r-- /etc/kydns/kydns\.yaml$' '/etc/kydns/kydns.yaml mode 0644'
 check '/usr/share/doc/kydns/kydns\.example\.yaml$' 'the example config'
-check "^-rw-r--r-- $licpath\$" "the AGPL text at $licpath"
+check "^-rw-r--r-- $licpath\$" "the MIT licence text at $licpath"
 
 # /var/lib/kydns must NOT be in the package. systemd creates it, and the
 # package manager must never learn it owns it — that is what keeps a removal

@@ -8,7 +8,7 @@ priority: optional
 maintainer: Yoshi <yoshi@urlxl.com>
 vendor: KyDNS
 homepage: https://github.com/yoshiofthewire/kydns-server
-license: AGPL-3.0-or-later
+license: MIT
 description: |
   Self-hosted local DNS server and service directory.
   KyDNS names private services on a home or homelab network, with per-subnet
@@ -49,8 +49,8 @@ contents:
 
   # The `license:` key above is dropped for deb — Debian control has no License
   # field, it is rpm-only. Without this the .deb would convey KyDNS with no
-  # licence text at all, which Policy forbids and the AGPL does not allow.
-  - src: LICENSE
+  # licence text at all, which Policy forbids and the MIT licence does not allow.
+  - src: LICENSE.txt
     dst: /usr/share/doc/kydns/copyright
     packager: deb
     file_info:
@@ -58,8 +58,8 @@ contents:
 
   # rpm has the License field, set above, and its own place for the text.
   # `type: license` is what sets the flag `rpm -qL` reads.
-  - src: LICENSE
-    dst: /usr/share/licenses/kydns/LICENSE
+  - src: LICENSE.txt
+    dst: /usr/share/licenses/kydns/LICENSE.txt
     type: license
     packager: rpm
     file_info:

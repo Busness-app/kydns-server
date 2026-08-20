@@ -98,9 +98,9 @@ func TestRenderIncludesNavAndAssets(t *testing.T) {
 	}
 }
 
-// The AGPL obliges us to tell the operator what they are running and to hand
-// them the license, so the nav footer, the About popover and the embedded
-// license text are checked together.
+// The operator should always be able to see what they are running and on what
+// terms, so the nav footer, the About popover and the embedded license text
+// are checked together.
 func TestNavFooterOpensLicense(t *testing.T) {
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
@@ -109,7 +109,7 @@ func TestNavFooterOpensLicense(t *testing.T) {
 	body := get(t, h, "/", c).Body.String()
 	for _, want := range []string{
 		`popovertarget="about"`,
-		"Licensed under AGPL v3",
+		"Licensed under the MIT License",
 		"KyDNS <span class=\"badge accent\">v" + Version,
 		"Developed by Busnes.app",
 		`src="/license"`,
@@ -126,15 +126,15 @@ func TestNavFooterOpensLicense(t *testing.T) {
 	if lic.Code != http.StatusOK {
 		t.Fatalf("GET /license = %d", lic.Code)
 	}
-	for _, want := range []string{"GNU AFFERO GENERAL PUBLIC LICENSE", "/static/app.css", `class="license-body"`} {
+	for _, want := range []string{"MIT License", "/static/app.css", `class="license-body"`} {
 		if !strings.Contains(lic.Body.String(), want) {
 			t.Errorf("/license missing %q", want)
 		}
 	}
 
-	rec := static(t, srv, "/static/agpl-3.0.txt")
+	rec := static(t, srv, "/static/mit.txt")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /static/agpl-3.0.txt = %d, want the license to be embedded", rec.Code)
+		t.Fatalf("GET /static/mit.txt = %d, want the license to be embedded", rec.Code)
 	}
 	// A display rule outside :popover-open beats the UA rule that hides a
 	// closed popover, which pins the panel over every page with no way to
@@ -151,12 +151,12 @@ func TestNavFooterOpensLicense(t *testing.T) {
 
 	// The served copy is what the operator reads, so it must stay identical to
 	// the license the project ships under.
-	want, err := os.ReadFile("../../LICENSE")
+	want, err := os.ReadFile("../../LICENSE.txt")
 	if err != nil {
-		t.Fatalf("read LICENSE: %v", err)
+		t.Fatalf("read LICENSE.txt: %v", err)
 	}
 	if rec.Body.String() != string(want) {
-		t.Error("embedded agpl-3.0.txt has drifted from LICENSE")
+		t.Error("embedded mit.txt has drifted from LICENSE.txt")
 	}
 }
 

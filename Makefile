@@ -24,7 +24,7 @@ ARCHES := amd64 arm64
 DIST := dist
 
 # The staging directory is also the tarball's one top-level entry, so
-# extracting does not scatter kydns, LICENSE, and the example config across
+# extracting does not scatter kydns, LICENSE.txt, and the example config across
 # whoever's current directory.
 dist:
 	rm -rf dist
@@ -34,7 +34,7 @@ dist:
 		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath \
 			-ldflags "-s -w -X main.version=$(VERSION)" \
 			-o $(DIST)/$$stage/kydns ./cmd/kydns || exit 1; \
-		cp kydns.example.yaml LICENSE $(DIST)/$$stage/ || exit 1; \
+		cp kydns.example.yaml LICENSE.txt $(DIST)/$$stage/ || exit 1; \
 		tar -czf $(DIST)/$$stage.tar.gz -C $(DIST) $$stage || exit 1; \
 	done
 
