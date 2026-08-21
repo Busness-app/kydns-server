@@ -1213,3 +1213,28 @@ func TestDeclineForAPromisedReservationTellsTheOperator(t *testing.T) {
 		t.Fatalf("log = %q, want a decline from a client holding nothing still called out", got)
 	}
 }
+
+// The same hole at the packet layer, and the harm it does: a client whose
+// persisted address is now the server's own is offered it, REQUESTs it, and
+// is NAKed — a DORA loop it can never leave.
+func TestDiscoverForAClientOnAProtectedAddressConverges(t *testing.T) {
+	s, _ := newTestServer(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	peer := &net.UDPAddr{IP: net.IPv4zero}
+	host := testConfig().Host
+	s.opts.Alloc.Load([]Lease{{MAC: mac, IP: host, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+	c := &captureConn{}
+	s.handle(c, peer, discover(mac, ""))
+	offered := c.replies(t)[0].YourIPAddr
+	if offered.String() == host.String() {
+		t.Fatalf("offered %v, which is the server's own address", offered)
+	}
+
+	c2 := &captureConn{}
+	s.handle(c2, peer, request(mac, "nas", netip.MustParseAddr(offered.String())))
+	reply := c2.replies(t)[0]
+	if reply.MessageType() != dhcpv4.MessageTypeAck {
+		t.Fatalf("REQUEST for the offered %v got %v, want an ACK", offered, reply.MessageType())
+	}
+}

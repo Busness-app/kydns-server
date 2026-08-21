@@ -168,8 +168,10 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 	// rules 3 and 4 commit, and commit deletes the old entry. Reached only
 	// when rules 1 and 2 have both refused, so the address may no longer be
 	// ours to give — but the client is on it either way, and a DISCOVER is
-	// not the moment to take it away. The REQUEST still decides.
-	if tentative && held {
+	// not the moment to take it away. The REQUEST still decides. Our own
+	// address and the gateway are the exception: they were never ours to
+	// give, so returning one only loops the client through DISCOVER and NAK.
+	if tentative && held && !a.protected(prev.IP) {
 		return prev, false, true
 	}
 	// 3. Honour a requested address that is free.

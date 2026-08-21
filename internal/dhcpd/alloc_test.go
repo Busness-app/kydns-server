@@ -556,3 +556,59 @@ func TestHeldByAnotherIgnoresTheClientsOwnLease(t *testing.T) {
 		t.Fatalf("%v not reported held against a different client", l.IP)
 	}
 }
+
+// The fall-through guard must not hand back an address that was never ours to
+// give. Host and Gateway can sit inside a wide range, and an interface
+// renumber or a router swap turns a legitimately persisted lease into one of
+// them: offering it back loops the client through DISCOVER and NAK forever.
+func TestOfferNeverPromisesAProtectedAddress(t *testing.T) {
+	cfg := testConfig()
+	for _, tc := range []struct {
+		name string
+		ip   netip.Addr
+	}{
+		{"the server's own address", cfg.Host},
+		{"the gateway", cfg.Gateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newTestAllocator(t)
+			const mac = "aa:aa:aa:aa:aa:aa"
+			a.Load([]Lease{{MAC: mac, IP: tc.ip, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+			got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+			if !ok {
+				t.Fatal("Offer refused a client holding a protected address")
+			}
+			if got.IP == tc.ip {
+				t.Fatalf("offered %v, which is %s", got.IP, tc.name)
+			}
+			if !fresh {
+				t.Fatalf("fresh = false for %v, which is new to this client and must be probed", got.IP)
+			}
+		})
+	}
+}
+
+// The guard turns on held, not on having any record at all: an expired
+// holding is new to us again and must be probed, not handed straight back.
+func TestOfferDoesNotHandBackAnExpiredHolding(t *testing.T) {
+	a, now := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	old := netip.MustParseAddr("192.168.1.50") // out of range, so rule 2 refuses it
+	a.Load([]Lease{{MAC: mac, IP: old, Hostname: "nas", Expires: epoch.Add(time.Minute)}})
+	*now = now.Add(time.Hour)
+
+	got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused a client whose holding has expired")
+	}
+	if got.IP == old {
+		t.Fatalf("offered the expired %v back, want a fresh address in the range", old)
+	}
+	if want := netip.MustParseAddr("192.168.1.10"); got.IP != want {
+		t.Fatalf("offered %v, want %v", got.IP, want)
+	}
+	if !fresh {
+		t.Fatal("fresh = false for an address the client no longer holds; it would never be probed")
+	}
+}
