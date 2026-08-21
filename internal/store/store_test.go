@@ -306,6 +306,86 @@ VALUES ('aa:bb:cc:dd:ee:ff', '192.168.1.50', 'printer', 0, 0)`); err != nil {
 	}
 }
 
+// The real upgrade path for the dhcp_* columns. TestOpenMigratesAnOlderDatabase
+// cannot cover it: its fixture has no settings table, so schema's CREATE TABLE
+// builds the current shape before migrate runs and every dhcp ALTER is a
+// swallowed no-op. Here the table already exists in its pre-DHCP shape, so the
+// migrations are the only thing that can add the columns — and Settings()
+// names every one of them, so a missing ALTER fails Open outright and the
+// daemon does not boot.
+func TestOpenAddsTheDHCPColumnsToAnExistingSettingsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v3.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A database at user_version 3: services and settings both exist, and no
+	// dhcp_* column does.
+	if _, err := db.Exec(`
+CREATE TABLE services (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  check_url       TEXT NOT NULL DEFAULT '',
+  check_insecure  INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+  proxy_address   TEXT NOT NULL DEFAULT '',
+  route_via_proxy INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE settings (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  private_domain     TEXT NOT NULL,
+  reverse_zones      TEXT NOT NULL,
+  upstreams          TEXT NOT NULL,
+  allow_query        TEXT NOT NULL,
+  allow_tailscale    INTEGER NOT NULL,
+  ttl                INTEGER NOT NULL,
+  cache_min_ttl      INTEGER NOT NULL,
+  cache_max_ttl      INTEGER NOT NULL,
+  negative_max_ttl   INTEGER NOT NULL,
+  cache_entries      INTEGER NOT NULL,
+  log_queries        INTEGER NOT NULL,
+  log_client_ip      INTEGER NOT NULL,
+  dhcp_lease_file    TEXT NOT NULL,
+  discovery_interval INTEGER NOT NULL,
+  health_interval    INTEGER NOT NULL,
+  health_timeout     INTEGER NOT NULL,
+  health_workers     INTEGER NOT NULL
+);
+INSERT INTO settings (id, private_domain, reverse_zones, upstreams, allow_query,
+  allow_tailscale, ttl, cache_min_ttl, cache_max_ttl, negative_max_ttl,
+  cache_entries, log_queries, log_client_ip, dhcp_lease_file,
+  discovery_interval, health_interval, health_timeout, health_workers)
+VALUES (1, 'home.arpa', '', '', '', 0, 60, 5, 3600, 300, 100, 0, 0, '', 30, 30, 5, 8);
+PRAGMA user_version = 3;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on a database whose settings table predates DHCP: %v", err)
+	}
+	defer s.Close()
+
+	v, ok, err := s.Settings()
+	if err != nil || !ok {
+		t.Fatalf("Settings() after migration: ok=%v err=%v", ok, err)
+	}
+	if v.PrivateDomain != "home.arpa" {
+		t.Errorf("PrivateDomain = %q, want the pre-existing row preserved", v.PrivateDomain)
+	}
+	if v.DHCPEnabled || v.DHCPInterface != "" || v.DHCPRangeStart != "" ||
+		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" ||
+		v.DHCPAllowForeign {
+		t.Errorf("migrated DHCP settings = %+v, want the ALTER defaults", v)
+	}
+	if v.DHCPLeaseSeconds != 86400 {
+		t.Errorf("DHCPLeaseSeconds = %d, want the documented default of 86400", v.DHCPLeaseSeconds)
+	}
+}
+
 func TestServiceRoundTripsProxyFields(t *testing.T) {
 	s := open(t)
 	id, err := s.PutService(Service{

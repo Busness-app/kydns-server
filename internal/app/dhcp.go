@@ -79,6 +79,13 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 		return
 	}
 	if d.running != nil && dhcpConfigEqual(d.current, v) {
+		if d.current.DHCPAllowForeign && !v.DHCPAllowForeign {
+			// Same reasoning as the periodic probe: never pull DHCP out from
+			// under a working network. Say so, though — an operator revoking
+			// this has just found a server they do not trust.
+			d.logger.Info("dhcp foreign-server override revoked; the running listener is unaffected until the next restart or reconfigure")
+			d.current.DHCPAllowForeign = false // so the transition logs once
+		}
 		// The listener already runs exactly this, so any earlier refusal is
 		// spent: leaving it would report "running yes" beside a stale reason.
 		d.lastError = nil
@@ -243,18 +250,21 @@ func parseSetting(key, value string) (netip.Addr, error) {
 }
 
 func (d *dhcpRunner) stopLocked() {
+	// Unconditional: a watch or a banner that outlived its listener would go
+	// on describing a segment we no longer serve, so neither may depend on
+	// running being set.
+	if d.stopWatch != nil {
+		d.stopWatch()
+		d.stopWatch = nil
+	}
+	d.foreign = nil
 	if d.running == nil {
 		return
 	}
 	if err := d.running.Stop(); err != nil {
 		d.logger.Warn("dhcp listener did not close cleanly", "error", err)
 	}
-	if d.stopWatch != nil {
-		d.stopWatch()
-		d.stopWatch = nil
-	}
 	d.running = nil
-	d.foreign = nil
 	d.poller.SetSource(nil)
 	d.logger.Info("dhcp server stopped")
 }

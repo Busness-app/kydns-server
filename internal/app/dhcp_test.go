@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -573,5 +574,67 @@ func TestAProbeInFlightWhenTheListenerStopsDoesNotRepopulateTheBanner(t *testing
 
 	if got := d.Foreign(); got != nil {
 		t.Fatalf("Foreign() = %+v, want nothing: the listener it described is gone", got)
+	}
+}
+
+// Revoking the override cannot take down a listener that is already serving
+// the LAN — the same reasoning that keeps the periodic probe from doing it —
+// but the save takes the unchanged-config early return, so without a line in
+// the log an operator who has just found a server they do not trust gets no
+// answer at all.
+func TestRevokingTheOverrideWhileRunningSaysSo(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	var log bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&log, nil))
+	on := buildableSettings()
+	on.DHCPAllowForeign = true
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = on
+	d.poller.SetSource(d.running)
+
+	off := on
+	off.DHCPAllowForeign = false
+	d.Reconcile(off)
+
+	if running, err := d.Status(); !running || err != nil {
+		t.Fatalf("revoking the override: running=%v err=%v, want the listener left alone", running, err)
+	}
+	if !strings.Contains(log.String(), "override") {
+		t.Errorf("revoking the override logged nothing: %q", log.String())
+	}
+	if !strings.Contains(log.String(), "restart") {
+		t.Errorf("the log does not say when the change takes effect: %q", log.String())
+	}
+
+	// Once per transition: every later save of the same settings is silent.
+	log.Reset()
+	d.Reconcile(off)
+	if log.Len() != 0 {
+		t.Errorf("an unrelated later save logged the transition again: %q", log.String())
+	}
+}
+
+// stopLocked must not reach the watch through running: the two are set in the
+// same critical section today, so an early return that skips the cancel is
+// latent rather than live, and latent-until-it-isn't leaks a goroutine
+// probing a segment we no longer serve.
+func TestStopLockedCancelsTheWatchWithNoListener(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	stopped := false
+	d.stopWatch = func() { stopped = true }
+	d.foreign = []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}
+
+	d.mu.Lock()
+	d.stopLocked()
+	d.mu.Unlock()
+
+	if !stopped {
+		t.Error("stopLocked left the watch running because no listener was set")
+	}
+	if d.stopWatch != nil {
+		t.Error("stopLocked left a spent cancel behind")
+	}
+	if got := d.Foreign(); got != nil {
+		t.Errorf("Foreign() = %+v after stopLocked, want nothing to show", got)
 	}
 }
