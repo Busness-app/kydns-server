@@ -159,3 +159,107 @@ not summarized secondhand.
 
 `feat(settings): validate the built-in DHCP configuration`, body extended with an R4 paragraph
 explaining the pool-size cap in place of the same-/24 check.
+
+## Fix round 1
+
+### Finding 1 (Critical) — pool-size cap bypassable by uint32 overflow
+
+`internal/settings/validate.go:147-149` computed the range size as `be32(end.As4()) -
+be32(start.As4()) + 1` in `uint32` arithmetic. For `start = 0.0.0.0`, `end = 255.255.255.255` (both
+valid IPv4; `end.Less(start)` is false so the earlier guard does not fire), the expression is
+`4294967295 - 0 + 1`, which wraps to `0`. `0 > 65536` is false, so the entire IPv4 address space
+passed the cap the ruling exists to enforce.
+
+**Fix** (`internal/settings/validate.go:147-148`): widened both operands to `uint64` before
+subtracting, and compared against the cap as a `uint64`, so the arithmetic cannot wrap:
+
+```go
+size := uint64(be32(end.As4())) - uint64(be32(start.As4())) + 1
+if size > uint64(dhcpMaxPoolSize) {
+```
+
+`be32` itself was left untouched — its byte layout was not in question. The `end.Less(start)` guard
+still runs first and still guarantees `be32(end) >= be32(start)` before the subtraction, so no
+underflow is possible at any width.
+
+### Finding 2 (Minor) — untested rejection boundary
+
+Added two cases to the `TestDHCPValidationRejects` table in `internal/settings/validate_test.go`
+(after the existing `"range larger than 65536 addresses"` case):
+
+- `"range of 65537 addresses, one past the cap"` — `10.0.0.0` to `10.1.0.0`. Arithmetic checked by
+  hand: `0x0A010000 - 0x0A000000 + 1 = 0x10001 = 65537`.
+- `"the whole IPv4 address space"` — `0.0.0.0` to `255.255.255.255`. This is the regression test for
+  Finding 1.
+
+Both expect field `dhcp.range_end`.
+
+### RED (before the fix, against HEAD bec310f, both new test cases already added)
+
+```
+$ go test ./internal/settings/ -run TestDHCPValidationRejects -v
+...
+=== RUN   TestDHCPValidationRejects/range_of_65537_addresses,_one_past_the_cap
+    --- PASS: TestDHCPValidationRejects/range_of_65537_addresses,_one_past_the_cap (0.00s)
+=== RUN   TestDHCPValidationRejects/the_whole_IPv4_address_space
+    validate_test.go:387: ValidateStored accepted the whole IPv4 address space
+    --- FAIL: TestDHCPValidationRejects/the_whole_IPv4_address_space (0.00s)
+...
+--- FAIL: TestDHCPValidationRejects (0.00s)
+FAIL
+FAIL	github.com/yoshiofthewire/kydns-server/internal/settings	0.003s
+FAIL
+```
+
+The 65537-address case already passed pre-fix (no overflow at that magnitude — it's a real
+too-large rejection, not a red herring). The whole-IPv4-space case failed exactly as predicted:
+the validator accepted the entire address space as a DHCP range, confirming the overflow was real
+and exploitable through the public `ValidateStored` entry point.
+
+### GREEN (after the fix)
+
+```
+$ go test ./internal/settings/ -run TestDHCP -v
+=== RUN   TestDHCPValidationAcceptsAGoodConfiguration
+--- PASS: TestDHCPValidationAcceptsAGoodConfiguration (0.00s)
+=== RUN   TestDHCPDisabledIgnoresEveryOtherField
+--- PASS: TestDHCPDisabledIgnoresEveryOtherField (0.00s)
+=== RUN   TestDHCPValidationRejects
+    --- PASS: TestDHCPValidationRejects/no_interface (0.00s)
+    --- PASS: TestDHCPValidationRejects/unparseable_start (0.00s)
+    --- PASS: TestDHCPValidationRejects/unparseable_end (0.00s)
+    --- PASS: TestDHCPValidationRejects/ipv6_start (0.00s)
+    --- PASS: TestDHCPValidationRejects/end_below_start (0.00s)
+    --- PASS: TestDHCPValidationRejects/range_larger_than_65536_addresses (0.00s)
+    --- PASS: TestDHCPValidationRejects/range_of_65537_addresses,_one_past_the_cap (0.00s)
+    --- PASS: TestDHCPValidationRejects/the_whole_IPv4_address_space (0.00s)
+    --- PASS: TestDHCPValidationRejects/unparseable_gateway (0.00s)
+    --- PASS: TestDHCPValidationRejects/lease_too_short (0.00s)
+    --- PASS: TestDHCPValidationRejects/lease_too_long (0.00s)
+    --- PASS: TestDHCPValidationRejects/unparseable_secondary_dns (0.00s)
+    --- PASS: TestDHCPValidationRejects/lease_file_at_the_same_time (0.00s)
+--- PASS: TestDHCPValidationRejects (0.00s)
+=== RUN   TestDHCPLeaseSecondsBoundariesAreInclusive
+--- PASS: TestDHCPLeaseSecondsBoundariesAreInclusive (0.00s)
+=== RUN   TestDHCPRangeOf65536AddressesIsAccepted
+--- PASS: TestDHCPRangeOf65536AddressesIsAccepted (0.00s)
+PASS
+ok  	github.com/yoshiofthewire/kydns-server/internal/settings	0.004s
+```
+
+### Full verification
+
+```
+$ go build ./...                                → no output (success)
+$ go test ./internal/settings/ -count=1 -v       → PASS, every pre-existing test plus new/changed
+                                                    DHCP tests, 0 FAIL
+$ go test ./... -count=1                         → 19 packages, all ok, 0 FAIL
+$ go vet ./...                                   → no output
+$ gofmt -l internal/settings/                    → no output (nothing unformatted)
+```
+
+### Concerns
+
+None. The acceptance boundary (65536, `TestDHCPRangeOf65536AddressesIsAccepted`) still passes
+unchanged, confirming the fix did not shift the cap. Findings marked out of scope in the task
+(the `parseIPv4` unquoted-input message, subnet-containment) were left untouched.

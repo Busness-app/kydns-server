@@ -366,6 +366,12 @@ func TestDHCPValidationRejects(t *testing.T) {
 		{"range larger than 65536 addresses", func(v *store.Settings) {
 			v.DHCPRangeStart, v.DHCPRangeEnd = "10.0.0.1", "10.2.0.1"
 		}, "dhcp.range_end"},
+		{"range of 65537 addresses, one past the cap", func(v *store.Settings) {
+			v.DHCPRangeStart, v.DHCPRangeEnd = "10.0.0.0", "10.1.0.0"
+		}, "dhcp.range_end"},
+		{"the whole IPv4 address space", func(v *store.Settings) {
+			v.DHCPRangeStart, v.DHCPRangeEnd = "0.0.0.0", "255.255.255.255"
+		}, "dhcp.range_end"},
 		{"unparseable gateway", func(v *store.Settings) { v.DHCPGateway = "nope" }, "dhcp.gateway"},
 		{"lease too short", func(v *store.Settings) { v.DHCPLeaseSeconds = 299 }, "dhcp.lease_seconds"},
 		{"lease too long", func(v *store.Settings) { v.DHCPLeaseSeconds = 604801 }, "dhcp.lease_seconds"},

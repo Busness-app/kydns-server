@@ -144,8 +144,8 @@ func validateDHCP(v store.Settings) error {
 	// The lease table is bounded by the range size, so cap the pool rather
 	// than requiring one /24: SuggestRange can propose a range that spans
 	// two /24s on anything wider than a /23, and that is legitimate.
-	size := be32(end.As4()) - be32(start.As4()) + 1
-	if size > dhcpMaxPoolSize {
+	size := uint64(be32(end.As4())) - uint64(be32(start.As4())) + 1
+	if size > uint64(dhcpMaxPoolSize) {
 		return bad("dhcp.range_end", "the range holds %d addresses, more than the %d-address limit", size, dhcpMaxPoolSize)
 	}
 	if _, err := parseIPv4("dhcp.gateway", v.DHCPGateway); err != nil {
