@@ -90,6 +90,11 @@ func (p *Poller) SetSource(src dhcp.Source) {
 	}
 }
 
+// Enabled reports whether a lease source is configured. It is the one truth
+// behind "is discovery on", read per request so a source swapped at runtime
+// shows up on the next page load rather than at the next restart.
+func (p *Poller) Enabled() bool { return p.source() != nil }
+
 func (p *Poller) source() dhcp.Source {
 	p.cfgMu.RLock()
 	defer p.cfgMu.RUnlock()
@@ -170,8 +175,9 @@ func (p *Poller) Leases() []dhcp.Lease {
 	return append([]dhcp.Lease(nil), p.leases...)
 }
 
-// digest is an order-sensitive fingerprint of the lease set. The parser emits
-// a stable order, so string comparison is enough and costs less than a hash.
+// digest is an order-sensitive fingerprint of the lease set. Every source
+// emits a stable order, so string comparison is enough and costs less than a
+// hash — a source that did not would rebuild the zone on most polls.
 func digest(leases []dhcp.Lease) string {
 	var sb strings.Builder
 	for _, l := range leases {

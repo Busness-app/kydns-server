@@ -28,10 +28,12 @@ type API struct {
 	acl             *dnsserver.ACL
 	cache           *dnsserver.Cache
 	leases          func() []dhcp.Lease
+	discoveryOn     func() bool
 	health          func() []health.Status
 	policy          *policy.Service
 	settings        *settings.Service
 	metrics         *dnsserver.Metrics
+	dhcpStatus      func() (bool, error)
 	replicaStatus   func() ReplicaStatus
 	replicaAdmin    ReplicaAdmin
 	replicaJoiner   ReplicaJoiner
@@ -66,11 +68,27 @@ func NewAPI(reg *registry.Registry, acl *dnsserver.ACL, cache *dnsserver.Cache) 
 	return &API{reg: reg, acl: acl, cache: cache}
 }
 
-// WithProviders attaches discovery and health data. Both are optional, so the
-// API still constructs where neither subsystem is running.
-func (a *API) WithProviders(leases func() []dhcp.Lease, statuses func() []health.Status) *API {
-	a.leases, a.health = leases, statuses
+// WithProviders attaches discovery and health data. All three are optional, so
+// the API still constructs where neither subsystem is running. discoveryOn is
+// separate from leases because a lease source can be turned on and off at
+// runtime: an empty lease set is not the same answer as "not enabled", and only
+// discoveryOn is asked again on every request.
+func (a *API) WithProviders(leases func() []dhcp.Lease, statuses func() []health.Status, discoveryOn func() bool) *API {
+	a.leases, a.health, a.discoveryOn = leases, statuses, discoveryOn
 	return a
+}
+
+// discoveryEnabled reports whether a lease source is configured right now. A
+// nil provider means discovery was never wired, which is off.
+func (a *API) discoveryEnabled() bool {
+	return a.discoveryOn != nil && a.discoveryOn()
+}
+
+func (a *API) leaseList() []dhcp.Lease {
+	if a.leases == nil {
+		return nil
+	}
+	return a.leases()
 }
 
 // WithPolicy attaches the blacklist service. It is optional, so the API still
@@ -221,6 +239,7 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("POST /api/v1/import", auth(a.importDoc))
 	mux.HandleFunc("GET /api/v1/leases", auth(a.listLeases))
 	mux.HandleFunc("POST /api/v1/leases/{ip}/promote", auth(a.promoteLease))
+	mux.HandleFunc("GET /api/v1/dhcp/status", auth(a.getDHCPStatus))
 	mux.HandleFunc("GET /api/v1/health", auth(a.listHealth))
 	mux.HandleFunc("GET /api/v1/stats", auth(a.stats))
 	mux.HandleFunc("POST /api/v1/cache/flush", auth(a.flushCache))
@@ -799,13 +818,11 @@ func (a *API) applySettingsDoc(doc *settingsDTO) error {
 
 func (a *API) listLeases(w http.ResponseWriter, _ *http.Request) {
 	out := []map[string]any{}
-	if a.leases != nil {
-		for _, l := range a.leases() {
-			out = append(out, map[string]any{
-				"hostname": l.Hostname, "address": l.IP, "mac": l.MAC,
-				"expires": l.Expires.Unix(),
-			})
-		}
+	for _, l := range a.leaseList() {
+		out = append(out, map[string]any{
+			"hostname": l.Hostname, "address": l.IP, "mac": l.MAC,
+			"expires": l.Expires.Unix(),
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"leases": out})
 }
@@ -814,11 +831,11 @@ func (a *API) listLeases(w http.ResponseWriter, _ *http.Request) {
 // this is the only path from discovery into the database.
 func (a *API) promoteLease(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
-	if a.leases == nil {
+	if !a.discoveryEnabled() {
 		writeErr(w, http.StatusNotFound, "not_found", "ip", "lease discovery is not enabled")
 		return
 	}
-	for _, l := range a.leases() {
+	for _, l := range a.leaseList() {
 		if l.IP != ip {
 			continue
 		}

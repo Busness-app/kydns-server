@@ -90,7 +90,93 @@ func ValidateStored(v store.Settings) error {
 	if v.DHCPLeaseFile != "" && !filepath.IsAbs(v.DHCPLeaseFile) {
 		return bad("dhcp_lease_file", "must be an absolute path")
 	}
+	if err := validateDHCP(v); err != nil {
+		return err
+	}
 	return nil
+}
+
+// dhcpLeaseMin and dhcpLeaseMax bound the lease time. The floor keeps a
+// misconfiguration from turning into a broadcast storm; the ceiling is a
+// week, past which a lease outlives most of the reasons to have one.
+const (
+	dhcpLeaseMin = 300
+	dhcpLeaseMax = 604800
+
+	// dhcpMaxPoolSize bounds how many addresses a range may span. The lease
+	// table is sized to the range, so an unbounded pool is an unbounded
+	// table; a /16 worth of leases is far more than a homelab segment needs.
+	dhcpMaxPoolSize = 65536
+)
+
+// validateDHCP checks the built-in server's configuration. Every rule is
+// skipped when it is off, so an operator can leave a half-filled form behind
+// without it blocking every unrelated save.
+//
+// What is deliberately not checked here: whether the interface exists, is up,
+// or can serve DHCP, and whether the range falls inside the interface's
+// subnet. Those are properties of the host at this moment, not of the stored
+// value — the same settings row must validate identically on every node.
+// Task 10 owns the subnet-containment check, because it is the only place
+// that holds both the stored range and the live interface.
+func validateDHCP(v store.Settings) error {
+	if !v.DHCPEnabled {
+		return nil
+	}
+	if v.DHCPLeaseFile != "" {
+		return bad("dhcp_enabled",
+			"the built-in DHCP server and dhcp_lease_file cannot both be on; clear dhcp_lease_file first")
+	}
+	if strings.TrimSpace(v.DHCPInterface) == "" {
+		return bad("dhcp_interface", "an interface is required to serve DHCP")
+	}
+	start, err := parseIPv4("dhcp_range_start", v.DHCPRangeStart)
+	if err != nil {
+		return err
+	}
+	end, err := parseIPv4("dhcp_range_end", v.DHCPRangeEnd)
+	if err != nil {
+		return err
+	}
+	if end.Less(start) {
+		return bad("dhcp_range_end", "%s is below the range start %s", end, start)
+	}
+	// The lease table is bounded by the range size, so cap the pool rather
+	// than requiring one /24: SuggestRange can propose a range that spans
+	// two /24s on anything wider than a /23, and that is legitimate.
+	size := uint64(be32(end.As4())) - uint64(be32(start.As4())) + 1
+	if size > uint64(dhcpMaxPoolSize) {
+		return bad("dhcp_range_end", "the range holds %d addresses, more than the %d-address limit", size, dhcpMaxPoolSize)
+	}
+	if _, err := parseIPv4("dhcp_gateway", v.DHCPGateway); err != nil {
+		return err
+	}
+	if v.DHCPSecondaryDNS != "" {
+		if _, err := parseIPv4("dhcp_secondary_dns", v.DHCPSecondaryDNS); err != nil {
+			return err
+		}
+	}
+	if v.DHCPLeaseSeconds < dhcpLeaseMin || v.DHCPLeaseSeconds > dhcpLeaseMax {
+		return bad("dhcp_lease_seconds", "must be between %d and %d seconds", dhcpLeaseMin, dhcpLeaseMax)
+	}
+	return nil
+}
+
+// be32 reads a 4-byte address as a big-endian uint32, so range sizes can be
+// computed with plain arithmetic.
+func be32(b [4]byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+func parseIPv4(field, s string) (netip.Addr, error) {
+	a, err := netip.ParseAddr(strings.TrimSpace(s))
+	if err != nil {
+		return netip.Addr{}, bad(field, "%q is not an IP address", s)
+	}
+	if !a.Is4() {
+		return netip.Addr{}, bad(field, "%q is not an IPv4 address; the built-in DHCP server is IPv4 only", s)
+	}
+	return a, nil
 }
 
 // validDomainName rejects what dns.IsDomainName lets through: it only checks

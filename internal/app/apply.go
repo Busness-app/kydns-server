@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yoshiofthewire/kydns-server/internal/discovery"
+	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
 	"github.com/yoshiofthewire/kydns-server/internal/health"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
@@ -24,10 +25,11 @@ type liveComponents struct {
 	dnsSrv        *dnsserver.Server
 	authoritative *dnsserver.Authoritative
 	checker       *health.Checker
-	poller        *discovery.Poller // nil when DHCP discovery is off
+	poller        *discovery.Poller // nil only in tests that do not build one
 	zoneHolder    *zone.Holder
 	registry      *registry.Registry
 	logger        *slog.Logger
+	dhcp          *dhcpRunner // nil in tests that do not build one
 
 	// prevUpstreams tracks what the forwarder was last told, so a change
 	// against the previous upstream list flushes stale cached answers.
@@ -69,7 +71,27 @@ func (l *liveComponents) Apply(s *settings.Snapshot) {
 		time.Duration(s.Raw.HealthInterval)*time.Second,
 		time.Duration(s.Raw.HealthTimeout)*time.Second,
 		s.Raw.HealthWorkers)
+	// The lease source follows the settings: built-in, lease file, or neither.
+	// Reconcile is idempotent, so an unchanged configuration is a no-op rather
+	// than a restart of a working listener.
+	if l.dhcp != nil {
+		l.dhcp.Reconcile(s.Raw)
+	}
 	if l.poller != nil {
+		// Gated on what is actually running, not on what was asked for: a
+		// build that refused leaves nothing owning the source, and the old
+		// lease file would otherwise keep feeding the zone forever.
+		running := false
+		if l.dhcp != nil {
+			running, _ = l.dhcp.Status()
+		}
+		if !running {
+			if s.Raw.DHCPLeaseFile != "" {
+				l.poller.SetSource(&dhcp.DnsmasqSource{Path: s.Raw.DHCPLeaseFile})
+			} else {
+				l.poller.SetSource(nil)
+			}
+		}
 		l.poller.SetInterval(time.Duration(s.Raw.DiscoveryInterval) * time.Second)
 	}
 	// Reverse zones are an input to the zone snapshot, so it has to be rebuilt.

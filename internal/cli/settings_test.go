@@ -135,3 +135,53 @@ func TestSettingsSetConfirmPublicSendsExactlyWhatWasTyped(t *testing.T) {
 		t.Errorf("confirm_public: %v, want the literal operator input", got["confirm_public"])
 	}
 }
+
+// The seven dhcp keys are snake_case, matching the json tags on settingsDTO,
+// and each has to encode as its own type: "3600" as a JSON string is not the
+// same request as 3600.
+func TestSettingsSetDHCPKeys(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	var out, errOut bytes.Buffer
+	code := settingsCmd(clientFor(srv), []string{"set",
+		"dhcp_enabled=true", "dhcp_interface=eth0",
+		"dhcp_range_start=192.168.1.100", "dhcp_range_end=192.168.1.200",
+		"dhcp_gateway=192.168.1.1", "dhcp_lease_seconds=3600",
+		"dhcp_secondary_dns=1.1.1.1"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	if got["dhcp_enabled"] != true {
+		t.Errorf("dhcp_enabled: %v (%T), want the bool true", got["dhcp_enabled"], got["dhcp_enabled"])
+	}
+	if got["dhcp_lease_seconds"] != float64(3600) {
+		t.Errorf("dhcp_lease_seconds: %v (%T), want the number 3600",
+			got["dhcp_lease_seconds"], got["dhcp_lease_seconds"])
+	}
+	for k, want := range map[string]string{
+		"dhcp_interface": "eth0", "dhcp_range_start": "192.168.1.100",
+		"dhcp_range_end": "192.168.1.200", "dhcp_gateway": "192.168.1.1",
+		"dhcp_secondary_dns": "1.1.1.1",
+	} {
+		if got[k] != want {
+			t.Errorf("%s: %v, want %q", k, got[k], want)
+		}
+	}
+}
+
+// A key the help text does not list is a key nobody finds.
+func TestSettingsUsageListsDHCPKeys(t *testing.T) {
+	for _, k := range []string{
+		"dhcp_enabled", "dhcp_interface", "dhcp_range_start", "dhcp_range_end",
+		"dhcp_gateway", "dhcp_lease_seconds", "dhcp_secondary_dns",
+	} {
+		if !strings.Contains(settingsUsage, k) {
+			t.Errorf("settings --help does not list %q", k)
+		}
+	}
+}

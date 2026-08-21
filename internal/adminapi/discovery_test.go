@@ -16,6 +16,13 @@ import (
 
 func newAPIWithProviders(t *testing.T) (http.Handler, string) {
 	t.Helper()
+	return newAPIWithDiscovery(t, true)
+}
+
+// newAPIWithDiscovery wires a lease provider that always has a lease, with
+// discovery separately on or off: the two are independent, and off must win.
+func newAPIWithDiscovery(t *testing.T, on bool) (http.Handler, string) {
+	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -36,6 +43,7 @@ func newAPIWithProviders(t *testing.T) (http.Handler, string) {
 		func() []health.Status {
 			return []health.Status{{ServiceID: 1, Name: "kypost", State: "up", Since: time.Now()}}
 		},
+		func() bool { return on },
 	)
 	return api.Handler(), tok
 }
@@ -94,6 +102,19 @@ func TestPromoteWithoutDiscoveryIs404(t *testing.T) {
 	h, tok := newAPI(t)
 	if rec := do(t, h, "POST", "/api/v1/leases/192.168.1.50/promote", tok, ""); rec.Code != http.StatusNotFound {
 		t.Errorf("= %d, want 404 when discovery is off", rec.Code)
+	}
+}
+
+// Discovery off refuses even with a lease provider still holding the lease:
+// the predicate decides, not whether leases happen to be in memory.
+func TestPromoteWithDiscoveryOffIs404(t *testing.T) {
+	h, tok := newAPIWithDiscovery(t, false)
+	rec := do(t, h, "POST", "/api/v1/leases/192.168.1.50/promote", tok, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("= %d, want 404 when discovery is off", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("lease discovery is not enabled")) {
+		t.Errorf("body = %s, want the discovery-off reason", rec.Body)
 	}
 }
 

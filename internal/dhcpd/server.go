@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -81,9 +82,15 @@ func (s *Server) Name() string { return "built-in" }
 
 // Leases satisfies discovery/dhcp.Source. Only named, unexpired leases reach
 // DNS: a client that sent no hostname gets an address and nothing else.
+//
+// Sorted, because the allocator holds leases in a map and the poller compares
+// an order-sensitive digest: unsorted, an unchanged lease set would rebuild
+// every zone snapshot on most polls.
 func (s *Server) Leases(context.Context) ([]idhcp.Lease, error) {
+	ls := s.opts.Alloc.Leases()
+	slices.SortFunc(ls, func(a, b Lease) int { return a.IP.Compare(b.IP) })
 	var out []idhcp.Lease
-	for _, l := range s.opts.Alloc.Leases() {
+	for _, l := range ls {
 		if l.Hostname == "" {
 			continue
 		}
@@ -179,7 +186,15 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	if m == nil {
 		return
 	}
+	// RFC 2131 table 5: every client message we serve MUST carry chaddr. One
+	// with none names no client, so it can neither be answered nor act on a
+	// lease, and an empty MAC compares equal to the zero value byIP returns
+	// for a free address. Dropped here, before any branch, like any other
+	// malformed packet.
 	mac := normalizeMAC(m.ClientHWAddr.String())
+	if mac == "" {
+		return
+	}
 	switch m.MessageType() {
 	case dhcpv4.MessageTypeDiscover:
 		s.offer(conn, peer, m, mac)
@@ -192,11 +207,13 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 		}
 		s.opts.OnChange()
 	case dhcpv4.MessageTypeDecline:
-		if ip, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
-			s.opts.Alloc.Decline(ip.Unmap())
-			s.opts.Logger.Warn("client declined an address as already in use",
+		ip, ok := netip.AddrFromSlice(m.RequestedIPAddress())
+		if !ok || !s.opts.Alloc.Decline(mac, ip.Unmap()) {
+			s.opts.Logger.Warn("ignoring a decline for an address this client does not hold",
 				"mac", mac, "ip", ip.Unmap())
+			return
 		}
+		s.opts.Logger.Warn("client declined an address as already in use", "mac", mac, "ip", ip.Unmap())
 		if err := s.opts.Store.DeleteDHCPLease(mac); err != nil {
 			s.opts.Logger.Warn("could not delete a declined lease", "mac", mac, "error", err)
 		}
@@ -221,15 +238,21 @@ func (s *Server) offer(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac
 func (s *Server) ack(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac string) {
 	// A client asking to keep an address we do not control must be told so,
 	// or it will sit on it until the lease it thinks it has runs out.
-	if req, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
-		r := req.Unmap()
-		if r.IsValid() && !r.IsUnspecified() && !s.opts.Cfg.Subnet.Contains(r) {
-			s.nak(conn, peer, m)
-			return
-		}
+	asked := askedFor(m)
+	if asked.IsValid() && !s.opts.Cfg.Subnet.Contains(asked) {
+		s.nak(conn, peer, m)
+		return
 	}
 	l, ok := s.allocate(mac, m, true)
 	if !ok {
+		s.nak(conn, peer, m)
+		return
+	}
+	// RFC 2131 4.3.2: a client that named an address and cannot have it is
+	// NAKed, not quietly re-addressed. Silently answering with a different
+	// address is what a promoted replica would do to every client whose lease
+	// it does not know, and the client would go on using the old one.
+	if asked.IsValid() && l.IP != asked {
 		s.nak(conn, peer, m)
 		return
 	}
@@ -250,39 +273,40 @@ func (s *Server) ack(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac s
 }
 
 // allocate runs the pool rules and the hostname arbitration. commit is false
-// for an OFFER: it holds the address for offerHold only and never claims a
-// name, because only a client that reaches REQUEST is trusted enough for
-// either. Option 12 is client-chosen, so a bare DISCOVER must not be able to
-// plant a name in Leases() by itself.
+// for an OFFER, which takes a tentative hold through Alloc.Offer: it lasts
+// offerHold only and never claims a name, because only a client that reaches
+// REQUEST is trusted enough for either. Option 12 is client-chosen, so a bare
+// DISCOVER must not be able to plant a name in Leases() by itself, nor to cut
+// short a lease the same client already holds.
 func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, bool) {
-	var hostname string
-	ttl := offerHold
-	if commit {
-		hostname = sanitizeHostname(m.HostName())
-		if hostname != "" && s.opts.Alloc.NameTaken(hostname, mac) {
-			s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
-				"hostname", hostname, "mac", mac)
-			hostname = ""
-		}
-		ttl = s.opts.Cfg.LeaseTime
-	}
 	var requested netip.Addr
 	if ip, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
 		requested = ip.Unmap()
 	}
-	l, ok := s.opts.Alloc.Allocate(mac, hostname, requested, ttl)
-	if !ok {
-		return Lease{}, false
+	if !commit {
+		l, fresh, ok := s.opts.Alloc.Offer(mac, requested, offerHold)
+		if !ok {
+			return Lease{}, false
+		}
+		// Only an address new to this client is probed. A renewal or a
+		// reservation is one it is already entitled to, and its own answer
+		// would quarantine the address out from under it.
+		if fresh && s.opts.Prober.InUse(l.IP) {
+			s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
+			s.opts.Alloc.Quarantine(l.IP)
+			s.opts.Alloc.Release(mac)
+			l, _, ok = s.opts.Alloc.Offer(mac, netip.Addr{}, offerHold)
+			return l, ok
+		}
+		return l, true
 	}
-	// Probe only an address that is new to us. A renewal or a reservation is
-	// not probed: the client already has it, or it is spoken for.
-	if !commit && s.opts.Prober.InUse(l.IP) {
-		s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
-		s.opts.Alloc.Quarantine(l.IP)
-		s.opts.Alloc.Release(mac)
-		return s.opts.Alloc.Allocate(mac, hostname, netip.Addr{}, ttl)
+	hostname := sanitizeHostname(m.HostName())
+	l, ok := s.opts.Alloc.Allocate(mac, hostname, requested, s.opts.Cfg.LeaseTime)
+	if ok && hostname != "" && l.Hostname == "" {
+		s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
+			"hostname", hostname, "mac", mac)
 	}
-	return l, true
+	return l, ok
 }
 
 func (s *Server) reply(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, t dhcpv4.MessageType, yours netip.Addr) {
@@ -314,6 +338,20 @@ func (s *Server) nak(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	s.send(conn, peer, m,
 		dhcpv4.WithMessageType(dhcpv4.MessageTypeNak),
 		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(self)))
+}
+
+// askedFor is the address a REQUEST names: option 50 in SELECTING and
+// INIT-REBOOT, ciaddr in RENEWING and REBINDING. An invalid result means the
+// client named none and will take whatever we give it.
+func askedFor(m *dhcpv4.DHCPv4) netip.Addr {
+	for _, ip := range []net.IP{m.RequestedIPAddress(), m.ClientIPAddr} {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			if a = a.Unmap(); a.IsValid() && !a.IsUnspecified() {
+				return a
+			}
+		}
+	}
+	return netip.Addr{}
 }
 
 // inform answers a client that has an address already and wants only options.

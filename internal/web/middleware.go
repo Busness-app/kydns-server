@@ -39,14 +39,23 @@ type Options struct {
 	Settings *settings.Service
 
 	// RestartPending names the settings whose stored value differs from the one
-	// the process is running. Empty is the normal case.
+	// the process is running. Empty is the normal case. Nil in production: no
+	// database-owned setting needs a restart any more, so nothing feeds it. The
+	// banner is kept for the first key that does.
 	RestartPending func() []RestartItem
 
-	// Leases, Health and Upstreams are nil when the corresponding subsystem is
-	// off, which the screens render as "not enabled" rather than as empty.
-	Leases    func() []dhcp.Lease
+	// Health and Upstreams are nil when the corresponding subsystem is off,
+	// which the screens render as "not enabled" rather than as empty.
 	Health    func() []health.Status
 	Upstreams func() []dnsserver.UpstreamStatus
+
+	// Leases is the current lease set, and DiscoveryOn carries the on/off
+	// signal for it. They are separate because a lease source can be turned on
+	// and off at runtime, and "empty right now" is not "not enabled": Leases is
+	// wired once, while DiscoveryOn is asked again on every request. A nil
+	// DiscoveryOn means discovery was never wired at all, which is off.
+	Leases      func() []dhcp.Lease
+	DiscoveryOn func() bool
 
 	// Policy is nil when filtering is not wired, which the screen renders as
 	// "not enabled" rather than as an empty tab.

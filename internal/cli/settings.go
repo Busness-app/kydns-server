@@ -17,7 +17,9 @@ keys:
   private_domain, reverse_zones, upstreams, allow_query, allow_tailscale,
   ttl, cache_min_ttl, cache_max_ttl, negative_max_ttl, cache_entries,
   log_queries, log_client_ip, dhcp_lease_file, discovery_interval,
-  health_interval, health_timeout, health_workers
+  health_interval, health_timeout, health_workers,
+  dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
+  dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns
 
 lists take commas: upstreams=tls://1.1.1.1:853,tls://9.9.9.9:853`
 
@@ -32,6 +34,10 @@ var settingsKinds = map[string]string{
 	"negative_max_ttl": "int", "cache_entries": "int",
 	"discovery_interval": "int", "health_interval": "int",
 	"health_timeout": "int", "health_workers": "int",
+	"dhcp_enabled": "bool", "dhcp_interface": "string",
+	"dhcp_range_start": "string", "dhcp_range_end": "string",
+	"dhcp_gateway": "string", "dhcp_lease_seconds": "int",
+	"dhcp_secondary_dns": "string",
 }
 
 func settingsCmd(c *Client, args []string, stdout, stderr io.Writer) int {

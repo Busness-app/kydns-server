@@ -100,7 +100,7 @@
       <fieldset class="field-set"{{if $.ReadOnly}} disabled{{end}}>
         <legend>Discovery</legend>
         <div class="fields">
-          <label for="dhcp_lease_file">DHCP lease file <span class="muted">(restart required, empty is off)</span></label>
+          <label for="dhcp_lease_file">DHCP lease file <span class="muted">(empty is off)</span></label>
           <input id="dhcp_lease_file" name="dhcp_lease_file" type="text" value="{{.DHCPLeaseFile}}">
           <label for="discovery_interval">Lease poll interval (seconds)</label>
           <input id="discovery_interval" name="discovery_interval" type="number" min="1" value="{{.DiscoveryInterval}}">

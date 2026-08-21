@@ -86,48 +86,76 @@ func (a *Allocator) SetReservations(r map[string]netip.Addr) {
 	}
 }
 
-// Allocate returns the address this client should get, committing it for
-// ttl. The caller decides the hold: a full lease term for an ACK, a short
-// tentative hold for an OFFER that may never be followed by one. The bool is
-// false only when the pool is exhausted.
+// Allocate returns the address this client should get, committing it as a
+// lease for ttl. The bool is false only when the pool is exhausted.
 func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr, ttl time.Duration) (Lease, bool) {
+	l, _, ok := a.allocate(mac, hostname, requested, ttl, false)
+	return l, ok
+}
+
+// Offer holds an address for a client that has only DISCOVERed. An OFFER is
+// a tentative hold, not a lease, so it never weakens a lease the client
+// already holds: neither the name nor the expiry of one moves. fresh is true
+// only when the address is new to this client — rules 3 and 4 — which is the
+// only case worth a conflict probe.
+func (a *Allocator) Offer(mac string, requested netip.Addr, hold time.Duration) (l Lease, fresh, ok bool) {
+	return a.allocate(mac, "", requested, hold, true)
+}
+
+func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl time.Duration, tentative bool) (Lease, bool, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
 
-	commit := func(ip netip.Addr) (Lease, bool) {
+	// First claim wins, decided here rather than by the caller: two REQUESTs
+	// carrying one option 12 are handled on two goroutines, and a check that
+	// released the lock before committing would let both through.
+	if a.nameTakenLocked(hostname, mac, now) {
+		hostname = ""
+	}
+
+	commit := func(ip netip.Addr, fresh bool) (Lease, bool, bool) {
 		if held, ok := a.byIP[ip]; ok && held != mac {
 			delete(a.byMAC, held)
 		}
-		if prev, ok := a.byMAC[mac]; ok && prev.IP != ip {
+		prev, hasPrev := a.byMAC[mac]
+		if hasPrev && prev.IP != ip {
 			delete(a.byIP, prev.IP)
 		}
 		l := Lease{MAC: mac, IP: ip, Hostname: hostname, Expires: now.Add(ttl)}
+		// A tentative hold never weakens a live lease on the same address:
+		// its name stays and its expiry only ever moves later.
+		if tentative && hasPrev && prev.IP == ip && prev.Expires.After(now) {
+			l.Hostname = prev.Hostname
+			if prev.Expires.After(l.Expires) {
+				l.Expires = prev.Expires
+			}
+		}
 		a.byMAC[mac] = l
 		a.byIP[ip] = mac
-		return l, true
+		return l, fresh, true
 	}
 
 	// 1. A reservation always wins, in or out of the dynamic range, but
 	// never our own address or the gateway.
 	if ip, ok := a.reserved[mac]; ok && !a.protected(ip) {
-		return commit(ip)
+		return commit(ip, false)
 	}
 	// 2. Renew what this client already holds, if it is still ours to give.
 	if l, ok := a.byMAC[mac]; ok && a.usable(l.IP) && a.reservedIP[l.IP] == "" {
-		return commit(l.IP)
+		return commit(l.IP, !l.Expires.After(now)) // an expired holding is new to us again
 	}
 	// 3. Honour a requested address that is free.
 	if requested.IsValid() && a.free(requested, mac, now) {
-		return commit(requested)
+		return commit(requested, true)
 	}
 	// 4. Lowest free address in the range.
 	for ip := a.cfg.Start; a.inRange(ip); ip = ip.Next() {
 		if a.free(ip, mac, now) {
-			return commit(ip)
+			return commit(ip, true)
 		}
 	}
-	return Lease{}, false
+	return Lease{}, false, false
 }
 
 // Release drops a client's lease, as a DHCPRELEASE does.
@@ -140,15 +168,25 @@ func (a *Allocator) Release(mac string) {
 	}
 }
 
-// Decline quarantines an address a client rejected as already in use.
-func (a *Allocator) Decline(ip netip.Addr) {
+// Decline quarantines an address a client rejected as already in use, and
+// reports whether it dropped that client's lease. A DECLINE is an
+// unauthenticated broadcast, so it is honoured only from the client that holds
+// the address, and only for an address that is ours to hold back: otherwise one
+// forged packet deletes any lease on the segment, and the quarantine map takes
+// entries from anyone who can send UDP. An empty MAC is rejected outright,
+// because byIP yields "" for every free address and would match it.
+func (a *Allocator) Decline(mac string, ip netip.Addr) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if mac, ok := a.byIP[ip]; ok {
-		delete(a.byMAC, mac)
-		delete(a.byIP, ip)
+	if mac == "" || a.byIP[ip] != mac {
+		return false
 	}
-	a.quarantine[ip] = a.now().Add(quarantineFor)
+	delete(a.byMAC, mac)
+	delete(a.byIP, ip)
+	if a.inRange(ip) {
+		a.quarantine[ip] = a.now().Add(quarantineFor)
+	}
+	return true
 }
 
 // Quarantine keeps an address out of the pool, for a probe that found it in
@@ -173,16 +211,14 @@ func (a *Allocator) Leases() []Lease {
 	return out
 }
 
-// NameTaken reports whether an unexpired lease held by a different client
-// already claims this hostname. Option 12 is chosen by the client, so first
-// claim wins for the life of the lease and the loser gets no name.
-func (a *Allocator) NameTaken(hostname, mac string) bool {
+// nameTakenLocked reports whether an unexpired lease held by a different
+// client already claims this hostname. Option 12 is chosen by the client, so
+// first claim wins for the life of the lease and the loser gets no name.
+// Callers hold a.mu.
+func (a *Allocator) nameTakenLocked(hostname, mac string, now time.Time) bool {
 	if hostname == "" {
 		return false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := a.now()
 	for _, l := range a.byMAC {
 		if l.MAC != mac && l.Hostname == hostname && l.Expires.After(now) {
 			return true

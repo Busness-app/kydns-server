@@ -19,6 +19,7 @@ func TestDiscoveredListsLeases(t *testing.T) {
 			{Hostname: "printer", IP: "192.168.1.51", MAC: "aa:bb:cc:dd:ee:02"},
 		}
 	}
+	srv.o.DiscoveryOn = func() bool { return true }
 	body := page(t, h, "/discovered", c)
 	for _, want := range []string{"laptop", "192.168.1.50", "printer", "aa:bb:cc:dd:ee:02"} {
 		if !strings.Contains(body, want) {
@@ -36,6 +37,36 @@ func TestDiscoveredOffSaysSo(t *testing.T) {
 	}
 }
 
+// DiscoveryOn, not a non-nil Leases, is what the page reports. Leases is
+// wired unconditionally now, so a page that still read it for the on/off
+// signal would claim discovery was enabled forever and render the explanatory
+// empty state as an empty table.
+func TestDiscoveredOnOffFollowsDiscoveryOn(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	on := false
+	srv.o.Leases = func() []dhcp.Lease {
+		return []dhcp.Lease{{Hostname: "laptop", IP: "192.168.1.50"}}
+	}
+	srv.o.DiscoveryOn = func() bool { return on }
+
+	off := page(t, h, "/discovered", c)
+	if !strings.Contains(off, "dhcp_lease_file") {
+		t.Errorf("with discovery off the page does not explain how to enable it:\n%s", off)
+	}
+	if strings.Contains(off, "192.168.1.50") {
+		t.Errorf("with discovery off the page still listed a lease:\n%s", off)
+	}
+
+	on = true
+	live := page(t, h, "/discovered", c)
+	if !strings.Contains(live, "192.168.1.50") {
+		t.Errorf("with discovery on the lease is missing:\n%s", live)
+	}
+	if strings.Contains(live, "dhcp_lease_file") {
+		t.Errorf("with discovery on the page still says discovery is off:\n%s", live)
+	}
+}
+
 // A lease shadowed by a service must be marked, not silently listed as though
 // it were resolving.
 func TestShadowedLeaseIsMarked(t *testing.T) {
@@ -46,6 +77,7 @@ func TestShadowedLeaseIsMarked(t *testing.T) {
 	srv.o.Leases = func() []dhcp.Lease {
 		return []dhcp.Lease{{Hostname: "laptop", IP: "192.168.1.50"}}
 	}
+	srv.o.DiscoveryOn = func() bool { return true }
 	body := page(t, h, "/discovered", c)
 	if !strings.Contains(strings.ToLower(body), "shadowed") {
 		t.Errorf("shadowed lease not marked:\n%s", body)
@@ -62,6 +94,7 @@ func TestLeaseShadowedByManualRecord(t *testing.T) {
 	srv.o.Leases = func() []dhcp.Lease {
 		return []dhcp.Lease{{Hostname: "printer", IP: "192.168.1.51"}}
 	}
+	srv.o.DiscoveryOn = func() bool { return true }
 	if !strings.Contains(strings.ToLower(page(t, h, "/discovered", c)), "shadowed") {
 		t.Error("lease shadowed by a manual record was not marked")
 	}
@@ -72,6 +105,7 @@ func TestPromoteLeaseCreatesService(t *testing.T) {
 	srv.o.Leases = func() []dhcp.Lease {
 		return []dhcp.Lease{{Hostname: "laptop", IP: "192.168.1.50"}}
 	}
+	srv.o.DiscoveryOn = func() bool { return true }
 	rec := postForm(t, h, "/discovered/promote", url.Values{
 		"ip": {"192.168.1.50"}, "csrf_token": {csrf},
 	}, c)
@@ -93,6 +127,7 @@ func TestPromoteLeaseCreatesService(t *testing.T) {
 func TestPromoteUnknownLeaseFails(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
 	srv.o.Leases = func() []dhcp.Lease { return nil }
+	srv.o.DiscoveryOn = func() bool { return true }
 	rec := postForm(t, h, "/discovered/promote", url.Values{
 		"ip": {"10.0.0.1"}, "csrf_token": {csrf},
 	}, c)

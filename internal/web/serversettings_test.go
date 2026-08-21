@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -388,5 +389,59 @@ func TestZoneRenameIgnoresCaseAndTrailingDot(t *testing.T) {
 	form.Set("private_domain", "HOME.ARPA.")
 	if rec := postForm(t, h, "/settings/server", form, c); rec.Code != http.StatusSeeOther {
 		t.Fatalf("status %d, want a straight save: %s", rec.Code, rec.Body)
+	}
+}
+
+// The settings form rebuilds the whole document from what was posted, and it
+// has no DHCP fields yet. Anything it does not carry comes back zeroed, which
+// for the built-in server means an unrelated save switches DHCP off on a LAN
+// that is relying on it.
+func TestPostServerSettingsKeepsTheDHCPConfiguration(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+
+	cur, err := srv.o.Settings.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.DHCPEnabled, cur.DHCPInterface = true, "eth0"
+	cur.DHCPRangeStart, cur.DHCPRangeEnd = "192.168.1.100", "192.168.1.200"
+	cur.DHCPGateway, cur.DHCPLeaseSeconds = "192.168.1.1", 3600
+	cur.DHCPSecondaryDNS = "9.9.9.9"
+	if err := srv.o.Settings.Set(cur, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if rec := postForm(t, h, "/settings/server", validForm(csrf), c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := srv.o.Settings.Get()
+	if !got.DHCPEnabled || got.DHCPInterface != "eth0" ||
+		got.DHCPRangeStart != "192.168.1.100" || got.DHCPRangeEnd != "192.168.1.200" ||
+		got.DHCPGateway != "192.168.1.1" || got.DHCPLeaseSeconds != 3600 ||
+		got.DHCPSecondaryDNS != "9.9.9.9" {
+		t.Fatalf("an unrelated settings save wiped the DHCP configuration: %+v", got)
+	}
+}
+
+// This handler rebuilds the whole settings row from what was posted, and the
+// DHCP fields have no boxes on the form: they are carried over from the
+// current values. If those cannot be read there is nothing to carry, so the
+// save must be refused rather than written with seven zeroes — which would
+// switch a running DHCP server off.
+func TestPostServerSettingsRefusesWhenTheCurrentValuesCannotBeRead(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	// Wired but never loaded, which is what liveSettings reports as not ok.
+	st := srv.o.Store
+	srv.o.Settings = settings.NewService(st, settings.NewHolder(func() (store.Settings, error) {
+		v, _, err := st.Settings()
+		return v, err
+	}), nil)
+
+	rec := postForm(t, h, "/settings/server", validForm(csrf), c)
+	if rec.Code == http.StatusSeeOther {
+		t.Fatal("the save was applied without the values it had to carry over")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 with a reason on the form", rec.Code)
 	}
 }

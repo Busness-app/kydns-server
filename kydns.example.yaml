@@ -136,8 +136,7 @@ admin:
 discovery:
   # DHCP lease discovery is off until you point at a lease file. KyDNS does
   # not guess the path. dnsmasq is the supported format today.
-  # A first-run seed. Changing it later takes a restart, so the Settings screen
-  # saves it and then asks you to restart.
+  # A first-run seed; edit it under Settings, where it applies immediately.
   dhcp_lease_file: ""
   # dhcp_lease_file: /var/lib/misc/dnsmasq.leases
 

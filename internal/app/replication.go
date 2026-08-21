@@ -234,6 +234,10 @@ type replicaPromoter struct {
 	// stopPull stops the pull loop and waits for it to exit. Nil on a node that
 	// never had one.
 	stopPull func()
+	// onPromote runs once the node is a primary. Promotion starts the DHCP
+	// listener, which is exactly when the LAN has lost its DHCP server. Nil in
+	// tests that build a promoter directly.
+	onPromote func()
 }
 
 // Promote is not atomic across its guard, so two concurrent calls can both get
@@ -257,6 +261,11 @@ func (p *replicaPromoter) Promote() (bool, error) {
 		return false, err
 	}
 	p.role.Set(RolePrimary)
+	// After the role, never before: the reconcile reads it and would still see
+	// a replica, which never starts the listener.
+	if p.onPromote != nil {
+		p.onPromote()
+	}
 	return true, nil
 }
 
