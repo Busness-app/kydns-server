@@ -36,13 +36,16 @@ Applied live on save:
 `upstreams`, `reverse_zones`, `allow_query`, `allow_tailscale`, `ttl`,
 `cache_min_ttl`, `cache_max_ttl`, `negative_max_ttl`, `cache_entries`,
 `log_queries`, `log_client_ip`, `health.interval`, `health.timeout`,
-`health.workers`, `discovery.interval`
+`health.workers`, `discovery.interval`, `discovery.dhcp_lease_file`
+
+`discovery.dhcp_lease_file` moved to applied-live when the built-in DHCP
+server landed: the poller's source became swappable, which is what both
+features needed.
 
 Requires a restart, and says so:
 
 - `private_domain` — every zone snapshot, every FQDN, and the registry's
   name validation are built from it.
-- `discovery.dhcp_lease_file` — starts or stops a poller goroutine.
 
 ## Precedence: the database wins, the file seeds once
 
@@ -183,10 +186,15 @@ running configuration untouched and returns the error to the form.
 ## Restart-required banner
 
 No dirty flag, which would drift out of sync with reality. The process
-remembers the boot values of `private_domain` and `dhcp_lease_file`. The
-banner appears whenever a stored value differs from the running one, and
-names both the stored and the running value. It clears on restart because
-the comparison becomes equal.
+remembers the boot value of each restart-required key; the banner appears
+whenever a stored value differs from the running one, names both, and clears
+on restart because the comparison becomes equal.
+
+Nothing produces it today. `dhcp_lease_file` was the last key that fed it and
+it now applies live, so the comparison it ran is gone from the app. A
+`private_domain` rename is caught earlier instead, by the two-step confirmation
+on the settings page that lists the records it would move. The banner itself is
+kept for the first key that needs it again.
 
 ## API and CLI
 

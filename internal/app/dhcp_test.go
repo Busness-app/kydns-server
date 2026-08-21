@@ -150,3 +150,60 @@ func TestParseSettingNamesTheField(t *testing.T) {
 		t.Errorf("parseSetting(valid) = %v, %v", a, err)
 	}
 }
+
+// Promotion starts the listener. A replica is promoted precisely when the
+// primary it was following has gone, which is when the LAN has no DHCP server:
+// waiting for the next settings save or restart is the wrong moment to wait.
+func TestPromotionReconcilesDHCP(t *testing.T) {
+	roleHolder := NewRoleHolder(RoleReplica)
+	p := discovery.NewPoller(nil, time.Hour, nil, slog.New(slog.DiscardHandler))
+	d := &dhcpRunner{
+		poller: p,
+		logger: slog.New(slog.DiscardHandler),
+		role:   roleHolder.Current,
+	}
+	// No such interface, so the reconcile refuses at Qualifies before any
+	// socket is opened. That refusal is the observable proof it ran at all: a
+	// replica never reaches build, so it cannot produce an error.
+	v := store.Settings{
+		DHCPEnabled: true, DHCPInterface: "kydns-no-such-iface0",
+		DHCPRangeStart: "192.168.1.100", DHCPRangeEnd: "192.168.1.200",
+		DHCPGateway: "192.168.1.1", DHCPLeaseSeconds: 3600,
+	}
+	d.Reconcile(v)
+	if running, err := d.Status(); running || err != nil {
+		t.Fatalf("as a replica: running=%v, err=%v; want not running and no error", running, err)
+	}
+
+	promoter := &replicaPromoter{
+		st:        openDB(t, t.TempDir()),
+		role:      roleHolder,
+		onPromote: func() { d.Reconcile(v) },
+	}
+	changed, err := promoter.Promote()
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if !changed {
+		t.Fatal("Promote reported no change on a replica")
+	}
+	running, err := d.Status()
+	if running {
+		t.Fatal("the listener bound in a test, which should be impossible here")
+	}
+	if err == nil {
+		t.Fatal("promotion did not reconcile DHCP: the runner never attempted a start")
+	}
+	if !strings.Contains(err.Error(), "kydns-no-such-iface0") {
+		t.Errorf("the attempt was not the one this settings value asks for: %v", err)
+	}
+}
+
+// The tests above build promoters directly, and so does anything else that
+// does not care about DHCP. A missing hook must not take promotion down.
+func TestPromoteWithoutAnOnPromoteHook(t *testing.T) {
+	p := &replicaPromoter{st: openDB(t, t.TempDir()), role: NewRoleHolder(RoleReplica)}
+	if changed, err := p.Promote(); err != nil || !changed {
+		t.Fatalf("Promote with a nil onPromote = %v, %v", changed, err)
+	}
+}

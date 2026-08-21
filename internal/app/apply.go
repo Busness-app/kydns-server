@@ -78,9 +78,14 @@ func (l *liveComponents) Apply(s *settings.Snapshot) {
 		l.dhcp.Reconcile(s.Raw)
 	}
 	if l.poller != nil {
-		// Only when the built-in server is off: it owns the source otherwise,
-		// and overwriting it here would unhook a running listener from DNS.
-		if !s.Raw.DHCPEnabled {
+		// Gated on what is actually running, not on what was asked for: a
+		// build that refused leaves nothing owning the source, and the old
+		// lease file would otherwise keep feeding the zone forever.
+		running := false
+		if l.dhcp != nil {
+			running, _ = l.dhcp.Status()
+		}
+		if !running {
 			if s.Raw.DHCPLeaseFile != "" {
 				l.poller.SetSource(&dhcp.DnsmasqSource{Path: s.Raw.DHCPLeaseFile})
 			} else {

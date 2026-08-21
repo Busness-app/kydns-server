@@ -215,3 +215,134 @@ $ gofmt -l internal/        # no output
 $ go test ./... -count=1    # 19 packages, all ok, 0 failures
 $ go test ./internal/app/... ./internal/discovery/... -count=1 -race   # ok
 ```
+
+## Fix round 1
+
+Three Important and two Minor findings from the Task 10 review. Nothing was
+found that changed the design; every fix is local.
+
+### Finding 1 (R29) — the documentation move
+
+`README.md:149` — the "One cannot change in a running process" sentence is
+gone. `dhcp_lease_file` is now named in the applied-live sentence, with the
+reason ("the discovery poller is repointed at the new file in place"). The
+banner sentence went with it, because there is no banner any more.
+`private_domain` was not moved; it was already in the applied-live list.
+
+`docs/superpowers/specs/2026-08-13-kydns-settings-in-the-ui-design.md` —
+`discovery.dhcp_lease_file` moved from "Requires a restart, and says so" into
+the applied-live list, with the rationale line the Part 2 plan prescribes
+(Step 3, `part2.md:1406`) used verbatim so that step is verifiably done.
+`private_domain` stays in the restart list, per the spec's "`private_domain`
+stays where it is".
+
+The "Restart-required banner" section now records that nothing produces it:
+`dhcp_lease_file` was the last key that fed it, the comparison is gone from the
+app, and the banner is kept for the first key that needs it again. It does not
+claim "nothing requires a restart" — that would contradict the `private_domain`
+bullet eleven lines above, which the spec told me to leave alone.
+
+**One change outside the two named files.** `internal/web/templates/settings.html:103`
+labelled the field "(restart required, empty is off)". That is the same claim
+Finding 1 corrects, shipped to the operator on the very page that saves the
+value, so leaving it would have made the README and the UI disagree. Cut to
+"(empty is off)"; no test asserts the label. The Discovered page's off-state
+copy (`discovered.html:32`, which also says "and restart") was left alone — the
+brief defers that whole sentence to Part 2.
+
+### Finding 2 (R30) — promotion starts the listener
+
+`internal/app/replication.go` — `replicaPromoter` gains `onPromote func()`,
+called after `p.role.Set(RolePrimary)` under a nil check. The comment records
+why the order is load-bearing: a reconcile before the `Set` still reads
+`RoleReplica`, and a replica never starts the listener.
+
+`internal/app/serve.go:297` — wired to
+`func() { dhcpRun.Reconcile(settingsHolder.Current().Raw) }`.
+
+`dhcpWanted`'s `role != RoleReplica` gate is untouched. Promotion changes the
+role; nothing bypasses the gate.
+
+### Finding 3 (R31) — a failed start no longer orphans the lease file
+
+`internal/app/apply.go:83` — the lease-file branch is gated on what is running
+rather than on what was requested:
+
+```go
+running := false
+if l.dhcp != nil {
+	running, _ = l.dhcp.Status()
+}
+if !running {
+```
+
+A nil runner reads as not running, which is what the tests that build no runner
+already relied on. The source now always ends up matching the settings row,
+including on the path where `build()` refuses.
+
+### Finding 4 (Minor) — `Options.RestartPending`
+
+`internal/web/middleware.go:41` — doc comment records that the field is nil in
+production because no database-owned setting needs a restart, and that the
+banner is kept for the first key that does. Nothing deleted.
+
+### Finding 5 (Minor) — the discovery-off branch in adminapi
+
+`internal/adminapi/discovery_test.go` — `newAPIWithProviders` now delegates to
+`newAPIWithDiscovery(t, on bool)`, so a test can keep the lease provider and
+turn the predicate off. `TestPromoteWithDiscoveryOffIs404` asserts the 404 and
+the "lease discovery is not enabled" body. `listLeases` untouched.
+
+### Tests added, and their mutation checks
+
+| Test | File | Proves |
+| --- | --- | --- |
+| `TestPromotionReconcilesDHCP` | `internal/app/dhcp_test.go` | A replica reconciles to not-running with no error; after `Promote()` the runner has attempted a start and the error names the configured interface. |
+| `TestPromoteWithoutAnOnPromoteHook` | `internal/app/dhcp_test.go` | A promoter built without the hook still promotes. |
+| `TestApplyClearsTheLeaseSourceWhenDHCPCannotStart` | `internal/app/apply_test.go` | Lease file configured, then a save that enables DHCP and clears the file with a `build()` that refuses; the poller no longer publishes a source. |
+| `TestPromoteWithDiscoveryOffIs404` | `internal/adminapi/discovery_test.go` | Discovery off refuses promotion even with a lease still in the provider. |
+
+Each was mutation-checked against the fix it guards, then the mutation reverted:
+
+```
+$ # onPromote call removed from Promote, apply.go gate reverted to !s.Raw.DHCPEnabled
+$ go test ./internal/app/ -run 'TestPromotionReconcilesDHCP|TestApplyClearsTheLeaseSource' -count=1
+--- FAIL: TestApplyClearsTheLeaseSourceWhenDHCPCannotStart (0.00s)
+    apply_test.go:283: a refused DHCP start left the poller reading the cleared lease file
+--- FAIL: TestPromotionReconcilesDHCP (0.00s)
+    dhcp_test.go:195: promotion did not reconcile DHCP: the runner never attempted a start
+FAIL
+
+$ # discoveryEnabled check removed from promoteLease
+$ go test ./internal/adminapi/ -run TestPromoteWithDiscoveryOffIs404 -count=1
+--- FAIL: TestPromoteWithDiscoveryOffIs404 (0.00s)
+    discovery_test.go:114: = 201, want 404 when discovery is off
+FAIL
+```
+
+No test opens a socket. Both new app tests refuse at `dhcpd.Qualifies`, which
+fails at `net.InterfaceByName` on `kydns-no-such-iface0` before any socket work.
+
+### Verification
+
+```
+$ go build ./...            # clean
+$ go vet ./...              # clean
+$ gofmt -l internal/        # no output
+$ go test ./... -count=1    # 19 packages, all ok, 0 failures
+$ go test ./internal/app/... -race -count=1   # ok, 31.7s
+```
+
+### Concerns
+
+- **`TestPromotionReconcilesDHCP` wires its own `onPromote`.** It proves the
+  mechanism and the ordering — a hook called before `role.Set` would leave the
+  runner untouched, and the test would fail — but it does not prove `serve.go`
+  passes the hook. That wiring is one line and covered only by review. Testing
+  it for real needs a `Serve` with DHCP enabled, which would bind port 67.
+- **`private_domain` is stale in the settings spec.** `liveComponents.Apply`
+  renames the zone live (`SetZone` on both the answerer and the registry, plus
+  a cache flush), so the design doc's "Requires a restart" bullet for it has
+  not been true for some time. The spec for this task says it stays where it
+  is, so I left it and did not write anything that depends on it being wrong.
+  Worth a ruling in the whole-branch review.

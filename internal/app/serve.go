@@ -294,7 +294,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithReplicaAdmin(&replicaAdmin{st: st, srv: repl.srv}).
 		// Wired on every node: promotion answers "already a primary" rather than
 		// an error, and a replica must never find this endpoint missing.
-		WithReplicaPromoter(&replicaPromoter{st: st, role: roleHolder, stopPull: repl.stopPull})
+		WithReplicaPromoter(&replicaPromoter{st: st, role: roleHolder, stopPull: repl.stopPull,
+			// Promotion starts the listener. Waiting for the next settings save
+			// would leave the LAN without DHCP at the one moment the primary it
+			// was following has gone.
+			onPromote: func() { dhcpRun.Reconcile(settingsHolder.Current().Raw) }})
 	// Pairing needs this node's key, so it is offered only where there is one.
 	if repl.id != nil {
 		api = api.WithReplicaJoiner(&replicaJoiner{st: st, id: repl.id})

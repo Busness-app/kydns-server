@@ -146,13 +146,11 @@ curl -X PATCH -H "Authorization: Bearer $KYDNS_TOKEN" \
 different settings do not clobber each other. Settings are part of
 `kydns export` and are applied by `kydns import`.
 
-Almost everything applies the moment it is saved, with no restart and no
-dropped queries: upstreams (which also flushes the cache), the private domain,
-reverse zones, `allow_query`, `allow_tailscale`, the TTL, all four cache
-settings, both log flags, the three health settings, and the discovery
-interval. One cannot change in a running process — `dhcp_lease_file`, which
-the discovery poller is opened against. It is saved anyway, and a banner names
-the running value and the saved one until you restart.
+Everything applies the moment it is saved, with no restart and no dropped
+queries: upstreams (which also flushes the cache), the private domain, reverse
+zones, `allow_query`, `allow_tailscale`, the TTL, all four cache settings, both
+log flags, the three health settings, the discovery interval, and
+`dhcp_lease_file` — the discovery poller is repointed at the new file in place.
 
 ### Renaming the private domain
 

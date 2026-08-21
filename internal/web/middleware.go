@@ -39,7 +39,9 @@ type Options struct {
 	Settings *settings.Service
 
 	// RestartPending names the settings whose stored value differs from the one
-	// the process is running. Empty is the normal case.
+	// the process is running. Empty is the normal case. Nil in production: no
+	// database-owned setting needs a restart any more, so nothing feeds it. The
+	// banner is kept for the first key that does.
 	RestartPending func() []RestartItem
 
 	// Health and Upstreams are nil when the corresponding subsystem is off,

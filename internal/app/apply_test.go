@@ -239,6 +239,51 @@ func TestApplySwapsTheLeaseSource(t *testing.T) {
 	}
 }
 
+// A refused start must not orphan the lease file the operator just cleared.
+// Enabling the built-in server forces dhcp_lease_file empty in the same save,
+// so if build() refuses and nothing takes ownership of the poller's source,
+// the old file keeps feeding the zone from a path the settings row no longer
+// contains — and the Discovered page keeps reporting discovery as on.
+func TestApplyClearsTheLeaseSourceWhenDHCPCannotStart(t *testing.T) {
+	live, _ := newLiveComponents(t)
+	live.dhcp = &dhcpRunner{
+		poller: live.poller,
+		logger: slog.New(slog.DiscardHandler),
+		role:   func() Role { return RoleStandalone },
+	}
+
+	v := validSnapshot(t).Raw
+	v.DHCPLeaseFile = "/var/lib/misc/dnsmasq.leases"
+	snap, err := settings.Build(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Apply(snap)
+	if !live.poller.Enabled() {
+		t.Fatal("setup: the lease file did not turn discovery on")
+	}
+
+	// The save the validator demands: enabled, with the lease file cleared.
+	// The interface does not exist, so build() refuses before any socket.
+	v.DHCPLeaseFile = ""
+	v.DHCPEnabled = true
+	v.DHCPInterface = "kydns-no-such-iface0"
+	v.DHCPRangeStart, v.DHCPRangeEnd = "192.168.1.100", "192.168.1.200"
+	v.DHCPGateway, v.DHCPLeaseSeconds = "192.168.1.1", 3600
+	snap, err = settings.Build(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Apply(snap)
+
+	if running, _ := live.dhcp.Status(); running {
+		t.Fatal("setup: the listener started, so this proves nothing")
+	}
+	if live.poller.Enabled() {
+		t.Error("a refused DHCP start left the poller reading the cleared lease file")
+	}
+}
+
 // TestApplyFlushesCacheOnlyWhenUpstreamsChange guards call 3 specifically:
 // an unrelated save must not empty every client's cache.
 func TestApplyFlushesCacheOnlyWhenUpstreamsChange(t *testing.T) {
