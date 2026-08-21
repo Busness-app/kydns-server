@@ -398,6 +398,26 @@ func TestPutServiceKeepsItsOwnMACOnUpdate(t *testing.T) {
 	}
 }
 
+// macUnique's own empty-MAC guard, not PutService's, is what lets an import
+// document contain any number of unreserved services.
+func TestReplaceAllAllowsManyServicesWithNoMAC(t *testing.T) {
+	r, _ := newRegistry(t)
+	if err := r.ReplaceAll(nil, []store.Service{
+		{Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "two", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "three", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+	}, nil); err != nil {
+		t.Fatalf("ReplaceAll: %v", err)
+	}
+	got, err := r.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d services, want 3", len(got))
+	}
+}
+
 // ReplaceAll validates the whole document before writing any of it, so its
 // duplicate check has to look at the document rather than at the store it is
 // about to wipe. Every imported service arrives with ID 0, which is exactly
