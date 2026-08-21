@@ -984,3 +984,146 @@ func TestIgnoreXIDDropsOnlyThatTransactionAndOnlyWhileHeld(t *testing.T) {
 		t.Fatalf("replies = %+v, want the drop to end with the probe: that MAC can never get an address otherwise", got)
 	}
 }
+
+// A reservation is a promise about where a client ends up, not a licence for
+// one broadcast packet to evict the client that is using the address now.
+func TestDiscoverFromAReservedMACDoesNotEvictTheHolder(t *testing.T) {
+	s, ms := newTestServer(t)
+	const holder, reserved = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request(holder, "nas", netip.Addr{}))
+	held := c.replies(t)[0].YourIPAddr
+	before, _ := ms.DHCPLeases()
+	if len(before) != 1 {
+		t.Fatalf("setup: persisted %+v, want one nas lease", before)
+	}
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{reserved: netip.MustParseAddr(held.String())})
+
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, discover(reserved, ""))
+
+	replies := c2.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies to a DISCOVER, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.Equal(held) {
+		t.Fatalf("offered %v to the reserved client while another still holds it", got)
+	}
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 1 || ls[0].MAC != holder || ls[0].IP != held.String() || ls[0].Hostname != "nas" {
+		t.Fatalf("leases = %+v, want nas still at %v", ls, held)
+	}
+	if want := epoch.Add(24 * time.Hour); !ls[0].Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want the full term %v", ls[0].Expires, want)
+	}
+	if got, _ := ms.DHCPLeases(); len(got) != 1 || got[0] != before[0] {
+		t.Fatalf("stored lease = %+v, want %+v untouched", got, before[0])
+	}
+}
+
+// Moving a client to a newly reserved address is legitimate; doing it on a
+// DISCOVER, while the client is still using the old one, is not.
+func TestDiscoverDoesNotMoveAClientOntoANewReservation(t *testing.T) {
+	s, ms := newTestServer(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request(mac, "nas", netip.Addr{}))
+	held := c.replies(t)[0].YourIPAddr
+	before, _ := ms.DHCPLeases()
+	res := netip.MustParseAddr("192.168.1.11")
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{mac: res})
+
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, discover(mac, ""))
+
+	replies := c2.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies to a DISCOVER, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.String() != res.String() {
+		t.Fatalf("offered %v, want the reserved %v", got, res)
+	}
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 1 || ls[0].IP != held.String() || ls[0].Hostname != "nas" {
+		t.Fatalf("leases = %+v, want nas still at %v until the client commits", ls, held)
+	}
+	if want := epoch.Add(24 * time.Hour); !ls[0].Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want the full term %v", ls[0].Expires, want)
+	}
+	if got, _ := ms.DHCPLeases(); len(got) != 1 || got[0] != before[0] {
+		t.Fatalf("stored lease = %+v, want %+v untouched", got, before[0])
+	}
+}
+
+// The committing path is unchanged: the REQUEST the offer promised does move
+// the client onto its reservation, name and full term intact.
+func TestRequestMovesAClientOntoItsReservation(t *testing.T) {
+	s, ms := newTestServer(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request(mac, "nas", netip.Addr{}))
+	res := netip.MustParseAddr("192.168.1.11")
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{mac: res})
+
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, discover(mac, ""))
+	offered := c.replies(t)[0].YourIPAddr
+
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, request(mac, "nas", netip.MustParseAddr(offered.String())))
+	reply := c2.replies(t)[0]
+	if reply.MessageType() != dhcpv4.MessageTypeAck {
+		t.Fatalf("REQUEST for the offered %v got %v, want ACK", offered, reply.MessageType())
+	}
+	if reply.YourIPAddr.String() != res.String() {
+		t.Fatalf("acked %v, want the reserved %v", reply.YourIPAddr, res)
+	}
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 1 || ls[0].IP != res.String() || ls[0].Hostname != "nas" {
+		t.Fatalf("leases = %+v, want nas at the reserved %v", ls, res)
+	}
+	got, _ := ms.DHCPLeases()
+	if len(got) != 1 || got[0].IP != res.String() || got[0].ExpiresAt != epoch.Add(24*time.Hour).Unix() {
+		t.Fatalf("persisted %+v, want one full-term lease at %v", got, res)
+	}
+}
+
+// Refusing to evict on the DISCOVER does not strand the reservation: the
+// REQUEST that follows takes it, displaces the incumbent, and the client
+// converges on it one DORA round later.
+func TestAReservedClientReachesAHeldAddressThroughRequest(t *testing.T) {
+	s, ms := newTestServer(t)
+	const holder, reserved = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request(holder, "nas", netip.Addr{}))
+	held := netip.MustParseAddr(c.replies(t)[0].YourIPAddr.String())
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{reserved: held})
+
+	// Round one: offered a dynamic address, NAKed for it, and the incumbent
+	// is displaced by that REQUEST.
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, discover(reserved, ""))
+	offered := c2.replies(t)[0].YourIPAddr
+	c3 := &captureConn{}
+	s.handle(c3, &net.UDPAddr{IP: net.IPv4zero}, request(reserved, "", netip.MustParseAddr(offered.String())))
+	if got := c3.replies(t)[0].MessageType(); got != dhcpv4.MessageTypeNak {
+		t.Fatalf("REQUEST for %v got %v, want NAK: the reservation is elsewhere", offered, got)
+	}
+
+	// Round two: the reservation is now the client's own, so it is offered
+	// and acked.
+	c4 := &captureConn{}
+	s.handle(c4, &net.UDPAddr{IP: net.IPv4zero}, discover(reserved, ""))
+	if got := c4.replies(t)[0].YourIPAddr; got.String() != held.String() {
+		t.Fatalf("second offer = %v, want the reserved %v", got, held)
+	}
+	c5 := &captureConn{}
+	s.handle(c5, &net.UDPAddr{IP: net.IPv4zero}, request(reserved, "backup", held))
+	reply := c5.replies(t)[0]
+	if reply.MessageType() != dhcpv4.MessageTypeAck || reply.YourIPAddr.String() != held.String() {
+		t.Fatalf("second REQUEST got %v for %v, want an ACK for %v", reply.MessageType(), reply.YourIPAddr, held)
+	}
+	got, _ := ms.DHCPLeases()
+	if len(got) != 1 || got[0].MAC != reserved || got[0].IP != held.String() {
+		t.Fatalf("persisted %+v, want the reserved client alone at %v", got, held)
+	}
+}

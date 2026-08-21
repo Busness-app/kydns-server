@@ -393,3 +393,73 @@ func TestDeclineFromAnEmptyMACIsRefused(t *testing.T) {
 		t.Fatalf("an empty MAC quarantined %d addresses, want none", n)
 	}
 }
+
+// Rule 1 reaches commit, and commit evicts whoever holds the address. On the
+// ACK path that is the spec's "that address, always"; on the tentative path it
+// would let one unauthenticated DISCOVER destroy a stranger's live lease.
+func TestOfferForAReservationLeavesAnotherClientsLeaseAlone(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const victim, thief = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"
+	held, ok := a.Allocate(victim, "nas", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused the first client")
+	}
+	a.SetReservations(map[string]netip.Addr{thief: held.IP})
+
+	got, fresh, ok := a.Offer(thief, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused the reserved client entirely")
+	}
+	if got.IP == held.IP {
+		t.Fatalf("offered %v, which another client is still leasing", got.IP)
+	}
+	if !fresh {
+		t.Fatal("fresh = false for a dynamic address the client has never held")
+	}
+	ls := a.Leases()
+	if len(ls) != 2 {
+		t.Fatalf("leases = %+v, want both clients", ls)
+	}
+	for _, l := range ls {
+		if l.MAC != victim {
+			continue
+		}
+		if l.IP != held.IP || l.Hostname != "nas" || !l.Expires.Equal(epoch.Add(24*time.Hour)) {
+			t.Fatalf("victim's lease = %+v, want %v named nas for the full term", l, held.IP)
+		}
+		return
+	}
+	t.Fatalf("leases = %+v, want the victim still holding %v", ls, held.IP)
+}
+
+// The R18 guard keys on prev.IP == ip, so a reservation for an address the
+// client does not hold slips past it: the tentative hold lands on the new
+// address and takes the old lease's name and term with it.
+func TestOfferForAReservationDoesNotMoveTheClientOffItsLease(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	held, ok := a.Allocate(mac, "nas", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused the client")
+	}
+	res := netip.MustParseAddr("192.168.1.20") // outside the range, as a reservation may be
+	a.SetReservations(map[string]netip.Addr{mac: res})
+
+	got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused the reserved client")
+	}
+	if got.IP != res {
+		t.Fatalf("offered %v, want the reserved %v promised", got.IP, res)
+	}
+	if fresh {
+		t.Fatal("fresh = true for a reservation; rule 1 is never probed")
+	}
+	ls := a.Leases()
+	if len(ls) != 1 {
+		t.Fatalf("leases = %+v, want the one lease the client is still using", ls)
+	}
+	if ls[0].IP != held.IP || ls[0].Hostname != "nas" || !ls[0].Expires.Equal(epoch.Add(24*time.Hour)) {
+		t.Fatalf("lease = %+v, want %v named nas for the full term until the client commits", ls[0], held.IP)
+	}
+}
