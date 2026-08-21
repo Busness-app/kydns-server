@@ -12,6 +12,49 @@
 
 **Depends on:** `docs/superpowers/plans/2026-08-19-kydns-builtin-dhcp-part1.md`, complete and merged. Part 1's Task 5 ships `Allocator.SetReservations` unused; this plan is what feeds it.
 
+## Amendments from Part 1's execution — read before starting
+
+Part 1 was executed with 37 rulings against its own plan, and several of them invalidated code this
+document was written against. The stale identifiers below have been corrected inline; the behavioural
+items have not, because they need decisions rather than edits. The authoritative record is the ledger
+at `docs/superpowers/handoff/2026-08-19-kydns-builtin-dhcp-part1/progress.md` — its "Amendments Part 2's
+committed plan now needs" and "Additional Part 2 amendments" sections are the full list.
+
+**Corrected inline (were compile errors):**
+
+1. `dhcpd.SuggestRange(subnet)` — the `host` and `gw` parameters are gone (R9).
+2. Routes are `/api/v1/dhcp/...`, not `/api/dhcp/...`, and both go behind the `auth(...)` wrapper (R13).
+3. The error helper is `writeErr(w, status, code, field, msg)`; `writeError` does not exist (R13).
+4. The adminapi test helper is `newAPI(t)` / `newAPIWithProviders(t)`; `newTestAPI` does not exist (R13).
+   CLI settings keys are snake_case mirroring the DTO json tags, and the syntax is `set <key>=<value>` (R33).
+
+**Not corrected — these need your decision or your care:**
+
+5. **Two allocator holes go live the moment this plan wires reservations.** Allocation rule 1 commits a
+   reservation with no freeness check, so a bare DISCOVER from a reserved MAC evicts whatever other MAC
+   holds that IP; and the tentative-hold guard keys on `prev.IP == ip`, so it does not fire when a
+   reservation moves a client to an address it does not currently hold. Both are unreachable in Part 1
+   only because `SetReservations` is always given an empty map. **These belong at the top of this plan,
+   not in its backlog.**
+6. **The rogue-server override is a prerequisite, not a feature.** Part 1's R22 makes a probe that could
+   not run refuse to start, and Part 1 has no override key — so a host whose own DHCP client holds `:68`
+   cannot enable DHCP at all. The override must cover the probe-error case as well as the
+   foreign-server-found case.
+7. **The periodic probe must suppress our own answer by "is our listener bound", never by address.**
+   `DetectForeign`/`collectForeign` no longer take a `self` parameter: an address-based filter cannot
+   work, because a co-resident dnsmasq and our own listener both put *our* address in option 54 — which
+   is exactly how a second DHCP server on the same host became invisible. Correlating on the probe xid
+   is not a filter either; our own server answers that too.
+8. **The web tab reads discovery state from `web.Options.DiscoveryOn func() bool`**, not from
+   `Leases != nil` — `Leases` is unconditionally non-nil now (R12).
+9. **`Allocator` gained two signatures.** `Allocate(mac, hostname, requested, ttl)` takes an explicit
+   lease duration, and `Offer(mac, requested, hold) (Lease, fresh, ok)` is the OFFER path's entry point.
+   This plan calls neither today — only `SetReservations` — so it is a read-through check.
+10. **Two spec defects surfaced and are still open**: the Replication section promises unknown clients
+    "will be NAKed" (behaviour specified nowhere else, but now built), and the Security notes say
+    malformed packets are "counted" while no counter exists. Decide whether to build the metric or amend
+    the spec.
+
 ## Global Constraints
 
 Every task's requirements implicitly include these, and Part 1's constraints still apply in full.
@@ -826,8 +869,8 @@ one rule is what lets per-view addresses work without a second concept."
 **Interfaces:**
 - Produces:
   - `"mac"` on the service DTO.
-  - `GET /api/dhcp/status` → `{"running","error","supported","reason","foreign":[{"server","offered"}],"problems":[{"service","mac","reason"}],"dual_stack":bool}`
-  - `GET /api/dhcp/suggest?interface=<name>` → `{"interface","subnet","range_start","range_end","gateway","lease_seconds","dual_stack"}`
+  - `GET /api/v1/dhcp/status` → `{"running","error","supported","reason","foreign":[{"server","offered"}],"problems":[{"service","mac","reason"}],"dual_stack":bool}`
+  - `GET /api/v1/dhcp/suggest?interface=<name>` → `{"interface","subnet","range_start","range_end","gateway","lease_seconds","dual_stack"}`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -835,10 +878,10 @@ Add to `internal/adminapi/dhcp_test.go`:
 
 ```go
 func TestDHCPSuggestFillsInTheForm(t *testing.T) {
-	h, tok := newTestAPI(t)
+	h, tok := newAPI(t)
 	// Loopback is never a qualifying DHCP interface, so this asserts the
 	// refusal path rather than depending on the CI host's interfaces.
-	req := httptest.NewRequest(http.MethodGet, "/api/dhcp/suggest?interface=lo", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dhcp/suggest?interface=lo", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -852,8 +895,8 @@ func TestDHCPSuggestFillsInTheForm(t *testing.T) {
 }
 
 func TestDHCPSuggestRejectsAnUnknownInterface(t *testing.T) {
-	h, tok := newTestAPI(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/dhcp/suggest?interface=definitely-not-real0", nil)
+	h, tok := newAPI(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dhcp/suggest?interface=definitely-not-real0", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -863,8 +906,8 @@ func TestDHCPSuggestRejectsAnUnknownInterface(t *testing.T) {
 }
 
 func TestDHCPStatusReportsProblemsAndForeignServers(t *testing.T) {
-	h, tok := newTestAPI(t)
-	req := httptest.NewRequest(http.MethodGet, "/api/dhcp/status", nil)
+	h, tok := newAPI(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/dhcp/status", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -899,7 +942,7 @@ Add to `internal/adminapi/services_test.go`:
 
 ```go
 func TestServiceJSONCarriesMAC(t *testing.T) {
-	h, tok := newTestAPI(t)
+	h, tok := newAPI(t)
 	body := `{"name":"kypost","addresses":[{"address":"192.168.1.20"}],"mac":"AA:BB:CC:DD:EE:FF"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/services", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+tok)
@@ -1010,21 +1053,21 @@ type DHCPSuggestion struct {
 func (a *API) dhcpSuggest(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("interface")
 	if name == "" {
-		writeError(w, http.StatusBadRequest, "interface is required")
+		writeErr(w, http.StatusBadRequest, "invalid", "interface", "interface is required")
 		return
 	}
 	if err := dhcpd.Qualifies(name); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
 		return
 	}
 	info, err := dhcpd.Inspect(name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
 		return
 	}
-	start, end, err := dhcpd.SuggestRange(info.Subnet, info.Addr, info.Gateway)
+	start, end, err := dhcpd.SuggestRange(info.Subnet)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
 		return
 	}
 	// 24 hours is not arbitrary: clients renew at half the lease, so an
@@ -1054,15 +1097,15 @@ Widen the `DHCP` interface field on `API` to what these need:
 Register both routes beside the existing ones:
 
 ```go
-	mux.HandleFunc("GET /api/dhcp/status", a.dhcpStatus)
-	mux.HandleFunc("GET /api/dhcp/suggest", a.dhcpSuggest)
+	mux.HandleFunc("GET /api/v1/dhcp/status", auth(a.dhcpStatus))
+	mux.HandleFunc("GET /api/v1/dhcp/suggest", auth(a.dhcpSuggest))
 ```
 
-`writeError` is whatever this package's existing error helper is called — check `internal/adminapi/api.go` and use that name.
+The error helper is `writeErr(w, status, code, field, msg)` (`internal/adminapi/api.go:314`); there is no `writeError`. Both routes go behind the `auth(...)` wrapper every other route uses — interface and lease data name devices on the network.
 
 - [ ] **Step 5: Add the CLI keys**
 
-In `internal/cli/settings.go`, add `dhcp.allow_foreign` to the settings key table. Add `--mac` to the `service add` and `service update` commands, following how `--check` and `--address` are already declared.
+In `internal/cli/settings.go`, add `dhcp_allow_foreign` to the settings key table (keys are snake_case, mirroring the DTO's json tags — see amendment 4). Add `--mac` to the `service add` and `service update` commands, following how `--check` and `--address` are already declared.
 
 - [ ] **Step 6: Run the tests**
 
@@ -1463,4 +1506,4 @@ Everything the spec asks for is now covered across the two plans. Part 1's self-
 
 **Type consistency.** `dhcpd.Foreign` and `dhcpd.ReservationProblem` are the internal types; `adminapi.DHCPForeign` and `adminapi.DHCPProblem` are their JSON shapes; `web.foreignView` and `web.problemView` are their template shapes. `Reservations` takes `[]store.Service` and returns `map[string]netip.Addr` keyed by the normalized MAC, which is what `Allocator.SetReservations` from Part 1 Task 5 accepts. `registry.NormalizeMAC` and `dhcpd.normalizeMAC` must produce identical output for any MAC a client can send — that is the assumption reservations rest on, and `TestPutServiceNormalizesMAC` plus Part 1's `TestSanitizeHostname` are the closest things to a check. If either normalizer changes, both change.
 
-**Known scope note.** `dhcpd.normalizeMAC` is unexported and `registry.NormalizeMAC` is exported, so the shared assumption between them is not enforced by the compiler. Making one call the other would mean `registry` importing `dhcpd` or the reverse, and neither dependency is one this codebase wants. The comment on each names the other; that is the whole guard, and it is deliberately weak because the alternative is worse coupling.
+**Known scope note.** `dhcpd.normalizeMAC` is unexported and `registry.NormalizeMAC` is exported, so the shared assumption between them is not enforced by the compiler. Making one call the other would mean `registry` importing `dhcpd` or the reverse, and neither dependency is one this codebase wants. Part 1's ruling R17 narrowed the gap considerably: both now parse via `net.ParseMAC` and re-render, so dashes, Cisco dot-quad form and missing zero-padding all converge on the same output rather than being compared as raw strings. The comment on each still names the other, and that remains the only compiler-visible guard — but it is no longer the whole guard.
