@@ -483,3 +483,112 @@ func TestReplaceAllRollsBackOnFailure(t *testing.T) {
 		t.Fatalf("Services() after a failed replace = %+v, want only keeper untouched", svcs)
 	}
 }
+
+// Open runs schema before migrate, and every CREATE is IF NOT EXISTS, so a
+// fixture that omits the services table entirely would have it created in the
+// modern shape and prove nothing. The table has to exist in its old shape for
+// the ALTER to be the thing under test.
+func TestOpenAddsTheMACColumnToAnExistingServicesTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v5.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE services (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  check_url       TEXT NOT NULL DEFAULT '',
+  check_insecure  INTEGER NOT NULL DEFAULT 0,
+  proxy_address   TEXT NOT NULL DEFAULT '',
+  route_via_proxy INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+);
+INSERT INTO services (id, name) VALUES (1, 'kypost');
+PRAGMA user_version = 5;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on a database whose services table predates reservations: %v", err)
+	}
+	defer s.Close()
+
+	old, err := s.Service(1)
+	if err != nil {
+		t.Fatalf("Service(1) after migration: %v", err)
+	}
+	if old.Name != "kypost" || old.MAC != "" {
+		t.Errorf("migrated service = %+v, want the pre-existing row with no reservation", old)
+	}
+	id, err := s.PutService(Service{
+		Name: "printer", Addresses: []Address{{Address: "192.168.1.50"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	})
+	if err != nil {
+		t.Fatalf("PutService after migration: %v", err)
+	}
+	got, err := s.Service(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MAC != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("MAC = %q, want it written to and read from the migrated column", got.MAC)
+	}
+}
+
+func TestServiceMACRoundTrips(t *testing.T) {
+	s := open(t)
+	id, err := s.PutService(Service{
+		Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An update must carry the MAC too, not just the insert.
+	if _, err := s.PutService(Service{
+		ID: id, Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}},
+		MAC: "11:22:33:44:55:66",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svcs, err := s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].MAC != "11:22:33:44:55:66" {
+		t.Fatalf("Services() = %+v, want the updated MAC", svcs)
+	}
+}
+
+// A reservation is service configuration: a promoted replica must have it, so
+// unlike the dhcp_* settings it rides the existing cv_services triggers.
+func TestServiceMACBumpsConfigVersion(t *testing.T) {
+	s := open(t)
+	id, err := s.PutService(Service{Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutService(Service{
+		ID: id, Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after <= before {
+		t.Fatalf("config_version = %d after adding a reservation, want more than %d", after, before)
+	}
+}

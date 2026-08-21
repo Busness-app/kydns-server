@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS services (
   check_insecure  INTEGER NOT NULL DEFAULT 0,
   proxy_address   TEXT NOT NULL DEFAULT '',
   route_via_proxy INTEGER NOT NULL DEFAULT 0,
+  mac             TEXT NOT NULL DEFAULT '',
   created_at      INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE TABLE IF NOT EXISTS service_addresses (
@@ -322,6 +323,7 @@ var migrations = []string{
 	   last_seen  INTEGER NOT NULL
 	 );`,
 	`ALTER TABLE settings ADD COLUMN dhcp_allow_foreign INTEGER NOT NULL DEFAULT 0;`,
+	`ALTER TABLE services ADD COLUMN mac TEXT NOT NULL DEFAULT '';`,
 }
 
 // migrate runs against a transaction Open already holds, so a crash
@@ -520,8 +522,8 @@ func (s *Store) PutService(svc Service) (int64, error) {
 func putService(tx *sql.Tx, svc Service) (int64, error) {
 	if svc.ID == 0 {
 		res, err := tx.Exec(
-			`INSERT INTO services(name, check_url, check_insecure, proxy_address, route_via_proxy) VALUES(?, ?, ?, ?, ?)`,
-			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy)
+			`INSERT INTO services(name, check_url, check_insecure, proxy_address, route_via_proxy, mac) VALUES(?, ?, ?, ?, ?, ?)`,
+			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy, svc.MAC)
 		if err != nil {
 			if isUnique(err, "services.name") {
 				return 0, fmt.Errorf("%w: service %s", ErrDuplicateName, svc.Name)
@@ -533,8 +535,8 @@ func putService(tx *sql.Tx, svc Service) (int64, error) {
 		}
 	} else {
 		if _, err := tx.Exec(
-			`UPDATE services SET name=?, check_url=?, check_insecure=?, proxy_address=?, route_via_proxy=? WHERE id=?`,
-			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy, svc.ID); err != nil {
+			`UPDATE services SET name=?, check_url=?, check_insecure=?, proxy_address=?, route_via_proxy=?, mac=? WHERE id=?`,
+			svc.Name, svc.CheckURL, svc.CheckInsecure, svc.ProxyAddress, svc.RouteViaProxy, svc.MAC, svc.ID); err != nil {
 			return 0, err
 		}
 		for _, q := range []string{
@@ -573,8 +575,8 @@ func nullable(s string) any {
 func (s *Store) Service(id int64) (Service, error) {
 	var svc Service
 	err := s.db.QueryRow(
-		`SELECT id, name, check_url, check_insecure, proxy_address, route_via_proxy FROM services WHERE id = ?`, id).
-		Scan(&svc.ID, &svc.Name, &svc.CheckURL, &svc.CheckInsecure, &svc.ProxyAddress, &svc.RouteViaProxy)
+		`SELECT id, name, check_url, check_insecure, proxy_address, route_via_proxy, mac FROM services WHERE id = ?`, id).
+		Scan(&svc.ID, &svc.Name, &svc.CheckURL, &svc.CheckInsecure, &svc.ProxyAddress, &svc.RouteViaProxy, &svc.MAC)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Service{}, fmt.Errorf("%w: service %d", ErrNotFound, id)
 	}
