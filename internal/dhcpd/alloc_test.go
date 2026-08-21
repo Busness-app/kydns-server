@@ -463,3 +463,96 @@ func TestOfferForAReservationDoesNotMoveTheClientOffItsLease(t *testing.T) {
 		t.Fatalf("lease = %+v, want %v named nas for the full term until the client commits", ls[0], held.IP)
 	}
 }
+
+// Rule 1 falling through and rule 2 refusing at the same time is reachable
+// from a reservation map alone: the client's reservation is under another
+// client's lease, and its current address is reserved to a third MAC. Rules 3
+// and 4 then commit a fresh address over a lease it is still using.
+func TestOfferKeepsALiveLeaseWhenTheReservationRulesBothRefuse(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const macA, macB, macC = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"
+	first, _ := a.Allocate(macA, "nas", netip.Addr{}, 24*time.Hour)
+	second, _ := a.Allocate(macB, "backup", netip.Addr{}, 24*time.Hour)
+	a.SetReservations(map[string]netip.Addr{macB: first.IP, macC: second.IP})
+
+	got, fresh, ok := a.Offer(macB, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused a client that is already holding an address")
+	}
+	if got.IP != second.IP {
+		t.Fatalf("offered %v, want the %v the client is still using", got.IP, second.IP)
+	}
+	if fresh {
+		t.Fatal("fresh = true for an address the client already holds")
+	}
+	ls := a.Leases()
+	if len(ls) != 2 {
+		t.Fatalf("leases = %+v, want both clients still leased", ls)
+	}
+	for _, l := range ls {
+		if l.MAC != macB {
+			continue
+		}
+		if l.IP != second.IP || l.Hostname != "backup" || !l.Expires.Equal(epoch.Add(24*time.Hour)) {
+			t.Fatalf("lease = %+v, want %v named backup for the full term", l, second.IP)
+		}
+		return
+	}
+	t.Fatalf("leases = %+v, want the client still holding %v", ls, second.IP)
+}
+
+// The other half of the Part 1 R18 note: a restored lease whose address falls
+// outside a range the operator has since narrowed. Rule 2's usable() check
+// skips it, so the same fall-through destroys a lease still in use.
+func TestOfferKeepsALiveLeaseOutsideANarrowedRange(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	old := netip.MustParseAddr("192.168.1.50") // handed out before the range shrank
+	a.Load([]Lease{{MAC: mac, IP: old, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+	got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused a client that is already holding an address")
+	}
+	if got.IP != old {
+		t.Fatalf("offered %v, want the %v the client is still using", got.IP, old)
+	}
+	if fresh {
+		t.Fatal("fresh = true for an address the client already holds")
+	}
+	ls := a.Leases()
+	if len(ls) != 1 || ls[0].IP != old || ls[0].Hostname != "nas" || !ls[0].Expires.Equal(epoch.Add(24*time.Hour)) {
+		t.Fatalf("leases = %+v, want nas still at %v for the full term", ls, old)
+	}
+}
+
+// The committing path must still move a client off an address that is no
+// longer ours to give. The tentative guard above deliberately does not.
+func TestAllocateStillMovesAClientOffAnAddressOutsideTheRange(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	old := netip.MustParseAddr("192.168.1.50")
+	a.Load([]Lease{{MAC: mac, IP: old, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+	l, ok := a.Allocate(mac, "nas", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused a client holding an out-of-range address")
+	}
+	if want := netip.MustParseAddr("192.168.1.10"); l.IP != want {
+		t.Fatalf("REQUEST left the client at %v, want it moved into the range at %v", l.IP, want)
+	}
+}
+
+// free() and rule 1 both ask this, and both mean "somebody else": a client is
+// never its own squatter.
+func TestHeldByAnotherIgnoresTheClientsOwnLease(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mine, other = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"
+	l, _ := a.Allocate(mine, "nas", netip.Addr{}, 24*time.Hour)
+	if a.heldByAnotherLocked(l.IP, mine, epoch) {
+		t.Fatalf("%v reported held by another client; it is this client's own lease", l.IP)
+	}
+	if !a.heldByAnotherLocked(l.IP, other, epoch) {
+		t.Fatalf("%v not reported held against a different client", l.IP)
+	}
+}

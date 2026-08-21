@@ -252,6 +252,18 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	case dhcpv4.MessageTypeDecline:
 		ip, ok := netip.AddrFromSlice(m.RequestedIPAddress())
 		if !ok || !s.opts.Alloc.Decline(mac, ip.Unmap()) {
+			// An OFFER only promises a reservation, it does not lease it, so
+			// Decline refuses the one case an operator most needs to hear:
+			// something else on the segment already answers to that address.
+			// ponytail: the spec says a DECLINE quarantines like a probe hit.
+			// It cannot here — rule 1 ignores the quarantine list, so a
+			// quarantine would change nothing — so this logs instead. Revisit
+			// when Task 4 has a status payload to hang it on.
+			if r, reserved := s.opts.Alloc.reservationFor(mac); reserved && r == ip.Unmap() {
+				s.opts.Logger.Warn("a reserved address is already in use by another device; check the reservation",
+					"mac", mac, "ip", ip.Unmap())
+				return
+			}
 			s.opts.Logger.Warn("ignoring a decline for an address this client does not hold",
 				"mac", mac, "ip", ip.Unmap())
 			return

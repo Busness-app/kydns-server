@@ -164,6 +164,14 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 	if l, ok := a.byMAC[mac]; ok && a.usable(l.IP) && a.reservedIP[l.IP] == "" {
 		return commit(l.IP, !l.Expires.After(now)) // an expired holding is new to us again
 	}
+	// A tentative hold never moves a client off a lease it is still using:
+	// rules 3 and 4 commit, and commit deletes the old entry. Reached only
+	// when rules 1 and 2 have both refused, so the address may no longer be
+	// ours to give — but the client is on it either way, and a DISCOVER is
+	// not the moment to take it away. The REQUEST still decides.
+	if tentative && held {
+		return prev, false, true
+	}
 	// 3. Honour a requested address that is free.
 	if requested.IsValid() && a.free(requested, mac, now) {
 		return commit(requested, true)
@@ -206,6 +214,16 @@ func (a *Allocator) Decline(mac string, ip netip.Addr) bool {
 		a.quarantine[ip] = a.now().Add(quarantineFor)
 	}
 	return true
+}
+
+// reservationFor is the address reserved to mac, if any. Package-internal:
+// only the packet path uses it, to tell a squatted reservation apart from a
+// forged decline.
+func (a *Allocator) reservationFor(mac string) (netip.Addr, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ip, ok := a.reserved[mac]
+	return ip, ok
 }
 
 // Quarantine keeps an address out of the pool, for a probe that found it in

@@ -1,6 +1,7 @@
 package dhcpd
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net"
@@ -111,6 +112,9 @@ func newTestServer(t *testing.T) (*Server, *memStore) {
 		Alloc:  NewAllocator(cfg, func() time.Time { return epoch }),
 		Prober: nopProber{},
 		Store:  ms,
+		// One clock for the whole harness: with Server.now left on the wall
+		// clock, restore() prunes every epoch-dated row as expired.
+		Now:    func() time.Time { return epoch },
 		Logger: slog.New(slog.DiscardHandler),
 	})
 	return s, ms
@@ -488,6 +492,7 @@ func TestProbeHitWithNoFallbackAddressDrawsNoReply(t *testing.T) {
 		Alloc:  NewAllocator(cfg, func() time.Time { return epoch }),
 		Prober: stubProber{inUse: cfg.Start},
 		Store:  ms,
+		Now:    func() time.Time { return epoch },
 		Logger: slog.New(slog.DiscardHandler),
 	})
 
@@ -1125,5 +1130,86 @@ func TestAReservedClientReachesAHeldAddressThroughRequest(t *testing.T) {
 	got, _ := ms.DHCPLeases()
 	if len(got) != 1 || got[0].MAC != reserved || got[0].IP != held.String() {
 		t.Fatalf("persisted %+v, want the reserved client alone at %v", got, held)
+	}
+}
+
+// The same hole at the packet layer, from a reservation map alone: one bare
+// DISCOVER from a client whose reservation is occupied and whose own address
+// is reserved elsewhere used to drop its name out of DNS.
+func TestDiscoverKeepsALiveLeaseWhenTheReservationRulesBothRefuse(t *testing.T) {
+	s, ms := newTestServer(t)
+	const macA, macB, macC = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"
+	peer := &net.UDPAddr{IP: net.IPv4zero}
+	c := &captureConn{}
+	s.handle(c, peer, request(macA, "nas", netip.Addr{}))
+	first := netip.MustParseAddr(c.replies(t)[0].YourIPAddr.String())
+	c2 := &captureConn{}
+	s.handle(c2, peer, request(macB, "backup", netip.Addr{}))
+	second := netip.MustParseAddr(c2.replies(t)[0].YourIPAddr.String())
+	before, _ := ms.DHCPLeases()
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{macB: first, macC: second})
+
+	c3 := &captureConn{}
+	s.handle(c3, peer, discover(macB, ""))
+
+	replies := c3.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies to a DISCOVER, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.String() != second.String() {
+		t.Fatalf("offered %v, want the %v the client is still using", got, second)
+	}
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 2 {
+		t.Fatalf("leases = %+v, want both clients still named in DNS", ls)
+	}
+	for _, l := range ls {
+		if l.MAC != macB {
+			continue
+		}
+		if l.IP != second.String() || l.Hostname != "backup" || !l.Expires.Equal(epoch.Add(24*time.Hour)) {
+			t.Fatalf("lease = %+v, want backup still at %v for the full term", l, second)
+		}
+	}
+	if got, _ := ms.DHCPLeases(); len(got) != len(before) {
+		t.Fatalf("stored leases = %+v, want %+v untouched", got, before)
+	}
+}
+
+// An OFFER promises a reservation without leasing it, so Decline refuses a
+// client that declines one. The operator still has to hear about it: a
+// reserved address something else answers to is a configuration problem, not
+// the forged packet the generic message describes.
+func TestDeclineForAPromisedReservationTellsTheOperator(t *testing.T) {
+	s, _ := newTestServer(t)
+	var buf bytes.Buffer
+	s.opts.Logger = slog.New(slog.NewTextHandler(&buf, nil))
+	const mac = "aa:aa:aa:aa:aa:aa"
+	res := netip.MustParseAddr("192.168.1.11")
+	peer := &net.UDPAddr{IP: net.IPv4zero}
+	s.handle(&captureConn{}, peer, request(mac, "nas", netip.Addr{})) // a live lease elsewhere
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{mac: res})
+	s.handle(&captureConn{}, peer, discover(mac, "")) // promises res without leasing it
+
+	dec := discover(mac, "")
+	dec.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeDecline))
+	dec.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP(res.AsSlice())))
+	s.handle(&captureConn{}, peer, dec)
+	got := buf.String()
+	if strings.Contains(got, "does not hold") {
+		t.Fatalf("logged a forged-packet message for a squatted reservation: %s", got)
+	}
+	if !strings.Contains(got, "reserved address is already in use") {
+		t.Fatalf("log = %q, want the operator told the reservation is in use", got)
+	}
+
+	// The generic message still covers the case it was written for.
+	buf.Reset()
+	other := discover("bb:bb:bb:bb:bb:bb", "")
+	other.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeDecline))
+	other.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP(netip.MustParseAddr("192.168.1.10").AsSlice())))
+	s.handle(&captureConn{}, peer, other)
+	if got := buf.String(); !strings.Contains(got, "does not hold") {
+		t.Fatalf("log = %q, want a decline from a client holding nothing still called out", got)
 	}
 }
