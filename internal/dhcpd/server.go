@@ -250,39 +250,39 @@ func (s *Server) ack(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac s
 }
 
 // allocate runs the pool rules and the hostname arbitration. commit is false
-// for an OFFER: it holds the address for offerHold only and never claims a
-// name, because only a client that reaches REQUEST is trusted enough for
-// either. Option 12 is client-chosen, so a bare DISCOVER must not be able to
-// plant a name in Leases() by itself.
+// for an OFFER, which takes a tentative hold through Alloc.Offer: it lasts
+// offerHold only and never claims a name, because only a client that reaches
+// REQUEST is trusted enough for either. Option 12 is client-chosen, so a bare
+// DISCOVER must not be able to plant a name in Leases() by itself, nor to cut
+// short a lease the same client already holds.
 func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, bool) {
-	var hostname string
-	ttl := offerHold
-	if commit {
-		hostname = sanitizeHostname(m.HostName())
-		if hostname != "" && s.opts.Alloc.NameTaken(hostname, mac) {
-			s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
-				"hostname", hostname, "mac", mac)
-			hostname = ""
-		}
-		ttl = s.opts.Cfg.LeaseTime
-	}
 	var requested netip.Addr
 	if ip, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
 		requested = ip.Unmap()
 	}
-	l, ok := s.opts.Alloc.Allocate(mac, hostname, requested, ttl)
-	if !ok {
-		return Lease{}, false
+	if !commit {
+		l, ok := s.opts.Alloc.Offer(mac, requested, offerHold)
+		if !ok {
+			return Lease{}, false
+		}
+		// Probe only an address that is new to us. A renewal or a
+		// reservation is not probed: the client already has it, or it is
+		// spoken for.
+		if s.opts.Prober.InUse(l.IP) {
+			s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
+			s.opts.Alloc.Quarantine(l.IP)
+			s.opts.Alloc.Release(mac)
+			return s.opts.Alloc.Offer(mac, netip.Addr{}, offerHold)
+		}
+		return l, true
 	}
-	// Probe only an address that is new to us. A renewal or a reservation is
-	// not probed: the client already has it, or it is spoken for.
-	if !commit && s.opts.Prober.InUse(l.IP) {
-		s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
-		s.opts.Alloc.Quarantine(l.IP)
-		s.opts.Alloc.Release(mac)
-		return s.opts.Alloc.Allocate(mac, hostname, netip.Addr{}, ttl)
+	hostname := sanitizeHostname(m.HostName())
+	if hostname != "" && s.opts.Alloc.NameTaken(hostname, mac) {
+		s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
+			"hostname", hostname, "mac", mac)
+		hostname = ""
 	}
-	return l, true
+	return s.opts.Alloc.Allocate(mac, hostname, requested, s.opts.Cfg.LeaseTime)
 }
 
 func (s *Server) reply(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, t dhcpv4.MessageType, yours netip.Addr) {

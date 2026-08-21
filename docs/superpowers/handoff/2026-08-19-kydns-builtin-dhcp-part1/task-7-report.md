@@ -190,3 +190,138 @@ leading/trailing whitespace, an unparseable-but-already-lowercase string, and th
 
 `e59d9bb` (initial implementation) plus a second commit for this fix round; see the SHA reported to
 the coordinator.
+
+## Fix round 2 — R18: a tentative hold must never weaken a lease
+
+### The defect fixed
+
+Fix round 1 routed the OFFER path into `Allocator.Allocate` with `hostname == ""` and
+`ttl == offerHold`. Allocation rules 1 and 2 both route a client that already holds an address
+straight into `commit`, which wrote the lease unconditionally — so a bare DISCOVER from a MAC that
+already held a full, named lease rewrote that lease to no name and 60 seconds: the victim's A record
+vanished from `Server.Leases()` at once, and 60 s later its address was ACKed to a different client.
+
+### What changed
+
+`internal/dhcpd/alloc.go`
+- The old `Allocate` body is now the private
+  `allocate(mac, hostname string, requested netip.Addr, ttl time.Duration, tentative bool)`.
+- `Allocate(mac, hostname, requested, ttl)` delegates with `tentative=false`. Signature and behaviour
+  unchanged; every existing call site is untouched.
+- New `Offer(mac string, requested netip.Addr, hold time.Duration) (Lease, bool)` delegates with
+  `hostname=""`, `tentative=true`.
+- Inside `commit`, the previous lease lookup is hoisted (`prev, hasPrev := a.byMAC[mac]`) and, when
+  the call is tentative and the client already holds this same IP on a *live* lease, the previous
+  `Hostname` is carried forward and the later of the two `Expires` is kept. The guard sits in
+  `commit`, so it covers rule 1 (reservation) as well as rule 2 (renew) — gating rule 2 alone would
+  have left a reserved client's name strippable.
+- The `prev.Expires.After(now)` condition is deliberate: an *expired* lease is not one the client
+  holds, so a tentative hold on it must not resurrect its name into `Leases()` for 60 s.
+
+`internal/dhcpd/server.go`
+- `(*Server).allocate` is split at the `commit` flag. The OFFER branch calls `Alloc.Offer`, including
+  the post-probe retry; the ACK branch keeps calling `Alloc.Allocate` with `Cfg.LeaseTime` and the
+  sanitized/arbitrated hostname. No guard on the ACK path: a REQUEST carrying no option 12 must still
+  be able to clear a name, per the spec's "Names" section.
+- No new exported API beyond `Offer`.
+
+Tests added:
+- `server_test.go`: `TestDiscoverDoesNotWeakenAnExistingLease`,
+  `TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient`,
+  `TestDiscoverDoesNotWeakenAReservedClientsLease`, `TestRequestWithNoHostnameClearsTheName`.
+  All drive `handle()` against `captureConn`/`memStore`; no socket is opened.
+- `alloc_test.go`: `TestOfferNeverWeakensALiveLease` — pins "later of the two expiries" in both
+  directions (a hold longer than the remainder extends, a shorter one does not move it back) and the
+  expired-lease case, which no handler-level test can reach (they all have 24 h ≫ 60 s).
+
+### RED evidence
+
+Tests written first and run against the unmodified `alloc.go`/`server.go`:
+
+```
+$ go test ./internal/dhcpd/ -count=1 -run 'TestDiscoverDoesNot|TestRequestWithNoHostnameClearsTheName' -v
+=== RUN   TestDiscoverDoesNotPersistALease
+--- PASS: TestDiscoverDoesNotPersistALease (0.00s)
+=== RUN   TestDiscoverDoesNotWeakenAnExistingLease
+    server_test.go:534: Leases returned 0 after a bare DISCOVER from the holder, want 1
+--- FAIL: TestDiscoverDoesNotWeakenAnExistingLease (0.00s)
+=== RUN   TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient
+    server_test.go:563: acked 192.168.1.10 to a second client while the first still holds it
+--- FAIL: TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient (0.00s)
+=== RUN   TestDiscoverDoesNotWeakenAReservedClientsLease
+    server_test.go:590: Leases returned 0 after a bare DISCOVER from the reserved client, want 1
+--- FAIL: TestDiscoverDoesNotWeakenAReservedClientsLease (0.00s)
+=== RUN   TestRequestWithNoHostnameClearsTheName
+--- PASS: TestRequestWithNoHostnameClearsTheName (0.00s)
+FAIL
+FAIL	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.003s
+```
+
+Each failure is the reported harm, observed rather than argued:
+- `Leases returned 0` — the DISCOVER blanked the victim's hostname, and `Leases()` filters unnamed
+  leases out, so the A record was gone immediately.
+- `acked 192.168.1.10 to a second client` — 61 s after the DISCOVER the victim's 60 s hold expired
+  and its address was handed to another MAC: a duplicate address on the wire.
+- The reservation variant fails identically, confirming rule 1 needs the guard as much as rule 2.
+- `TestRequestWithNoHostnameClearsTheName` passes both before and after by design: it exists to fail
+  if the guard is ever over-applied to the ACK path.
+
+### GREEN evidence
+
+```
+$ go test ./internal/dhcpd/ -count=1 -v -run 'TestDiscover|TestRequestWithNoHostnameClearsTheName|TestNormalizeMAC|TestAckGrantsTheFullLeaseTerm|TestProbeHit'
+--- PASS: TestDiscoverGetsAnOfferWithOurOptions (0.00s)
+--- PASS: TestDiscoverDoesNotPersistALease (0.00s)
+--- PASS: TestDiscoverNeverAppearsInLeases (0.00s)
+--- PASS: TestDiscoverHoldExpiresAndAddressBecomesAllocatable (0.00s)
+--- PASS: TestDiscoverHostnameIsNotClaimed (0.00s)
+--- PASS: TestAckGrantsTheFullLeaseTerm (0.00s)
+--- PASS: TestProbeHitSkipsToTheNextAddressAndQuarantines (0.00s)
+--- PASS: TestProbeHitWithNoFallbackAddressDrawsNoReply (0.00s)
+--- PASS: TestNormalizeMAC (0.00s)
+--- PASS: TestDiscoverDoesNotWeakenAnExistingLease (0.00s)
+--- PASS: TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient (0.00s)
+--- PASS: TestDiscoverDoesNotWeakenAReservedClientsLease (0.00s)
+--- PASS: TestRequestWithNoHostnameClearsTheName (0.00s)
+PASS
+ok  	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.003s
+
+$ go test ./internal/dhcpd/ -count=1 -run TestOfferNeverWeakensALiveLease -v
+--- PASS: TestOfferNeverWeakensALiveLease (0.00s)
+ok  	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.003s
+```
+
+The four fix-round-1 tests that guard the original Critical all still pass, including
+`TestDiscoverHoldExpiresAndAddressBecomesAllocatable` — its MAC holds nothing, so the guard
+correctly does not apply to it.
+
+### Full verification
+
+```
+$ go build ./...              → BUILD_OK (no output)
+$ go vet ./...                → VET_OK (no output)
+$ gofmt -l internal/dhcpd/    → FMT_CLEAN (no output)
+$ go test ./internal/dhcpd/ -count=1        → ok  0.003s
+$ go test ./internal/dhcpd/ -race -count=2  → ok  1.013s
+$ go test ./... -count=1                    → 19 packages, all ok, 0 FAIL
+```
+
+### Concerns (not fixed here — outside R18, and pre-existing)
+
+1. **The conflict probe defeats this fix in production, for renewals.** `(*Server).allocate`'s OFFER
+   branch probes every offered address, including one the client already holds. The real `Prober`
+   does ARP/ICMP, so a live client renewing by DISCOVER (normal after a reboot) answers its own
+   probe: `Quarantine(l.IP)` plus `Alloc.Release(mac)` then destroy the very lease R18 protects and
+   move the client to a different address. The behaviour predates fix round 2 and is unchanged by it,
+   but it means the new tests only hold under `nopProber`. Both the design spec ("Before offering an
+   address that is new to us — not a renewal, not a reservation") and the code's own comment say
+   renewals must not be probed, so the code contradicts both. The smallest fix is to record the
+   client's currently held address before calling `Offer` and skip the probe when the offered address
+   equals it — I did not apply it because it changes probe semantics, which R18 does not cover and a
+   scoped re-review is already scheduled.
+2. **Rule 1 can still evict a *different* client's live lease on a mere DISCOVER.** The reservation
+   rule commits without a freeness check, and `commit` deletes whatever other MAC holds that IP. R18's
+   guard is scoped to "the client already holds", so it does not cover this. It is pre-existing, is
+   arguably correct for an ACK (a reservation wins), and is unreachable in Part 1 because
+   `SetReservations` is only ever called with an empty map — but on the OFFER path a forged DISCOVER
+   from a reserved MAC would drop another client's name from DNS.

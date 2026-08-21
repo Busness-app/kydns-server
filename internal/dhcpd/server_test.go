@@ -512,3 +512,103 @@ func TestStopCancelsAndIsIdempotent(t *testing.T) {
 		t.Fatalf("second Stop: %v", err)
 	}
 }
+
+// A DISCOVER is not a lease operation, so it must not cut a lease's life.
+// Anyone on the segment can broadcast one carrying a victim's MAC and no
+// option 12; the lease it already holds has to survive it intact.
+func TestDiscoverDoesNotWeakenAnExistingLease(t *testing.T) {
+	s, ms := newTestServer(t)
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
+	before, _ := ms.DHCPLeases()
+	if len(before) != 1 || before[0].Hostname != "laptop" {
+		t.Fatalf("setup: persisted %+v, want one laptop lease", before)
+	}
+
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", ""))
+
+	ls, err := s.Leases(t.Context())
+	if err != nil {
+		t.Fatalf("Leases: %v", err)
+	}
+	if len(ls) != 1 {
+		t.Fatalf("Leases returned %d after a bare DISCOVER from the holder, want 1", len(ls))
+	}
+	if ls[0].Hostname != "laptop" || ls[0].IP != before[0].IP {
+		t.Fatalf("lease = %+v, want laptop still at %s", ls[0], before[0].IP)
+	}
+	if want := time.Unix(before[0].ExpiresAt, 0); !ls[0].Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want %v: an offer must not move a lease's expiry earlier", ls[0].Expires, want)
+	}
+	got, _ := ms.DHCPLeases()
+	if len(got) != 1 || got[0] != before[0] {
+		t.Fatalf("stored lease = %+v, want %+v untouched", got, before[0])
+	}
+}
+
+// The same DISCOVER must not free the victim's address either: an offer hold
+// that expires under a live lease hands that address to a second client while
+// the first is still using it.
+func TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient(t *testing.T) {
+	s, _, now := newTestServerWithClock(t)
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
+	victim := c.replies(t)[0].YourIPAddr
+
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", ""))
+	*now = now.Add(offerHold + time.Second)
+
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, request("bb:bb:bb:bb:bb:bb", "other", netip.Addr{}))
+	if got := c2.replies(t)[0].YourIPAddr; got.Equal(victim) {
+		t.Fatalf("acked %v to a second client while the first still holds it", got)
+	}
+	ls, _ := s.Leases(t.Context())
+	held := false
+	for _, l := range ls {
+		if l.MAC == "aa:aa:aa:aa:aa:aa" && l.IP == victim.String() && l.Hostname == "laptop" {
+			held = true
+		}
+	}
+	if !held {
+		t.Fatalf("leases = %+v, want the first client still holding laptop at %v", ls, victim)
+	}
+}
+
+// Rule 1 reaches the same commit as rule 2: a reserved client that already
+// holds its reserved address must not be stripped by a bare DISCOVER either.
+func TestDiscoverDoesNotWeakenAReservedClientsLease(t *testing.T) {
+	s, _ := newTestServer(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	res := netip.MustParseAddr("192.168.1.11")
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{mac: res})
+
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request(mac, "laptop", netip.Addr{}))
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover(mac, ""))
+
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 1 {
+		t.Fatalf("Leases returned %d after a bare DISCOVER from the reserved client, want 1", len(ls))
+	}
+	if ls[0].IP != res.String() || ls[0].Hostname != "laptop" {
+		t.Fatalf("lease = %+v, want laptop at the reserved %v", ls[0], res)
+	}
+	if want := epoch.Add(24 * time.Hour); !ls[0].Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want the full term %v", ls[0].Expires, want)
+	}
+}
+
+// The guard belongs to the offer path only. A REQUEST is a lease operation,
+// and a device that sends no hostname gets no name.
+func TestRequestWithNoHostnameClearsTheName(t *testing.T) {
+	s, ms := newTestServer(t)
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "", netip.Addr{}))
+
+	got, _ := ms.DHCPLeases()
+	if len(got) != 1 || got[0].Hostname != "" {
+		t.Fatalf("persisted %+v, want one lease with no name", got)
+	}
+	if ls, _ := s.Leases(t.Context()); len(ls) != 0 {
+		t.Fatalf("Leases returned %+v, want none: a client that sends no hostname gets no name", ls)
+	}
+}

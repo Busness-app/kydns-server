@@ -315,3 +315,28 @@ func TestAReservationStealsAnAddressFromAnotherClientsLease(t *testing.T) {
 		t.Fatalf("Allocate renewed %v for the dispossessed client, but it now belongs to another MAC", again.IP)
 	}
 }
+
+func TestOfferNeverWeakensALiveLease(t *testing.T) {
+	a, now := newTestAllocator(t)
+	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}, 30*time.Second)
+
+	// A hold longer than what is left extends it, and keeps the name.
+	got, ok := a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Minute)
+	if !ok || got.IP != l.IP || got.Hostname != "laptop" {
+		t.Fatalf("Offer = %+v (ok=%v), want %v still named laptop", got, ok, l.IP)
+	}
+	if want := epoch.Add(time.Minute); !got.Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want %v", got.Expires, want)
+	}
+	// A shorter one does not move it back.
+	got, _ = a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Second)
+	if want := epoch.Add(time.Minute); !got.Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want %v: a hold never shortens a lease", got.Expires, want)
+	}
+	// Once the lease has expired there is nothing left to preserve.
+	*now = epoch.Add(2 * time.Minute)
+	got, _ = a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Minute)
+	if got.Hostname != "" {
+		t.Fatalf("hostname = %q, want none: an expired lease is not one the client holds", got.Hostname)
+	}
+}

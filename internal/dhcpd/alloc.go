@@ -86,11 +86,20 @@ func (a *Allocator) SetReservations(r map[string]netip.Addr) {
 	}
 }
 
-// Allocate returns the address this client should get, committing it for
-// ttl. The caller decides the hold: a full lease term for an ACK, a short
-// tentative hold for an OFFER that may never be followed by one. The bool is
-// false only when the pool is exhausted.
+// Allocate returns the address this client should get, committing it as a
+// lease for ttl. The bool is false only when the pool is exhausted.
 func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr, ttl time.Duration) (Lease, bool) {
+	return a.allocate(mac, hostname, requested, ttl, false)
+}
+
+// Offer holds an address for a client that has only DISCOVERed. An OFFER is
+// a tentative hold, not a lease, so it never weakens a lease the client
+// already holds: neither the name nor the expiry of one moves.
+func (a *Allocator) Offer(mac string, requested netip.Addr, hold time.Duration) (Lease, bool) {
+	return a.allocate(mac, "", requested, hold, true)
+}
+
+func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl time.Duration, tentative bool) (Lease, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
@@ -99,10 +108,19 @@ func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr, ttl tim
 		if held, ok := a.byIP[ip]; ok && held != mac {
 			delete(a.byMAC, held)
 		}
-		if prev, ok := a.byMAC[mac]; ok && prev.IP != ip {
+		prev, hasPrev := a.byMAC[mac]
+		if hasPrev && prev.IP != ip {
 			delete(a.byIP, prev.IP)
 		}
 		l := Lease{MAC: mac, IP: ip, Hostname: hostname, Expires: now.Add(ttl)}
+		// A tentative hold never weakens a live lease on the same address:
+		// its name stays and its expiry only ever moves later.
+		if tentative && hasPrev && prev.IP == ip && prev.Expires.After(now) {
+			l.Hostname = prev.Hostname
+			if prev.Expires.After(l.Expires) {
+				l.Expires = prev.Expires
+			}
+		}
 		a.byMAC[mac] = l
 		a.byIP[ip] = mac
 		return l, true
