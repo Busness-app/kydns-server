@@ -324,7 +324,10 @@ matching how every other setting is already exposed in all three places.
 For `SECURITY.md`: KyDNS moves from reading DHCP leases as untrusted
 configuration input to parsing packets from any device on the segment.
 
-- Malformed packets are counted and dropped, never fatal.
+- Malformed packets are dropped, never fatal. They are deliberately **not**
+  counted: there is no metrics surface for a DHCP counter to land in, and
+  inventing one for a single number is not worth it. If a metrics surface
+  ever arrives, a drop counter is the first thing to put on it.
 - The lease table is bounded by the range size by construction.
 - Packet contents are not logged at default verbosity; MACs and hostnames
   are identifying.
