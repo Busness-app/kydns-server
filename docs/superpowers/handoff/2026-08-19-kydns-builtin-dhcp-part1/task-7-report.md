@@ -325,3 +325,114 @@ $ go test ./... -count=1                    → 19 packages, all ok, 0 FAIL
    arguably correct for an ACK (a reservation wins), and is unreachable in Part 1 because
    `SetReservations` is only ever called with an empty map — but on the OFFER path a forged DISCOVER
    from a reserved MAC would drop another client's name from DNS.
+
+## Fix round 3 — ruling R19: the conflict probe runs only for an address new to the client
+
+Fixes concern 1 of fix round 2: the spec ("Before offering an address that is new to us — not a
+renewal, not a reservation") and `server.go`'s own comment both said renewals and reservations are
+not probed, but the code probed every OFFER. A live client that DISCOVERs (NetworkManager restart,
+wifi re-association, VM resume) answers the ARP probe of its own address, and the probe-hit branch
+then quarantined that address for 10 minutes and released the lease.
+
+### What changed
+
+- `internal/dhcpd/alloc.go` — `Offer` now reports which rule fired:
+  `Offer(mac string, requested netip.Addr, hold time.Duration) (l Lease, fresh, ok bool)`. `fresh`
+  is true only for rule 3 (a requested address that is free) and rule 4 (lowest free in range);
+  false for rule 1 (reservation) and rule 2 (renewal). The unexported `allocate` and its `commit`
+  closure carry the flag; `Allocate` discards it and is unchanged externally — the ACK path never
+  probes. Only the allocator knows which rule fired, which is why the server cannot derive this
+  itself (comparing the offered address against the one the MAC holds would miss rule 1).
+- `internal/dhcpd/server.go` — the OFFER branch probes only `if fresh && s.opts.Prober.InUse(l.IP)`.
+  The probe-hit body is unchanged in substance (quarantine, release, one retry). The comment now
+  describes what the code does.
+- `internal/dhcpd/server_test.go` — two new tests plus one existing test de-blinded (below).
+- `internal/dhcpd/alloc_test.go` — one new test; three call sites in
+  `TestOfferNeverWeakensALiveLease` updated for the new arity (`got, _, ok :=`).
+
+No exported API beyond the `Offer` signature. No `Reconfigure`.
+
+### RED
+
+Stage 1 — the two new server tests plus `TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient`,
+which round 2 left prober-blind and which now points at `stubProber{inUse: victim}` (one line, no
+change to what it asserts). All three compile against HEAD `b5e773d` and fail there:
+
+```
+$ go test ./internal/dhcpd/ -count=1 -run 'TestDiscoverDoesNotProbe...|TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient' -v
+=== RUN   TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient
+    server_test.go:575: leases = [{MAC:bb:bb:bb:bb:bb:bb IP:192.168.1.11 Hostname:other Expires:2026-08-20 12:01:01 +0000 UTC}], want the first client still holding laptop at 192.168.1.10
+--- FAIL: TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient (0.00s)
+=== RUN   TestDiscoverDoesNotProbeAnAddressTheClientAlreadyHolds
+    server_test.go:640: offered 192.168.1.11, want the address the client already holds, 192.168.1.10
+--- FAIL: TestDiscoverDoesNotProbeAnAddressTheClientAlreadyHolds (0.00s)
+=== RUN   TestDiscoverDoesNotProbeAReservedClientsAddress
+    server_test.go:665: leases = [], want laptop still at the reserved 192.168.1.11
+--- FAIL: TestDiscoverDoesNotProbeAReservedClientsAddress (0.00s)
+FAIL	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.004s
+```
+
+Each failure is exactly the reported harm. The client held `.10` named laptop for 24h; the probe of
+its own address quarantined `.10`, released the lease, and the retry landed it on `.11`, unnamed,
+60s — so `Leases()` lost the laptop entry and the OFFER carried the wrong address. The reservation
+variant shows `leases = []`: `Quarantine` does not gate rule 1, so the retry re-committed the same
+`.11` but as an unnamed 60s hold, which `Server.Leases` drops.
+
+Stage 2 — `TestOfferReportsWhetherTheAddressIsNewToTheClient` cannot compile against HEAD, which is
+the point of the ruling: the information does not exist there.
+
+```
+$ go test ./internal/dhcpd/ -count=1
+internal/dhcpd/alloc_test.go:351:18: assignment mismatch: 3 variables but a.Offer returns 2 values
+internal/dhcpd/alloc_test.go:356:19: assignment mismatch: 3 variables but a.Offer returns 2 values
+internal/dhcpd/alloc_test.go:361:17: assignment mismatch: 3 variables but a.Offer returns 2 values
+internal/dhcpd/alloc_test.go:368:17: assignment mismatch: 3 variables but a.Offer returns 2 values
+FAIL	github.com/yoshiofthewire/kydns-server/internal/dhcpd [build failed]
+```
+
+### GREEN
+
+```
+$ go test ./internal/dhcpd/ -count=1 -run '<the new tests, the round-1, round-2 and probe tests>' -v
+--- PASS: TestOfferNeverWeakensALiveLease (0.00s)
+--- PASS: TestOfferReportsWhetherTheAddressIsNewToTheClient (0.00s)
+--- PASS: TestDiscoverDoesNotPersistALease (0.00s)
+--- PASS: TestDiscoverNeverAppearsInLeases (0.00s)
+--- PASS: TestDiscoverHoldExpiresAndAddressBecomesAllocatable (0.00s)
+--- PASS: TestDiscoverHostnameIsNotClaimed (0.00s)
+--- PASS: TestProbeHitSkipsToTheNextAddressAndQuarantines (0.00s)
+--- PASS: TestProbeHitWithNoFallbackAddressDrawsNoReply (0.00s)
+--- PASS: TestNormalizeMAC (0.00s)
+--- PASS: TestDiscoverDoesNotWeakenAnExistingLease (0.00s)
+--- PASS: TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient (0.00s)
+--- PASS: TestDiscoverDoesNotWeakenAReservedClientsLease (0.00s)
+--- PASS: TestRequestWithNoHostnameClearsTheName (0.00s)
+--- PASS: TestDiscoverDoesNotProbeAnAddressTheClientAlreadyHolds (0.00s)
+--- PASS: TestDiscoverDoesNotProbeAReservedClientsAddress (0.00s)
+ok  	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.005s
+```
+
+Both probe-hit tests still pass: their MAC holds nothing, so rules 3/4 fire, `fresh` is true, and
+the probe still skips and quarantines. The gate is not over-applied.
+
+### Full verification
+
+```
+$ go build ./...              → BUILD_OK (no output)
+$ go vet ./...                → VET_OK (no output)
+$ gofmt -l internal/dhcpd/    → FMT_CLEAN (no output)
+$ go test ./internal/dhcpd/ -count=1        → ok  0.003s (54 tests, all PASS)
+$ go test ./internal/dhcpd/ -race -count=2  → ok  1.015s
+$ go test ./... -count=1                    → 19 packages, all ok, 0 FAIL
+```
+
+### Concerns
+
+1. `TestDiscoverDoesNotProbeAReservedClientsAddress` reads `s.opts.Alloc.quarantine` directly to
+   assert the reserved address was not quarantined. Observing it through `Allocate` is not possible:
+   rule 1 ignores the quarantine list (the out-of-scope Part 2 item), so a quarantined reservation is
+   still handed out. Same-package test, no lock needed (single goroutine), but it is white-box.
+2. Not fixed, recorded already and unchanged by this round: `Quarantine` does not gate rule 1; the
+   round-2 guard requires `prev.IP == ip`; rule 1 commits without a freeness check. Gating the probe
+   on `fresh` makes the first unreachable from the probe path, which was the only way Part 1 could
+   reach it.

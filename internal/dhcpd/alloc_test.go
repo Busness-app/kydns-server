@@ -321,7 +321,7 @@ func TestOfferNeverWeakensALiveLease(t *testing.T) {
 	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}, 30*time.Second)
 
 	// A hold longer than what is left extends it, and keeps the name.
-	got, ok := a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Minute)
+	got, _, ok := a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Minute)
 	if !ok || got.IP != l.IP || got.Hostname != "laptop" {
 		t.Fatalf("Offer = %+v (ok=%v), want %v still named laptop", got, ok, l.IP)
 	}
@@ -329,14 +329,47 @@ func TestOfferNeverWeakensALiveLease(t *testing.T) {
 		t.Fatalf("expiry = %v, want %v", got.Expires, want)
 	}
 	// A shorter one does not move it back.
-	got, _ = a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Second)
+	got, _, _ = a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Second)
 	if want := epoch.Add(time.Minute); !got.Expires.Equal(want) {
 		t.Fatalf("expiry = %v, want %v: a hold never shortens a lease", got.Expires, want)
 	}
 	// Once the lease has expired there is nothing left to preserve.
 	*now = epoch.Add(2 * time.Minute)
-	got, _ = a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Minute)
+	got, _, _ = a.Offer("aa:aa:aa:aa:aa:aa", netip.Addr{}, time.Minute)
 	if got.Hostname != "" {
 		t.Fatalf("hostname = %q, want none: an expired lease is not one the client holds", got.Hostname)
+	}
+}
+
+// Only the allocator knows which rule fired, and only rules 3 and 4 produce
+// an address the client does not already hold. The server probes on that.
+func TestOfferReportsWhetherTheAddressIsNewToTheClient(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+
+	// 4. Lowest free address in the range.
+	l, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok || !fresh {
+		t.Fatalf("Offer = %+v (fresh=%v, ok=%v), want a fresh pick", l, fresh, ok)
+	}
+	// 2. Renewing what the client already holds.
+	if _, fresh, _ = a.Offer(mac, netip.Addr{}, time.Minute); fresh {
+		t.Fatal("a renewal reported fresh; the client already holds that address")
+	}
+	// 3. A requested address that is free.
+	req := netip.MustParseAddr("192.168.1.12")
+	l, fresh, ok = a.Offer("bb:bb:bb:bb:bb:bb", req, time.Minute)
+	if !ok || l.IP != req || !fresh {
+		t.Fatalf("Offer = %+v (fresh=%v, ok=%v), want a fresh %v", l, fresh, ok, req)
+	}
+	// 1. A reservation.
+	res := netip.MustParseAddr("192.168.1.11")
+	a.SetReservations(map[string]netip.Addr{"cc:cc:cc:cc:cc:cc": res})
+	l, fresh, ok = a.Offer("cc:cc:cc:cc:cc:cc", netip.Addr{}, time.Minute)
+	if !ok || l.IP != res {
+		t.Fatalf("Offer = %+v (ok=%v), want the reserved %v", l, ok, res)
+	}
+	if fresh {
+		t.Fatal("a reservation reported fresh; it is the client's address already")
 	}
 }

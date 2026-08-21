@@ -89,22 +89,25 @@ func (a *Allocator) SetReservations(r map[string]netip.Addr) {
 // Allocate returns the address this client should get, committing it as a
 // lease for ttl. The bool is false only when the pool is exhausted.
 func (a *Allocator) Allocate(mac, hostname string, requested netip.Addr, ttl time.Duration) (Lease, bool) {
-	return a.allocate(mac, hostname, requested, ttl, false)
+	l, _, ok := a.allocate(mac, hostname, requested, ttl, false)
+	return l, ok
 }
 
 // Offer holds an address for a client that has only DISCOVERed. An OFFER is
 // a tentative hold, not a lease, so it never weakens a lease the client
-// already holds: neither the name nor the expiry of one moves.
-func (a *Allocator) Offer(mac string, requested netip.Addr, hold time.Duration) (Lease, bool) {
+// already holds: neither the name nor the expiry of one moves. fresh is true
+// only when the address is new to this client — rules 3 and 4 — which is the
+// only case worth a conflict probe.
+func (a *Allocator) Offer(mac string, requested netip.Addr, hold time.Duration) (l Lease, fresh, ok bool) {
 	return a.allocate(mac, "", requested, hold, true)
 }
 
-func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl time.Duration, tentative bool) (Lease, bool) {
+func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl time.Duration, tentative bool) (Lease, bool, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
 
-	commit := func(ip netip.Addr) (Lease, bool) {
+	commit := func(ip netip.Addr, fresh bool) (Lease, bool, bool) {
 		if held, ok := a.byIP[ip]; ok && held != mac {
 			delete(a.byMAC, held)
 		}
@@ -123,29 +126,29 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 		}
 		a.byMAC[mac] = l
 		a.byIP[ip] = mac
-		return l, true
+		return l, fresh, true
 	}
 
 	// 1. A reservation always wins, in or out of the dynamic range, but
 	// never our own address or the gateway.
 	if ip, ok := a.reserved[mac]; ok && !a.protected(ip) {
-		return commit(ip)
+		return commit(ip, false)
 	}
 	// 2. Renew what this client already holds, if it is still ours to give.
 	if l, ok := a.byMAC[mac]; ok && a.usable(l.IP) && a.reservedIP[l.IP] == "" {
-		return commit(l.IP)
+		return commit(l.IP, false)
 	}
 	// 3. Honour a requested address that is free.
 	if requested.IsValid() && a.free(requested, mac, now) {
-		return commit(requested)
+		return commit(requested, true)
 	}
 	// 4. Lowest free address in the range.
 	for ip := a.cfg.Start; a.inRange(ip); ip = ip.Next() {
 		if a.free(ip, mac, now) {
-			return commit(ip)
+			return commit(ip, true)
 		}
 	}
-	return Lease{}, false
+	return Lease{}, false, false
 }
 
 // Release drops a client's lease, as a DHCPRELEASE does.

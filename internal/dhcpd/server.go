@@ -261,18 +261,19 @@ func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, boo
 		requested = ip.Unmap()
 	}
 	if !commit {
-		l, ok := s.opts.Alloc.Offer(mac, requested, offerHold)
+		l, fresh, ok := s.opts.Alloc.Offer(mac, requested, offerHold)
 		if !ok {
 			return Lease{}, false
 		}
-		// Probe only an address that is new to us. A renewal or a
-		// reservation is not probed: the client already has it, or it is
-		// spoken for.
-		if s.opts.Prober.InUse(l.IP) {
+		// Only an address new to this client is probed. A renewal or a
+		// reservation is one it is already entitled to, and its own answer
+		// would quarantine the address out from under it.
+		if fresh && s.opts.Prober.InUse(l.IP) {
 			s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
 			s.opts.Alloc.Quarantine(l.IP)
 			s.opts.Alloc.Release(mac)
-			return s.opts.Alloc.Offer(mac, netip.Addr{}, offerHold)
+			l, _, ok = s.opts.Alloc.Offer(mac, netip.Addr{}, offerHold)
+			return l, ok
 		}
 		return l, true
 	}

@@ -553,6 +553,8 @@ func TestDiscoverDoesNotFreeAnExistingLeaseForAnotherClient(t *testing.T) {
 	c := &captureConn{}
 	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
 	victim := c.replies(t)[0].YourIPAddr
+	// Not prober-blind: the victim answers a probe of its own address.
+	s.opts.Prober = stubProber{inUse: netip.MustParseAddr(victim.String())}
 
 	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", ""))
 	*now = now.Add(offerHold + time.Second)
@@ -610,5 +612,62 @@ func TestRequestWithNoHostnameClearsTheName(t *testing.T) {
 	}
 	if ls, _ := s.Leases(t.Context()); len(ls) != 0 {
 		t.Fatalf("Leases returned %+v, want none: a client that sends no hostname gets no name", ls)
+	}
+}
+
+// A client's own ARP answer is not a conflict. Probing an address the client
+// already holds would quarantine its lease and push it onto a new one, so the
+// probe runs only for an address that is new to it.
+func TestDiscoverDoesNotProbeAnAddressTheClientAlreadyHolds(t *testing.T) {
+	s, ms := newTestServer(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request(mac, "laptop", netip.Addr{}))
+	before, _ := ms.DHCPLeases()
+	if len(before) != 1 {
+		t.Fatalf("setup: persisted %+v, want one laptop lease", before)
+	}
+	held := netip.MustParseAddr(before[0].IP)
+	s.opts.Prober = stubProber{inUse: held}
+
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, discover(mac, ""))
+
+	replies := c.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies to a DISCOVER, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.String() != held.String() {
+		t.Fatalf("offered %v, want the address the client already holds, %v", got, held)
+	}
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 1 || ls[0].Hostname != "laptop" || ls[0].IP != held.String() {
+		t.Fatalf("leases = %+v, want laptop still at %v", ls, held)
+	}
+	if want := epoch.Add(24 * time.Hour); !ls[0].Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want the full term %v", ls[0].Expires, want)
+	}
+}
+
+// The reservation variant: rule 1 is not a new address either, and
+// quarantining a reservation would strand the client off it for 10 minutes.
+func TestDiscoverDoesNotProbeAReservedClientsAddress(t *testing.T) {
+	s, _ := newTestServer(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	res := netip.MustParseAddr("192.168.1.11")
+	s.opts.Alloc.SetReservations(map[string]netip.Addr{mac: res})
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, request(mac, "laptop", netip.Addr{}))
+	s.opts.Prober = stubProber{inUse: res}
+
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, discover(mac, ""))
+
+	ls, _ := s.Leases(t.Context())
+	if len(ls) != 1 || ls[0].IP != res.String() || ls[0].Hostname != "laptop" {
+		t.Fatalf("leases = %+v, want laptop still at the reserved %v", ls, res)
+	}
+	if want := epoch.Add(24 * time.Hour); !ls[0].Expires.Equal(want) {
+		t.Fatalf("expiry = %v, want the full term %v", ls[0].Expires, want)
+	}
+	if _, ok := s.opts.Alloc.quarantine[res]; ok {
+		t.Fatalf("%v was quarantined by its own holder answering the probe", res)
 	}
 }
