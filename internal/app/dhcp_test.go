@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -637,4 +638,134 @@ func TestStopLockedCancelsTheWatchWithNoListener(t *testing.T) {
 	if got := d.Foreign(); got != nil {
 		t.Errorf("Foreign() = %+v after stopLocked, want nothing to show", got)
 	}
+}
+
+// ranWithin reports whether fn returned, so a lock taken twice fails a test
+// rather than hanging it.
+func ranWithin(fn func()) bool {
+	done := make(chan struct{})
+	go func() { defer close(done); fn() }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(5 * time.Second):
+		return false
+	}
+}
+
+// reservedRunner is a runner holding a listener's allocator without a socket:
+// everything reservations touch is reachable without a bind.
+func reservedRunner(svcs []store.Service) (*dhcpRunner, *dhcpd.Allocator) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	info, _ := fakeIface("eth0")
+	alloc := dhcpd.NewAllocator(dhcpd.Config{
+		Subnet:    info.Subnet,
+		Start:     netip.MustParseAddr("192.168.1.100"),
+		End:       netip.MustParseAddr("192.168.1.200"),
+		Host:      info.Addr,
+		Gateway:   netip.MustParseAddr("192.168.1.1"),
+		LeaseTime: time.Hour,
+	}, time.Now)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	d.alloc, d.subnet = alloc, info.Subnet
+	d.services = func() ([]store.Service, error) { return svcs, nil }
+	return d, alloc
+}
+
+// The lock rules pull against each other: Reconcile holds d.mu for its whole
+// body, and the refresh reads the store, which must not run under it. Both
+// are checked here because getting either wrong hangs the daemon at boot.
+func TestReconcileRefreshesReservationsWithoutHoldingItsLock(t *testing.T) {
+	d, alloc := reservedRunner([]store.Service{{
+		Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}})
+	svcs := d.services
+	d.services = func() ([]store.Service, error) {
+		// Status takes d.mu. Held across a database query, the whole UI
+		// would block for the length of it.
+		if !ranWithin(func() { d.Status() }) {
+			t.Error("Status blocked while the service list was being read")
+		}
+		return svcs()
+	}
+
+	if !ranWithin(func() { d.Reconcile(d.current) }) {
+		t.Fatal("Reconcile never returned; d.mu was taken twice")
+	}
+
+	l, ok := alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.20") {
+		t.Fatalf("the reserved client got %v (ok=%v), want its reservation", l.IP, ok)
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Errorf("Problems() = %+v, want none", p)
+	}
+}
+
+// Reason is shown verbatim, so an inactive reservation has to tell the
+// operator what to do about it.
+func TestUnresolvedReservationsAreReportedForTheUI(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "offsite", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "10.9.0.20"}},
+	}})
+	d.RefreshReservations()
+
+	got := d.Problems()
+	if len(got) != 1 || got[0].Service != "offsite" || got[0].Reason == "" {
+		t.Fatalf("Problems() = %+v, want one entry naming offsite with a reason", got)
+	}
+	got[0].Service = "mutated"
+	if d.Problems()[0].Service != "offsite" {
+		t.Error("Problems() hands out the live report, so a caller can corrupt it")
+	}
+}
+
+// The store read runs outside d.mu, so a stop can land in the middle of one.
+// Publishing afterwards would show problems for a server no longer serving.
+func TestAStopDuringARefreshDoesNotRepublishTheProblems(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "offsite", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "10.9.0.20"}},
+	}})
+	svcs, reads := d.services, 0
+	d.services = func() ([]store.Service, error) {
+		reads++
+		d.Reconcile(store.Settings{}) // dhcp turned off mid-read
+		return svcs()
+	}
+
+	if !ranWithin(func() { d.RefreshReservations() }) {
+		t.Fatal("the refresh never returned")
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Fatalf("Problems() = %+v after the listener stopped, want none", p)
+	}
+	// Nothing is running, so there is nothing to reserve for and no reason to
+	// go back to the database.
+	d.RefreshReservations()
+	if reads != 1 {
+		t.Fatalf("the service list was read %d times, want 1: a stopped runner still queries", reads)
+	}
+}
+
+// A registry write refreshes while the UI reads. -race is the point of this
+// one; it passes trivially without it.
+func TestRefreshReservationsIsSafeAlongsideTheUIReads(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(3)
+		go func() { defer wg.Done(); d.RefreshReservations() }()
+		go func() { defer wg.Done(); d.Problems() }()
+		go func() { defer wg.Done(); d.Status() }()
+	}
+	wg.Wait()
 }

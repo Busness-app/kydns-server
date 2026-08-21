@@ -113,7 +113,16 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return fmt.Errorf("initial snapshot: %w", err)
 	}
 
+	// Declared before the callback so it captures the variable; it is
+	// assigned below, once the role it reads has been decided.
+	var dhcpRun *dhcpRunner
+
 	reg := registry.New(st, privateFQDN, func() error {
+		// A service's address or MAC changing changes what its reservation
+		// resolves to, so this is the same event.
+		if dhcpRun != nil {
+			dhcpRun.RefreshReservations()
+		}
 		if err := holder.Rebuild(); err != nil {
 			// The write is already committed; the old snapshot keeps serving.
 			logger.Error("snapshot rebuild failed, still serving the previous snapshot", "error", err)
@@ -215,10 +224,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// Read per Reconcile rather than captured, so a promotion starts DHCP
 	// without a restart.
-	dhcpRun := &dhcpRunner{
-		poller: poller,
-		store:  st,
-		logger: logger,
+	dhcpRun = &dhcpRunner{
+		poller:   poller,
+		store:    st,
+		logger:   logger,
+		services: st.Services,
 		onChange: func() {
 			if err := poller.Poll(ctx); err != nil {
 				logger.Warn("lease refresh after a dhcp change failed", "error", err)

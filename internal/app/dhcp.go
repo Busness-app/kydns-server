@@ -36,6 +36,9 @@ type dhcpRunner struct {
 	// role is read at every Reconcile, so a promotion starts DHCP without a
 	// restart.
 	role func() Role
+	// services reads the current service list. Reservations are derived from
+	// it, so a registry write and a settings save both come through here.
+	services func() ([]store.Service, error)
 	// Injected for tests: the decisions that refuse a start are host-state
 	// calls, and a test must be able to reach them without an interface or a
 	// socket. Nil means the real one.
@@ -54,6 +57,13 @@ type dhcpRunner struct {
 	foreign []dhcpd.Foreign
 	// stopWatch ends the periodic probe when the listener stops.
 	stopWatch context.CancelFunc
+	// alloc and subnet belong to the running listener, held so reservations
+	// refresh without rebuilding it. Nil alloc means nothing is running and
+	// there is nothing to reserve for.
+	alloc  *dhcpd.Allocator
+	subnet netip.Prefix
+	// problems is the last unresolved-reservation report, for the UI.
+	problems []dhcpd.ReservationProblem
 }
 
 // foreignProbe is one run of the rogue check. A func rather than the server
@@ -69,7 +79,18 @@ const (
 
 // Reconcile brings the listener in line with v. It is safe to call with
 // unchanged settings: an already-correct listener is left alone.
+//
+// The refresh is sequenced after the reconcile rather than folded into it:
+// reconcile holds d.mu for its whole body and refreshing reads the store, so
+// one call would either take d.mu twice or hold it across a database query.
+// A reconcile that left nothing running clears d.alloc, and the refresh then
+// returns without reading anything.
 func (d *dhcpRunner) Reconcile(v store.Settings) {
+	d.reconcile(v)
+	d.RefreshReservations()
+}
+
+func (d *dhcpRunner) reconcile(v store.Settings) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -94,7 +115,7 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 	// Build before stop: a build that refuses must leave the listener that is
 	// already serving the LAN alone. Reconcile has three triggers — boot, a
 	// settings save, and promotion — so a stop here would have no retry.
-	srv, err := d.build(v, d.needsProbe(v))
+	b, err := d.build(v, d.needsProbe(v))
 	if err != nil {
 		d.fail(v, err, "dhcp is enabled but cannot start")
 		return
@@ -102,15 +123,19 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 	// The old listener holds :67 until it is closed, so it goes down only once
 	// its replacement is built and about to bind.
 	d.stopLocked()
-	if err := srv.Start(context.Background()); err != nil {
+	if err := b.srv.Start(context.Background()); err != nil {
 		d.fail(v, err, "dhcp listener failed to bind")
 		return
 	}
-	d.running, d.current, d.lastError = srv, v, nil
-	d.poller.SetSource(srv)
+	d.running, d.current, d.lastError = b.srv, v, nil
+	// Recorded here, not in build: stopLocked runs between the two and clears
+	// them, and a build that never bound must not leave its allocator behind
+	// for the refresh to feed.
+	d.alloc, d.subnet = b.alloc, b.subnet
+	d.poller.SetSource(b.srv)
 	watchCtx, cancel := context.WithCancel(context.Background())
 	d.stopWatch = cancel
-	go d.watchForeign(watchCtx, srv.ProbeForeign)
+	go d.watchForeign(watchCtx, b.srv.ProbeForeign)
 	d.logger.Info("dhcp server started",
 		"interface", v.DHCPInterface, "range", v.DHCPRangeStart+"-"+v.DHCPRangeEnd)
 }
@@ -147,9 +172,18 @@ var errReplicaNoDHCP = errors.New(
 	"this node is a replica, so it does not serve DHCP: two DHCP servers on one " +
 		"network breaks it. The primary serves DHCP; a replica does after it is promoted")
 
+// built is a listener and the two pieces Reconcile keeps once it binds: its
+// allocator, so reservations refresh without a rebuild, and the subnet they
+// resolve against.
+type built struct {
+	srv    *dhcpd.Server
+	alloc  *dhcpd.Allocator
+	subnet netip.Prefix
+}
+
 // build assembles a server, refusing on anything the operator must fix first.
 // probe is false only when a listener is already bound to this interface.
-func (d *dhcpRunner) build(v store.Settings, probe bool) (*dhcpd.Server, error) {
+func (d *dhcpRunner) build(v store.Settings, probe bool) (built, error) {
 	qualifies, inspect, detect := d.qualifies, d.inspect, d.detectForeign
 	if qualifies == nil {
 		qualifies = dhcpd.Qualifies
@@ -161,33 +195,33 @@ func (d *dhcpRunner) build(v store.Settings, probe bool) (*dhcpd.Server, error) 
 		detect = dhcpd.DetectForeign
 	}
 	if err := qualifies(v.DHCPInterface); err != nil {
-		return nil, err
+		return built{}, err
 	}
 	info, err := inspect(v.DHCPInterface)
 	if err != nil {
-		return nil, err
+		return built{}, err
 	}
 	// Parsed, not asserted: build runs against whatever is in the settings
 	// row, including one written before the validator existed or edited by
 	// hand in SQLite. A bad value is a reportable setting, not a panic.
 	start, err := parseSetting("dhcp.range_start", v.DHCPRangeStart)
 	if err != nil {
-		return nil, err
+		return built{}, err
 	}
 	end, err := parseSetting("dhcp.range_end", v.DHCPRangeEnd)
 	if err != nil {
-		return nil, err
+		return built{}, err
 	}
 	gateway, err := parseSetting("dhcp.gateway", v.DHCPGateway)
 	if err != nil {
-		return nil, err
+		return built{}, err
 	}
 	// The validator cannot check this: it never reads host state, so the same
 	// row validates identically on every node. Here is the only place that
 	// holds both the range and the live interface. Out-of-subnet addresses
 	// would be handed out and no client on the segment could use them.
 	if !info.Subnet.Contains(start) || !info.Subnet.Contains(end) {
-		return nil, fmt.Errorf(
+		return built{}, fmt.Errorf(
 			"the DHCP range %s-%s is not inside %s, the subnet of interface %q",
 			start, end, info.Subnet, v.DHCPInterface)
 	}
@@ -204,7 +238,7 @@ func (d *dhcpRunner) build(v store.Settings, probe bool) (*dhcpd.Server, error) 
 			probeErr = fmt.Errorf("interface %q: %w", v.DHCPInterface, probeErr)
 		}
 		if err := foreignVerdict(foreign, probeErr, v.DHCPAllowForeign); err != nil {
-			return nil, err
+			return built{}, err
 		}
 	}
 
@@ -222,21 +256,26 @@ func (d *dhcpRunner) build(v store.Settings, probe bool) (*dhcpd.Server, error) 
 		// operator configured, on the save that turns DHCP on.
 		a, err := parseSetting("dhcp.secondary_dns", v.DHCPSecondaryDNS)
 		if err != nil {
-			return nil, err
+			return built{}, err
 		}
 		dns = append(dns, a)
 	}
-	return dhcpd.New(dhcpd.Options{
-		Iface:    info,
-		Cfg:      cfg,
-		DNS:      dns,
-		Domain:   v.PrivateDomain,
-		Alloc:    dhcpd.NewAllocator(cfg, time.Now),
-		Prober:   dhcpd.NewProber(v.DHCPInterface, 100*time.Millisecond),
-		Store:    d.store,
-		OnChange: d.onChange,
-		Logger:   d.logger,
-	}), nil
+	alloc := dhcpd.NewAllocator(cfg, time.Now)
+	return built{
+		srv: dhcpd.New(dhcpd.Options{
+			Iface:    info,
+			Cfg:      cfg,
+			DNS:      dns,
+			Domain:   v.PrivateDomain,
+			Alloc:    alloc,
+			Prober:   dhcpd.NewProber(v.DHCPInterface, 100*time.Millisecond),
+			Store:    d.store,
+			OnChange: d.onChange,
+			Logger:   d.logger,
+		}),
+		alloc:  alloc,
+		subnet: info.Subnet,
+	}, nil
 }
 
 // parseSetting names the field, because "invalid IP" on its own sends an
@@ -258,6 +297,10 @@ func (d *dhcpRunner) stopLocked() {
 		d.stopWatch = nil
 	}
 	d.foreign = nil
+	// Reservation state belongs to the listener: leaving it would go on
+	// reporting a segment we no longer serve, and would feed an allocator
+	// nothing reads.
+	d.alloc, d.subnet, d.problems = nil, netip.Prefix{}, nil
 	if d.running == nil {
 		return
 	}
@@ -267,6 +310,52 @@ func (d *dhcpRunner) stopLocked() {
 	d.running = nil
 	d.poller.SetSource(nil)
 	d.logger.Info("dhcp server stopped")
+}
+
+// RefreshReservations re-derives reservations from the current services. It
+// is called after every registry write, because renaming or re-addressing a
+// service changes what its reservation resolves to.
+//
+// d.mu is taken twice, around the store read rather than across it: a
+// database query under it would block Status, Foreign and every settings save
+// for its duration. The listener may therefore go down mid-read, so the
+// report is published only if the allocator it was resolved for is still the
+// running one.
+func (d *dhcpRunner) RefreshReservations() {
+	d.mu.Lock()
+	alloc, subnet := d.alloc, d.subnet
+	d.mu.Unlock()
+	if alloc == nil {
+		return // nothing is running, so there is nothing to reserve for
+	}
+	svcs, err := d.services()
+	if err != nil {
+		d.logger.Error("could not read services to refresh DHCP reservations", "error", err)
+		return
+	}
+	res, problems := dhcpd.Reservations(svcs, subnet)
+	alloc.SetReservations(res)
+
+	d.mu.Lock()
+	if d.alloc != alloc {
+		// The listener went down while we read, so this report describes a
+		// segment we no longer serve.
+		d.mu.Unlock()
+		return
+	}
+	d.problems = problems
+	d.mu.Unlock()
+	for _, p := range problems {
+		d.logger.Warn("a DHCP reservation is inactive",
+			"service", p.Service, "mac", p.MAC, "reason", p.Reason)
+	}
+}
+
+// Problems returns the last unresolved-reservation report, for the UI.
+func (d *dhcpRunner) Problems() []dhcpd.ReservationProblem {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]dhcpd.ReservationProblem(nil), d.problems...)
 }
 
 // Status is what the API and the UI report.
