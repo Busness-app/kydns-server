@@ -1,8 +1,8 @@
 # SDD workspace snapshot — built-in DHCP part 1
 
 This is a committed copy of the subagent-driven-development workspace for
-`docs/superpowers/plans/2026-08-19-kydns-builtin-dhcp-part1.md`, so the run can be picked up on
-another machine. Read `docs/superpowers/plans/2026-08-20-kydns-builtin-dhcp-part1-handoff.md` first —
+`docs/superpowers/plans/2026-08-19-kydns-builtin-dhcp-part1.md`, so the run can be read without
+the git-ignored workspace. All 11 tasks are complete and the branch has been reviewed as a whole. Read `docs/superpowers/plans/2026-08-20-kydns-builtin-dhcp-part1-handoff.md` first —
 it is the summary; this directory is the working state behind it.
 
 The live workspace normally lives at `.superpowers/sdd/2026-08-19-kydns-builtin-dhcp-part1/`, which is
@@ -14,7 +14,9 @@ git-ignored (`.gitignore:16`). That is why this copy exists.
 |---|---|
 | `progress.md` | **The ledger.** Pre-flight conflict scan, every ruling, per-task review outcomes, deferred minors, verified helper names, and the Part 2 amendment list. The authoritative record of the run. |
 | `task-N-brief.md` | The requirements handed to each implementer — the task's section of the plan, extracted verbatim. Tasks 1–11. |
-| `task-N-report.md` | What each implementer actually did, the commands they ran, and what they found wrong with the brief. Tasks 1–7 (8–11 have not run). |
+| `task-N-report.md` | What each implementer actually did, the commands they ran, and what they found wrong with the brief. Tasks 1–11, all complete. |
+| `final-findings.md` | The whole-branch review's findings, written as the brief for the fix wave: 2 Critical, 5 Important, 9 small items, each with its demonstrated failure. |
+| `final-fix-report.md` | Both fix waves against those findings, with the RED output and the mutation results. |
 
 **Review diffs are deliberately not here.** They were `git diff` output over commit ranges that are all
 pushed on this branch, so they are regenerable and would have added ~110 KB of duplicated history.
