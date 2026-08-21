@@ -94,6 +94,9 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			return zone.Input{}, err
 		}
 		var leases []zone.Lease
+		// Still guarded: the poller's onChange rebuilds this holder, so the
+		// holder is built first and the initial Rebuild below runs while the
+		// variable is genuinely nil.
 		if poller != nil {
 			for _, l := range poller.Leases() {
 				leases = append(leases, zone.Lease{Hostname: l.Hostname, Address: l.IP})
@@ -142,15 +145,19 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	refresher := policy.NewRefresher(st, policy.NewFetcher(30*time.Second), policyHolder, logger)
 	policySvc := policy.NewService(st, policyHolder, refresher, logger)
 
+	// The poller always exists and always runs: its source is swapped at
+	// runtime, which is what lets both dhcp_lease_file and the built-in server
+	// be turned on and off without a restart. A nil source is discovery off.
+	poller = discovery.NewPoller(
+		nil,
+		time.Duration(boot.DiscoveryInterval)*time.Second,
+		func() {
+			if err := holder.Rebuild(); err != nil {
+				logger.Error("rebuild after lease change failed", "error", err)
+			}
+		}, logger)
 	if boot.DHCPLeaseFile != "" {
-		poller = discovery.NewPoller(
-			&dhcp.DnsmasqSource{Path: boot.DHCPLeaseFile},
-			time.Duration(boot.DiscoveryInterval)*time.Second,
-			func() {
-				if err := holder.Rebuild(); err != nil {
-					logger.Error("rebuild after lease change failed", "error", err)
-				}
-			}, logger)
+		poller.SetSource(&dhcp.DnsmasqSource{Path: boot.DHCPLeaseFile})
 	}
 
 	if err := bootstrapToken(reg, cfg.DataDir, logger); err != nil {
@@ -192,14 +199,8 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		time.Duration(boot.HealthTimeout)*time.Second,
 		boot.HealthWorkers, logger)
 
-	live := &liveComponents{
-		acl: acl, forwarder: fwd, cache: cache, dnsSrv: dnsSrv,
-		authoritative: authoritative, checker: checker, poller: poller,
-		zoneHolder: holder, registry: reg, logger: logger, prevUpstreams: boot.Upstreams,
-	}
-	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
-
-	errs := make(chan error, 3)
+	// The role is decided here, ahead of the live components, because the DHCP
+	// runner reads it and the live components hold the runner.
 	promotedAt, err := st.Promotion()
 	if err != nil {
 		return err
@@ -211,6 +212,31 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			"fix", "remove replication.primary, or run kydns replica join to make this node a replica again")
 	}
 	roleHolder := NewRoleHolder(role)
+
+	// Read per Reconcile rather than captured, so a promotion starts DHCP
+	// without a restart.
+	dhcpRun := &dhcpRunner{
+		poller: poller,
+		store:  st,
+		logger: logger,
+		onChange: func() {
+			if err := poller.Poll(ctx); err != nil {
+				logger.Warn("lease refresh after a dhcp change failed", "error", err)
+			}
+		},
+		role: roleHolder.Current,
+	}
+	dhcpRun.Reconcile(snap.Raw)
+
+	live := &liveComponents{
+		acl: acl, forwarder: fwd, cache: cache, dnsSrv: dnsSrv,
+		authoritative: authoritative, checker: checker, poller: poller,
+		zoneHolder: holder, registry: reg, logger: logger, prevUpstreams: boot.Upstreams,
+		dhcp: dhcpRun,
+	}
+	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
+
+	errs := make(chan error, 3)
 	repl, err := startReplication(ctx, cfg, role, st,
 		&replicaApplier{st: st, settings: settingsHolder, policy: policyHolder, live: live},
 		checker.Statuses, logger)
@@ -241,12 +267,9 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		}
 	}
 
-	leaseFn := func() []dhcp.Lease {
-		if poller == nil {
-			return nil
-		}
-		return poller.Leases()
-	}
+	// Always wired. Whether discovery is on is a separate question, answered
+	// per request by the poller's current source rather than by this being nil.
+	leaseFn := poller.Leases
 
 	// One producer for both transports, read per request so promotion moves
 	// them together.
@@ -263,7 +286,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
 	api := adminapi.NewAPI(reg, acl, cache).
-		WithProviders(leaseFn, healthFn).
+		WithProviders(leaseFn, healthFn, poller.Enabled).
 		WithPolicy(policySvc).
 		WithSettings(settingsSvc).
 		WithMetrics(dnsSrv.Metrics()).
@@ -297,25 +320,17 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Logger:      logger,
 		Health:      healthFn,
 		Replication: func() web.ReplicaStatus { return replStatus().toWeb() },
-		// Compared against the boot values on every page load: there is no
-		// dirty flag to drift, and the banner clears itself on restart.
-		RestartPending: func() []web.RestartItem {
-			cur, err := settingsSvc.Get()
-			if err != nil {
-				return nil
-			}
-			var out []web.RestartItem
-			for _, it := range restartPending(boot, cur) {
-				out = append(out, web.RestartItem(it))
-			}
-			return out
-		},
-		Leases: func() func() []dhcp.Lease {
-			if poller == nil {
-				return nil // the screen renders "discovery is off" rather than empty
-			}
-			return leaseFn
-		}(),
+		// Left nil: no setting the database owns needs a restart any more.
+		// private_domain moved to a live swap, and dhcp_lease_file went with
+		// the built-in DHCP server — the poller always exists now and Apply
+		// swaps its source, so a banner naming it would send an operator to
+		// restart a server that has already picked the file up. web renders no
+		// banner for a nil provider.
+		Leases: leaseFn,
+		// Read per request, not fixed at construction: the built-in server and
+		// a lease file both come and go at runtime, and the screen has to say
+		// "discovery is off" rather than render an empty table.
+		DiscoveryOn: poller.Enabled,
 	})
 	webSrv.Routes(mux)
 
@@ -334,9 +349,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 			errs <- err
 		}
 	}()
-	if poller != nil {
-		go poller.Run(ctx)
-	}
+	go poller.Run(ctx)
 	go checker.Run(ctx)
 	go refresher.Run(ctx)
 	set, err := policySvc.Settings()
@@ -433,38 +446,6 @@ func flushOnUpstreamChange(c *dnsserver.Cache, prev, next []string, logger *slog
 	c.Flush()
 	logger.Info("upstreams changed, cache flushed", "upstreams", next)
 	return true
-}
-
-// RestartItem is one setting whose stored value differs from the one the
-// process is running.
-type RestartItem struct {
-	Key     string
-	Running string
-	Stored  string
-}
-
-// restartPending compares the boot value of the one setting that cannot be
-// applied live. There is no dirty flag to drift out of sync: the comparison
-// becomes equal on the next restart and the banner clears itself.
-//
-// private_domain used to be here. It is applied live now: the zone is an
-// atomic on the authoritative answerer and the registry, and Apply moves both.
-func restartPending(boot, cur store.Settings) []RestartItem {
-	var out []RestartItem
-	add := func(key, running, stored string) {
-		if running != stored {
-			out = append(out, RestartItem{Key: key, Running: running, Stored: stored})
-		}
-	}
-	add("dhcp_lease_file", orOff(boot.DHCPLeaseFile), orOff(cur.DHCPLeaseFile))
-	return out
-}
-
-func orOff(s string) string {
-	if s == "" {
-		return "off"
-	}
-	return s
 }
 
 func onOffLabel(b bool) string {

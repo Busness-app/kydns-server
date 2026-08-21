@@ -36,6 +36,7 @@ func newAPIWithProviders(t *testing.T) (http.Handler, string) {
 		func() []health.Status {
 			return []health.Status{{ServiceID: 1, Name: "kypost", State: "up", Since: time.Now()}}
 		},
+		func() bool { return true },
 	)
 	return api.Handler(), tok
 }

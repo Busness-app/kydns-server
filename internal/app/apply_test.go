@@ -206,6 +206,39 @@ func TestApplyDoesNotPanicWithDiscoveryOff(t *testing.T) {
 	live.Apply(validSnapshot(t))
 }
 
+// dhcp_lease_file applies live now: the poller always exists and Apply swaps
+// its source. This is what replaced the restart banner that used to name it,
+// so it has to actually work rather than merely have stopped being announced.
+func TestApplySwapsTheLeaseSource(t *testing.T) {
+	live, _ := newLiveComponents(t)
+
+	live.Apply(validSnapshot(t)) // no dhcp_lease_file
+	if live.poller.Enabled() {
+		t.Error("discovery is on with no lease source configured")
+	}
+
+	v := validSnapshot(t).Raw
+	v.DHCPLeaseFile = "/var/lib/misc/dnsmasq.leases"
+	snap, err := settings.Build(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Apply(snap)
+	if !live.poller.Enabled() {
+		t.Fatal("dhcp_lease_file was set but discovery stayed off, so the operator would have to restart")
+	}
+
+	v.DHCPLeaseFile = ""
+	snap, err = settings.Build(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live.Apply(snap)
+	if live.poller.Enabled() {
+		t.Error("clearing dhcp_lease_file left the old source publishing leases")
+	}
+}
+
 // TestApplyFlushesCacheOnlyWhenUpstreamsChange guards call 3 specifically:
 // an unrelated save must not empty every client's cache.
 func TestApplyFlushesCacheOnlyWhenUpstreamsChange(t *testing.T) {

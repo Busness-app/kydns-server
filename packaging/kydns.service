@@ -12,8 +12,10 @@ ExecStart=/usr/bin/kydns serve --config /etc/kydns/kydns.yaml
 Restart=on-failure
 RestartSec=5s
 
-# Port 53 is the only privileged thing KyDNS does. It binds exactly two
-# addresses, dns.listen and admin.listen, and nothing else.
+# Binding privileged ports is the only privileged thing KyDNS does: port 53
+# for DNS, and port 67 when the built-in DHCP server is turned on. No raw
+# sockets are needed, because every DHCP reply is broadcast, so this one
+# capability is the whole grant.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
