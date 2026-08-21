@@ -136,7 +136,7 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 	}
 	// 2. Renew what this client already holds, if it is still ours to give.
 	if l, ok := a.byMAC[mac]; ok && a.usable(l.IP) && a.reservedIP[l.IP] == "" {
-		return commit(l.IP, false)
+		return commit(l.IP, !l.Expires.After(now)) // an expired holding is new to us again
 	}
 	// 3. Honour a requested address that is free.
 	if requested.IsValid() && a.free(requested, mac, now) {

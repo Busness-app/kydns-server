@@ -436,3 +436,102 @@ $ go test ./... -count=1                    → 19 packages, all ok, 0 FAIL
    round-2 guard requires `prev.IP == ip`; rule 1 commits without a freeness check. Gating the probe
    on `fresh` makes the first unreachable from the probe path, which was the only way Part 1 could
    reach it.
+
+## Fix round 4 — two probe-gate findings
+
+### Finding A — an expired holding is new to us again
+
+`internal/dhcpd/alloc.go`, rule 2 ("renew what this client already holds") called `commit(l.IP,
+false)` unconditionally. There is no lease reaper — `byMAC` entries are pruned only by `restore()`
+at boot — so a departed client's entry can outlive its own `Expires` indefinitely. Round 3 made
+`fresh=false` mean "skip the probe", so once that entry was stale, a bare DISCOVER from the old MAC
+was re-offered that address unprobed even if a static device had since taken it.
+
+**Fix**, one line:
+
+```go
+// 2. Renew what this client already holds, if it is still ours to give.
+if l, ok := a.byMAC[mac]; ok && a.usable(l.IP) && a.reservedIP[l.IP] == "" {
+	return commit(l.IP, !l.Expires.After(now)) // an expired holding is new to us again
+}
+```
+
+`fresh` is now true only when the held lease has expired — a live renewal is still unprobed, per
+the spec.
+
+Test added: `TestDiscoverProbesAnExpiredHoldingsAddress` (`server_test.go`). A client REQUESTs and
+gets a full 24h lease; the clock advances 24h+1s past `Expires`; a prober is installed reporting
+that address in use; a bare DISCOVER from the same MAC arrives. Assertion: the OFFER is not that
+address (with a 3-address pool, the fallback to rule 4 has room).
+
+RED, against HEAD `f68d07b` (the one-line fix reverted via `git stash`, test unchanged):
+
+```
+$ go test ./internal/dhcpd/ -run TestDiscoverProbesAnExpiredHoldingsAddress -v -count=1
+=== RUN   TestDiscoverProbesAnExpiredHoldingsAddress
+    server_test.go:695: offered 192.168.1.10, the expired holding a static device now answers a probe for
+--- FAIL: TestDiscoverProbesAnExpiredHoldingsAddress (0.00s)
+FAIL
+```
+
+GREEN, with the fix restored:
+
+```
+$ go test ./internal/dhcpd/ -run TestDiscoverProbesAnExpiredHoldingsAddress -v -count=1
+--- PASS: TestDiscoverProbesAnExpiredHoldingsAddress (0.00s)
+ok
+```
+
+### Finding B — no server-path test covers rule 3
+
+Both existing probe tests drive a bare DISCOVER (no option 50), so they exercise rule 4 only. Rule
+3 — a DISCOVER carrying option 50 for a free address the prober reports in use — was covered at the
+allocator layer (`TestOfferReportsWhetherTheAddressIsNewToTheClient`) but not at the packet layer,
+so a mutation mislabeling rule 3 as `fresh=false` would be invisible to `server_test.go`.
+
+Test added: `TestProbeHitOnARequestedAddressSkipsAndQuarantines` (`server_test.go`). Builds the
+DISCOVER with the existing `discover()` helper and adds `dhcpv4.OptRequestedIPAddress` for a free
+address, matching how `request()` sets the same option — no new packet-building helper. A
+`stubProber` reports the requested address in use. Asserts the OFFER is not that address, and that
+a follow-up `Allocate` call for a different MAC requesting it by name does not get it back
+(quarantine, not just a one-time skip) — same shape as `TestProbeHitSkipsToTheNextAddressAndQuarantines`.
+
+This test passes against HEAD (a coverage gap, not a bug), so its power was checked by mutation:
+temporarily changed rule 3's `commit(requested, true)` to `commit(requested, false)` in
+`alloc.go`, ran the test, then reverted (`git diff` confirms `alloc.go` carries only the Finding A
+fix afterward):
+
+```
+$ sed -i 's/return commit(requested, true)/return commit(requested, false)/' internal/dhcpd/alloc.go
+$ go test ./internal/dhcpd/ -run TestProbeHitOnARequestedAddressSkipsAndQuarantines -v -count=1
+=== RUN   TestProbeHitOnARequestedAddressSkipsAndQuarantines
+    server_test.go:717: offered 192.168.1.11, the requested address the probe reported in use
+--- FAIL: TestProbeHitOnARequestedAddressSkipsAndQuarantines (0.00s)
+FAIL
+$ sed -i 's/return commit(requested, false)/return commit(requested, true)/' internal/dhcpd/alloc.go
+```
+
+The test discriminates: it fails when rule 3 is mislabeled not-fresh, and passes when it is
+correctly fresh.
+
+### Full verification
+
+```
+$ go build ./...                            → BUILD_OK (no output)
+$ go test ./internal/dhcpd/ -count=1        → ok (55 tests: 53 pre-existing + 2 new, all PASS)
+$ go test ./internal/dhcpd/ -race -count=2  → ok 1.014s, no race reported
+$ go test ./... -count=1                    → 19 packages, all ok, 0 FAIL
+$ go vet ./...                              → VET_OK (no output)
+$ gofmt -l internal/dhcpd/                  → FMT_CLEAN (no output)
+```
+
+Scope held to `internal/dhcpd/alloc.go` and `internal/dhcpd/server_test.go`; `alloc_test.go` was
+not touched — no new unit-level assertion was needed there, since both findings are only visible
+through the server path (`Server.allocate`'s `fresh &&` gate), which is exactly what round 4 was
+asked to close.
+
+### Concerns
+
+None. Both findings are closed; no new deferred items. Round 2's concern 2 (rule 1 can evict
+another client's live lease on a mere DISCOVER, unreachable in Part 1 since `SetReservations` is
+only ever called with an empty map) remains open and out of scope for this round.

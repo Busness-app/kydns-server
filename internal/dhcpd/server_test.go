@@ -671,3 +671,55 @@ func TestDiscoverDoesNotProbeAReservedClientsAddress(t *testing.T) {
 		t.Fatalf("%v was quarantined by its own holder answering the probe", res)
 	}
 }
+
+// Round 3 made rule 2 (renew what this client already holds) skip the probe
+// unconditionally. There is no reaper, so a departed client's byMAC entry
+// outlives its lease: once expired, that holding is no longer this client's
+// to reclaim unprobed, and something else may have taken it since.
+func TestDiscoverProbesAnExpiredHoldingsAddress(t *testing.T) {
+	s, _, now := newTestServerWithClock(t)
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
+	held := c.replies(t)[0].YourIPAddr
+
+	*now = now.Add(24*time.Hour + time.Second) // past the lease's Expires
+	s.opts.Prober = stubProber{inUse: netip.MustParseAddr(held.String())}
+
+	c2 := &captureConn{}
+	s.handle(c2, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", ""))
+	replies := c2.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.Equal(held) {
+		t.Fatalf("offered %v, the expired holding a static device now answers a probe for", got)
+	}
+}
+
+// Both existing probe tests drive a bare DISCOVER with no option 50, so they
+// exercise rule 4 (lowest free) only. This covers rule 3: a requested address
+// that the prober reports in use must be probed and skipped too.
+func TestProbeHitOnARequestedAddressSkipsAndQuarantines(t *testing.T) {
+	s, _ := newTestServer(t)
+	requested := netip.MustParseAddr("192.168.1.11")
+	s.opts.Prober = stubProber{inUse: requested}
+
+	d := discover("aa:aa:aa:aa:aa:aa", "laptop")
+	d.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP(requested.AsSlice())))
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, d)
+
+	replies := c.replies(t)
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies, want 1", len(replies))
+	}
+	if got := replies[0].YourIPAddr; got.Equal(net.IP(requested.AsSlice())) {
+		t.Fatalf("offered %v, the requested address the probe reported in use", got)
+	}
+
+	// The probed address must be quarantined, not merely skipped this once.
+	l, _ := s.opts.Alloc.Allocate("cc:cc:cc:cc:cc:cc", "", requested, time.Hour)
+	if l.IP == requested {
+		t.Fatalf("Allocate handed out %v after the probe quarantined it", requested)
+	}
+}
