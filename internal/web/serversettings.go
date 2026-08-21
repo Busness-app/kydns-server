@@ -112,6 +112,16 @@ func (s *Server) postServerSettings(w http.ResponseWriter, r *http.Request) {
 		*f.dst = n
 	}
 
+	// The built-in DHCP server has no field on this form yet, and this handler
+	// rebuilds the whole document from what was posted: without carrying them
+	// over, saving anything else here switches a running DHCP server off.
+	if cur, ok := s.liveSettings(); ok {
+		v.DHCPEnabled, v.DHCPInterface = cur.DHCPEnabled, cur.DHCPInterface
+		v.DHCPRangeStart, v.DHCPRangeEnd = cur.DHCPRangeStart, cur.DHCPRangeEnd
+		v.DHCPGateway, v.DHCPLeaseSeconds = cur.DHCPGateway, cur.DHCPLeaseSeconds
+		v.DHCPSecondaryDNS = cur.DHCPSecondaryDNS
+	}
+
 	// Renaming the private zone moves every manual record with it. That is the
 	// operator's data, so they see exactly what will change and say yes before
 	// it happens — once per rename, not on every save.

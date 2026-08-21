@@ -104,6 +104,7 @@ var Commands = []Command{
 	{"token", "manage API tokens", tokenCmd},
 	{"blacklist", "manage domain filtering", blacklistCmd},
 	{"settings", "view or change server settings", settingsCmd},
+	{"dhcp", "show DHCP server state and current leases", dhcpCmd},
 	{"replica", "manage replication and pairing", replicaCmd},
 	{"export", "write registry contents to YAML or JSON", exportCmd},
 	{"import", "load registry contents from YAML or JSON", importCmd},

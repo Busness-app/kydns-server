@@ -32,6 +32,7 @@ commands:
   token     manage API tokens
   blacklist manage domain filtering
   settings  view or change server settings
+  dhcp      show DHCP server state and current leases
   replica   manage replication and pairing
   export    write registry contents to YAML or JSON
   import    load registry contents from YAML or JSON

@@ -33,6 +33,17 @@ type settingsDTO struct {
 	HealthTimeout     int      `json:"health_timeout" yaml:"health_timeout"`
 	HealthWorkers     int      `json:"health_workers" yaml:"health_workers"`
 
+	// The built-in DHCP server. Node-local, like dhcp_lease_file beside it:
+	// never replicated, but carried in an export, which is an operator
+	// restoring this node rather than a peer being handed a configuration.
+	DHCPEnabled      bool   `json:"dhcp_enabled" yaml:"dhcp_enabled"`
+	DHCPInterface    string `json:"dhcp_interface" yaml:"dhcp_interface"`
+	DHCPRangeStart   string `json:"dhcp_range_start" yaml:"dhcp_range_start"`
+	DHCPRangeEnd     string `json:"dhcp_range_end" yaml:"dhcp_range_end"`
+	DHCPGateway      string `json:"dhcp_gateway" yaml:"dhcp_gateway"`
+	DHCPLeaseSeconds int    `json:"dhcp_lease_seconds" yaml:"dhcp_lease_seconds"`
+	DHCPSecondaryDNS string `json:"dhcp_secondary_dns" yaml:"dhcp_secondary_dns"`
+
 	// ConfirmPublic authorises one public allow_query prefix for this request
 	// only. It is never stored and never returned, and it has no yaml tag: a
 	// field absent from the export document must never round-trip through it.
@@ -54,6 +65,10 @@ func toSettingsDTO(v store.Settings) settingsDTO {
 		DHCPLeaseFile: v.DHCPLeaseFile, DiscoveryInterval: v.DiscoveryInterval,
 		HealthInterval: v.HealthInterval, HealthTimeout: v.HealthTimeout,
 		HealthWorkers: v.HealthWorkers,
+		DHCPEnabled:   v.DHCPEnabled, DHCPInterface: v.DHCPInterface,
+		DHCPRangeStart: v.DHCPRangeStart, DHCPRangeEnd: v.DHCPRangeEnd,
+		DHCPGateway: v.DHCPGateway, DHCPLeaseSeconds: v.DHCPLeaseSeconds,
+		DHCPSecondaryDNS: v.DHCPSecondaryDNS,
 	}
 }
 
@@ -68,6 +83,10 @@ func fromSettingsDTO(d settingsDTO) store.Settings {
 		DHCPLeaseFile: d.DHCPLeaseFile, DiscoveryInterval: d.DiscoveryInterval,
 		HealthInterval: d.HealthInterval, HealthTimeout: d.HealthTimeout,
 		HealthWorkers: d.HealthWorkers,
+		DHCPEnabled:   d.DHCPEnabled, DHCPInterface: d.DHCPInterface,
+		DHCPRangeStart: d.DHCPRangeStart, DHCPRangeEnd: d.DHCPRangeEnd,
+		DHCPGateway: d.DHCPGateway, DHCPLeaseSeconds: d.DHCPLeaseSeconds,
+		DHCPSecondaryDNS: d.DHCPSecondaryDNS,
 	}
 }
 

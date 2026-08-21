@@ -390,3 +390,34 @@ func TestZoneRenameIgnoresCaseAndTrailingDot(t *testing.T) {
 		t.Fatalf("status %d, want a straight save: %s", rec.Code, rec.Body)
 	}
 }
+
+// The settings form rebuilds the whole document from what was posted, and it
+// has no DHCP fields yet. Anything it does not carry comes back zeroed, which
+// for the built-in server means an unrelated save switches DHCP off on a LAN
+// that is relying on it.
+func TestPostServerSettingsKeepsTheDHCPConfiguration(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+
+	cur, err := srv.o.Settings.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cur.DHCPEnabled, cur.DHCPInterface = true, "eth0"
+	cur.DHCPRangeStart, cur.DHCPRangeEnd = "192.168.1.100", "192.168.1.200"
+	cur.DHCPGateway, cur.DHCPLeaseSeconds = "192.168.1.1", 3600
+	cur.DHCPSecondaryDNS = "9.9.9.9"
+	if err := srv.o.Settings.Set(cur, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if rec := postForm(t, h, "/settings/server", validForm(csrf), c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := srv.o.Settings.Get()
+	if !got.DHCPEnabled || got.DHCPInterface != "eth0" ||
+		got.DHCPRangeStart != "192.168.1.100" || got.DHCPRangeEnd != "192.168.1.200" ||
+		got.DHCPGateway != "192.168.1.1" || got.DHCPLeaseSeconds != 3600 ||
+		got.DHCPSecondaryDNS != "9.9.9.9" {
+		t.Fatalf("an unrelated settings save wiped the DHCP configuration: %+v", got)
+	}
+}
