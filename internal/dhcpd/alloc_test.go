@@ -381,3 +381,15 @@ func TestOfferReportsWhetherTheAddressIsNewToTheClient(t *testing.T) {
 		t.Fatal("a reservation reported fresh; it is the client's address already")
 	}
 }
+
+// normalizeMAC yields "" for a packet with no chaddr, and byIP yields "" for
+// every free address, so an empty MAC would match the whole pool.
+func TestDeclineFromAnEmptyMACIsRefused(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	if a.Decline("", netip.MustParseAddr("192.168.1.10")) {
+		t.Fatal("Decline accepted a client that named no MAC")
+	}
+	if n := len(a.quarantine); n != 0 {
+		t.Fatalf("an empty MAC quarantined %d addresses, want none", n)
+	}
+}

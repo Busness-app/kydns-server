@@ -49,6 +49,9 @@ func (c *captureConn) replies(t *testing.T) []*dhcpv4.DHCPv4 {
 type memStore struct {
 	mu sync.Mutex
 	ls map[string]store.DHCPLease
+	// dels counts delete calls, including the ones that match no row: an
+	// unauthenticated packet reaching the store at all is the finding.
+	dels int
 }
 
 func newMemStore() *memStore { return &memStore{ls: map[string]store.DHCPLease{}} }
@@ -78,6 +81,7 @@ func (m *memStore) PutDHCPLease(l store.DHCPLease) error {
 func (m *memStore) DeleteDHCPLease(mac string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.dels++
 	delete(m.ls, mac)
 	return nil
 }
@@ -161,6 +165,32 @@ func request(mac, hostname string, requested netip.Addr) *dhcpv4.DHCPv4 {
 		m.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP(requested.AsSlice())))
 	}
 	return m
+}
+
+// anonymous builds a packet with no chaddr and drives it through the real
+// parse path, because that is the only place hlen=0 exists: serialized and
+// re-parsed is exactly what server4.Serve hands the handler, and it does no
+// chaddr validation of its own.
+func anonymous(t *testing.T, mt dhcpv4.MessageType, requested netip.Addr) *dhcpv4.DHCPv4 {
+	t.Helper()
+	m, err := dhcpv4.New()
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	m.OpCode = dhcpv4.OpcodeBootRequest
+	m.ClientHWAddr = nil
+	m.UpdateOption(dhcpv4.OptMessageType(mt))
+	if requested.IsValid() {
+		m.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP(requested.AsSlice())))
+	}
+	on, err := dhcpv4.FromBytes(m.ToBytes())
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if on.ClientHWAddr.String() != "" {
+		t.Fatalf("the packet carries MAC %q; this test needs one with none", on.ClientHWAddr)
+	}
+	return on
 }
 
 func TestDiscoverGetsAnOfferWithOurOptions(t *testing.T) {
@@ -754,17 +784,76 @@ func TestDeclineFromAnotherClientLeavesTheLeaseAlone(t *testing.T) {
 	}
 }
 
-// The quarantine map is fed by unauthenticated packets, so an address we
-// never had to give must not be able to put an entry in it.
+// The quarantine map is fed by unauthenticated packets, so an address outside
+// the pool must not put an entry in it even when the sender genuinely holds
+// it. Declined from the holder, so the sender check passes and the range check
+// is what has to stop it: Load restores out-of-range rows after an operator
+// narrows the range, and a reservation commits in or out of it.
 func TestDeclineOutsideTheRangeIsNotQuarantined(t *testing.T) {
 	s, _ := newTestServer(t)
-	dec := discover("bb:bb:bb:bb:bb:bb", "")
+	const mac = "bb:bb:bb:bb:bb:bb"
+	outside := netip.MustParseAddr("192.168.1.250")
+	s.opts.Alloc.Load([]Lease{{MAC: mac, IP: outside, Hostname: "nas", Expires: epoch.Add(time.Hour)}})
+
+	dec := discover(mac, "")
 	dec.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeDecline))
-	dec.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP{192, 168, 1, 250}))
+	dec.UpdateOption(dhcpv4.OptRequestedIPAddress(net.IP(outside.AsSlice())))
 	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, dec)
 
+	if ls := s.opts.Alloc.Leases(); len(ls) != 0 {
+		t.Fatalf("leases = %+v, want the holder's own decline to have dropped it", ls)
+	}
 	if n := len(s.opts.Alloc.quarantine); n != 0 {
-		t.Fatalf("quarantine holds %d addresses, want none: %v is not ours to quarantine", n, "192.168.1.250")
+		t.Fatalf("quarantine holds %d addresses, want none: %v is not ours to quarantine", n, outside)
+	}
+}
+
+// A DECLINE with no chaddr names no client, and an empty MAC compares equal to
+// the zero value byIP returns for a free address. One sweep would quarantine
+// the whole pool from any host on the segment, and no new client could get an
+// address for ten minutes.
+func TestAnonymousDeclineQuarantinesNothing(t *testing.T) {
+	s, ms := newTestServer(t)
+	var rebuilds int
+	s.opts.OnChange = func() { rebuilds++ }
+
+	for _, ip := range []string{"192.168.1.10", "192.168.1.11", "192.168.1.12"} {
+		s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero},
+			anonymous(t, dhcpv4.MessageTypeDecline, netip.MustParseAddr(ip)))
+	}
+
+	if n := len(s.opts.Alloc.quarantine); n != 0 {
+		t.Fatalf("an anonymous DECLINE sweep quarantined %d addresses, want none", n)
+	}
+	if ms.dels != 0 || rebuilds != 0 {
+		t.Fatalf("an anonymous DECLINE sweep drove %d store deletes and %d zone rebuilds, want none",
+			ms.dels, rebuilds)
+	}
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+	if n := len(c.replies(t)); n != 1 {
+		t.Fatalf("a legitimate client got %d replies after the sweep, want an OFFER", n)
+	}
+}
+
+// The same hole through a different door: RELEASE had no sender check at all,
+// so every anonymous packet was a store delete plus a synchronous zone rebuild.
+func TestAnonymousReleaseChangesNothing(t *testing.T) {
+	s, ms := newTestServer(t)
+	c := &captureConn{}
+	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, request("aa:aa:aa:aa:aa:aa", "nas", netip.Addr{}))
+	var rebuilds int
+	s.opts.OnChange = func() { rebuilds++ }
+
+	s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero},
+		anonymous(t, dhcpv4.MessageTypeRelease, netip.Addr{}))
+
+	if ms.dels != 0 || rebuilds != 0 {
+		t.Fatalf("an anonymous RELEASE drove %d store deletes and %d zone rebuilds, want none",
+			ms.dels, rebuilds)
+	}
+	if rows, _ := ms.DHCPLeases(); len(rows) != 1 {
+		t.Fatalf("stored leases = %+v, want the nas row untouched", rows)
 	}
 }
 

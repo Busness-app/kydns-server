@@ -152,3 +152,126 @@ overwrite, and the malformed-packet counter. No `dhcp_*` column was added to the
 One, minor: the I5 note above — a NAKed REQUEST leaves the address `allocate`
 picked held for one lease term. It is reclaimed by the client's own re-DISCOVER
 and expires otherwise.
+
+## Fix wave 2
+
+Branch `worktree-dhcp-part1`, on top of `cc8ac96`. Four findings from the
+re-review of wave 1's C1 fix. No test in this wave opens a socket.
+
+### C1a — an anonymous DECLINE quarantined the entire pool
+
+`normalizeMAC` returns `""` for a packet with `hlen = 0`, and `a.byIP[ip]` is
+`""` for a free address, so wave 1's `a.byIP[ip] != mac` guard was `"" != ""` —
+false. An anonymous DECLINE walked straight through it, quarantined every free
+address for ten minutes, and drove a store delete plus a synchronous `OnChange()`
+zone rebuild per packet.
+
+`internal/dhcpd/alloc.go`: `if mac == "" || a.byIP[ip] != mac { return false }`.
+
+### C1b — RELEASE had no sender check at all
+
+Same hole, different door. `internal/dhcpd/server.go`: the empty MAC is rejected
+once, centrally, in `handle()`, before the message-type switch:
+
+    mac := normalizeMAC(m.ClientHWAddr.String())
+    if mac == "" {
+        return
+    }
+
+RFC 2131 table 5 makes chaddr a MUST for every client message we serve
+(DISCOVER, REQUEST, DECLINE, RELEASE, INFORM), so a packet with none is
+malformed for all of them, and this package already drops malformed packets
+rather than treating them as fatal. A relayed packet still carries the client's
+chaddr — a relay agent changes `giaddr`, not `chaddr` — so the guard does not
+affect relayed clients.
+
+Checked with the guard in place, driving `handle()` through the real parse path:
+
+| packet | replies | stored leases | allocator leases |
+| --- | --- | --- | --- |
+| anonymous DISCOVER | 0 | 0 | 0 |
+| anonymous INFORM | 0 | 0 | 0 |
+| named INFORM + named DISCOVER | 2 | — | — |
+
+Both anonymous cases are correctly silent: every reply is broadcast, and a
+client with no chaddr cannot identify one addressed to it. An anonymous DISCOVER
+also used to take a pool address under the `""` key. Every existing DISCOVER,
+REQUEST, RELEASE, DECLINE and INFORM test — all of which carry a real MAC —
+still passes.
+
+### C1c — the range guard on quarantine had no test that reached it
+
+`TestDeclineOutsideTheRangeIsNotQuarantined` declined `192.168.1.250` from a MAC
+that held nothing, so it returned at the sender check and never evaluated
+`inRange`. The test now gives that MAC the out-of-range lease through
+`Alloc.Load` — the production path, which restores out-of-range rows after an
+operator narrows the range — so the sender check passes and `inRange` is what
+stops the quarantine. It asserts both: the lease is dropped, and the quarantine
+map stays empty.
+
+### I — a stale error survived a recovered save
+
+`internal/app/dhcp.go`: the unchanged-config early return clears `d.lastError`.
+`fail()` still leaves `current` naming the running listener, which is correct;
+this only stops `kydns dhcp status` printing `running yes` beside a reason that
+no longer applies.
+
+### RED at `cc8ac96`
+
+    --- FAIL: TestDeclineFromAnEmptyMACIsRefused
+        alloc_test.go:390: Decline accepted a client that named no MAC
+    --- FAIL: TestAnonymousDeclineQuarantinesNothing
+        server_test.go:826: an anonymous DECLINE sweep quarantined 3 addresses, want none
+    --- FAIL: TestAnonymousReleaseChangesNothing
+        server_test.go:852: an anonymous RELEASE drove 1 store deletes and 1 zone rebuilds, want none
+    --- FAIL: TestReSavingTheWorkingConfigClearsTheStaleError
+        dhcp_test.go:394: Status reports could not check whether another DHCP server is
+        already answering on "eth1", so refusing to start: probe socket: permission denied
+        beside a listener that is running the configuration just saved
+
+`TestDeclineOutsideTheRangeIsNotQuarantined` passes at `cc8ac96` by design: it is
+a coverage fix, not a bug fix, and mutant (b) below is what proves it now reaches
+the guard.
+
+The two wire-level tests build the packet with `ClientHWAddr = nil`, serialize it
+with `ToBytes()` and re-parse it with `dhcpv4.FromBytes` (the `anonymous` helper),
+because `hlen = 0` only exists on the wire — that is exactly what `server4.Serve`
+hands the handler, and `server4` does no chaddr validation of its own. The helper
+asserts the re-parsed packet really carries no MAC, so it cannot silently stop
+testing the shape it is named for. `memStore` gained a `dels` counter so "no store
+delete happened" is asserted directly rather than inferred from the row set.
+
+### Mutation checks
+
+| Mutant | Result |
+| --- | --- |
+| (a) remove the `mac == ""` rejection in `Decline` | killed — `TestDeclineFromAnEmptyMACIsRefused` |
+| (b) quarantine unconditionally (drop `inRange`) | killed — `TestDeclineOutsideTheRangeIsNotQuarantined` |
+| (c) remove the central `handle()` guard | killed — `TestAnonymousReleaseChangesNothing` |
+
+(c) is killed by the RELEASE test rather than the DECLINE one, because the
+DECLINE path is also covered by the `Decline`-level rejection. The two layers are
+pinned independently, which is the point of having both.
+
+### Verification
+
+    go build ./...            clean
+    go vet ./...              clean
+    gofmt -l internal/ cmd/   no output
+    go test ./internal/dhcpd/... -count=1                ok
+    go test ./internal/dhcpd/... -race -count=2          ok
+    go test ./internal/app/... -count=1 -race            ok
+    go test ./... -count=1    19 packages, 0 failures
+
+### Not touched
+
+The deliberately-deferred items are unchanged: rule 1's missing freeness check,
+the R18 `prev.IP == ip` limit, option 51 on INFORM, `d.mu` spanning the probe, and
+the dotted-vs-wire prose error names. No `dhcp_*` column was added to the
+`cv_settings_u` trigger, no `cv_` trigger was put on the lease table, and
+`dhcpWanted`'s `role != RoleReplica` gate is exactly as it was.
+
+### Concerns
+
+None. All four findings are closed and each fix is pinned by a test that fails
+without it.

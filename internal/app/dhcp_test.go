@@ -363,3 +363,34 @@ func TestARefusedBuildLeavesTheRunningListenerAlone(t *testing.T) {
 		t.Errorf("current names %q, but the listener that is running is on eth0", d.current.DHCPInterface)
 	}
 }
+
+// fail() leaves current naming the listener that is still up, which is right.
+// Re-saving the configuration that listener runs then takes the unchanged-
+// config early return, and an operator who has undone their mistake would keep
+// reading "running yes" beside a last error that no longer applies.
+func TestReSavingTheWorkingConfigClearsTheStaleError(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, errors.New("probe socket: permission denied")
+	})
+	working := buildableSettings()
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = working
+	d.poller.SetSource(d.running)
+
+	// A new interface, so the probe runs, and it fails.
+	refused := working
+	refused.DHCPInterface = "eth1"
+	d.Reconcile(refused)
+	if _, err := d.Status(); err == nil {
+		t.Fatal("the refused save reported no reason")
+	}
+
+	d.Reconcile(working)
+	running, err := d.Status()
+	if !running {
+		t.Fatal("re-saving the working configuration took the listener down")
+	}
+	if err != nil {
+		t.Fatalf("Status reports %v beside a listener that is running the configuration just saved", err)
+	}
+}

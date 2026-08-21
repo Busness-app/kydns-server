@@ -62,6 +62,9 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 		return
 	}
 	if d.running != nil && dhcpConfigEqual(d.current, v) {
+		// The listener already runs exactly this, so any earlier refusal is
+		// spent: leaving it would report "running yes" beside a stale reason.
+		d.lastError = nil
 		return
 	}
 	// Build before stop: a build that refuses must leave the listener that is

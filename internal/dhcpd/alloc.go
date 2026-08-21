@@ -173,11 +173,12 @@ func (a *Allocator) Release(mac string) {
 // unauthenticated broadcast, so it is honoured only from the client that holds
 // the address, and only for an address that is ours to hold back: otherwise one
 // forged packet deletes any lease on the segment, and the quarantine map takes
-// entries from anyone who can send UDP.
+// entries from anyone who can send UDP. An empty MAC is rejected outright,
+// because byIP yields "" for every free address and would match it.
 func (a *Allocator) Decline(mac string, ip netip.Addr) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.byIP[ip] != mac {
+	if mac == "" || a.byIP[ip] != mac {
 		return false
 	}
 	delete(a.byMAC, mac)

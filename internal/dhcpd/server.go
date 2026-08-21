@@ -186,7 +186,15 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	if m == nil {
 		return
 	}
+	// RFC 2131 table 5: every client message we serve MUST carry chaddr. One
+	// with none names no client, so it can neither be answered nor act on a
+	// lease, and an empty MAC compares equal to the zero value byIP returns
+	// for a free address. Dropped here, before any branch, like any other
+	// malformed packet.
 	mac := normalizeMAC(m.ClientHWAddr.String())
+	if mac == "" {
+		return
+	}
 	switch m.MessageType() {
 	case dhcpv4.MessageTypeDiscover:
 		s.offer(conn, peer, m, mac)
