@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/netip"
@@ -35,6 +36,12 @@ type dhcpRunner struct {
 	// role is read at every Reconcile, so a promotion starts DHCP without a
 	// restart.
 	role func() Role
+	// Injected for tests: the decisions that refuse a start are host-state
+	// calls, and a test must be able to reach them without an interface or a
+	// socket. Nil means the real one.
+	qualifies     func(string) error
+	inspect       func(string) (dhcpd.IfaceInfo, error)
+	detectForeign func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error)
 
 	mu      sync.Mutex
 	running *dhcpd.Server
@@ -51,27 +58,25 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 
 	if !dhcpWanted(v, d.role()) {
 		d.stopLocked()
-		d.current, d.lastError = v, nil
+		d.current, d.lastError = v, roleRefusal(v, d.role())
 		return
 	}
 	if d.running != nil && dhcpConfigEqual(d.current, v) {
 		return
 	}
-	// Before every build: a start that did not stop the previous listener
-	// would leak its context and leave two of them bound to one interface.
-	d.stopLocked()
-
-	srv, err := d.build(v)
+	// Build before stop: a build that refuses must leave the listener that is
+	// already serving the LAN alone. Reconcile has three triggers — boot, a
+	// settings save, and promotion — so a stop here would have no retry.
+	srv, err := d.build(v, d.needsProbe(v))
 	if err != nil {
-		d.lastError = err
-		d.logger.Error("dhcp is enabled but cannot start", "error", err)
-		d.current = v
+		d.fail(v, err, "dhcp is enabled but cannot start")
 		return
 	}
+	// The old listener holds :67 until it is closed, so it goes down only once
+	// its replacement is built and about to bind.
+	d.stopLocked()
 	if err := srv.Start(context.Background()); err != nil {
-		d.lastError = err
-		d.logger.Error("dhcp listener failed to bind", "error", err)
-		d.current = v
+		d.fail(v, err, "dhcp listener failed to bind")
 		return
 	}
 	d.running, d.current, d.lastError = srv, v, nil
@@ -80,12 +85,55 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 		"interface", v.DHCPInterface, "range", v.DHCPRangeStart+"-"+v.DHCPRangeEnd)
 }
 
+// needsProbe reports whether this build must run the rogue check. A listener
+// already bound to this interface cleared that segment when it started and is
+// holding it now, so probing again would only risk a transient answer taking a
+// working server down. Re-checking a live segment is the periodic probe's job.
+func (d *dhcpRunner) needsProbe(v store.Settings) bool {
+	return d.running == nil || d.current.DHCPInterface != v.DHCPInterface
+}
+
+// fail records why the listener is not what the settings ask for. current is
+// left alone while a listener is still up, so it keeps describing the one that
+// is actually running and the next save retries the build.
+func (d *dhcpRunner) fail(v store.Settings, err error, msg string) {
+	d.lastError = err
+	d.logger.Error(msg, "error", err)
+	if d.running == nil {
+		d.current = v
+	}
+}
+
+// roleRefusal is why DHCP is off when the operator asked for it on. A replica
+// that reported no reason at all would look broken rather than correct.
+func roleRefusal(v store.Settings, role Role) error {
+	if v.DHCPEnabled && v.DHCPInterface != "" && role == RoleReplica {
+		return errReplicaNoDHCP
+	}
+	return nil
+}
+
+var errReplicaNoDHCP = errors.New(
+	"this node is a replica, so it does not serve DHCP: two DHCP servers on one " +
+		"network breaks it. The primary serves DHCP; a replica does after it is promoted")
+
 // build assembles a server, refusing on anything the operator must fix first.
-func (d *dhcpRunner) build(v store.Settings) (*dhcpd.Server, error) {
-	if err := dhcpd.Qualifies(v.DHCPInterface); err != nil {
+// probe is false only when a listener is already bound to this interface.
+func (d *dhcpRunner) build(v store.Settings, probe bool) (*dhcpd.Server, error) {
+	qualifies, inspect, detect := d.qualifies, d.inspect, d.detectForeign
+	if qualifies == nil {
+		qualifies = dhcpd.Qualifies
+	}
+	if inspect == nil {
+		inspect = dhcpd.Inspect
+	}
+	if detect == nil {
+		detect = dhcpd.DetectForeign
+	}
+	if err := qualifies(v.DHCPInterface); err != nil {
 		return nil, err
 	}
-	info, err := dhcpd.Inspect(v.DHCPInterface)
+	info, err := inspect(v.DHCPInterface)
 	if err != nil {
 		return nil, err
 	}
@@ -119,16 +167,18 @@ func (d *dhcpRunner) build(v store.Settings) (*dhcpd.Server, error) {
 	// an error — it means we do not know whether another server is there, and
 	// guessing "no" would drop the protection on exactly the hosts where the
 	// probe is hardest to run.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	foreign, err := dhcpd.DetectForeign(ctx, v.DHCPInterface, 2*time.Second, info.Addr)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"could not check whether another DHCP server is already answering on %q, so refusing to start: %w",
-			v.DHCPInterface, err)
-	}
-	if len(foreign) > 0 {
-		return nil, &ForeignServerError{Found: foreign}
+	if probe {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		foreign, err := detect(ctx, v.DHCPInterface, 2*time.Second)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"could not check whether another DHCP server is already answering on %q, so refusing to start: %w",
+				v.DHCPInterface, err)
+		}
+		if len(foreign) > 0 {
+			return nil, &ForeignServerError{Found: foreign}
+		}
 	}
 
 	cfg := dhcpd.Config{
@@ -140,10 +190,14 @@ func (d *dhcpRunner) build(v store.Settings) (*dhcpd.Server, error) {
 		LeaseTime: time.Duration(v.DHCPLeaseSeconds) * time.Second,
 	}
 	dns := []netip.Addr{info.Addr}
-	if v.DHCPSecondaryDNS != "" {
-		if a, err := netip.ParseAddr(v.DHCPSecondaryDNS); err == nil {
-			dns = append(dns, a)
+	if strings.TrimSpace(v.DHCPSecondaryDNS) != "" {
+		// Dropping this silently would quietly undo the second resolver the
+		// operator configured, on the save that turns DHCP on.
+		a, err := parseSetting("dhcp.secondary_dns", v.DHCPSecondaryDNS)
+		if err != nil {
+			return nil, err
 		}
+		dns = append(dns, a)
 	}
 	return dhcpd.New(dhcpd.Options{
 		Iface:    info,
@@ -161,7 +215,7 @@ func (d *dhcpRunner) build(v store.Settings) (*dhcpd.Server, error) {
 // parseSetting names the field, because "invalid IP" on its own sends an
 // operator reading three of them.
 func parseSetting(key, value string) (netip.Addr, error) {
-	a, err := netip.ParseAddr(value)
+	a, err := netip.ParseAddr(strings.TrimSpace(value))
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("%s: %q is not an IP address", key, value)
 	}

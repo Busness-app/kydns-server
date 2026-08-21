@@ -350,33 +350,36 @@ func TestDHCPDisabledIgnoresEveryOtherField(t *testing.T) {
 	}
 }
 
+// The field travels to the client, which highlights the box it names. Every
+// wire and CLI key is snake_case, so a dotted name points at a field nobody
+// sent.
 func TestDHCPValidationRejects(t *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(*store.Settings)
 		field  string
 	}{
-		{"no interface", func(v *store.Settings) { v.DHCPInterface = "" }, "dhcp.interface"},
-		{"unparseable start", func(v *store.Settings) { v.DHCPRangeStart = "nope" }, "dhcp.range_start"},
-		{"unparseable end", func(v *store.Settings) { v.DHCPRangeEnd = "nope" }, "dhcp.range_end"},
-		{"ipv6 start", func(v *store.Settings) { v.DHCPRangeStart = "2001:db8::1" }, "dhcp.range_start"},
+		{"no interface", func(v *store.Settings) { v.DHCPInterface = "" }, "dhcp_interface"},
+		{"unparseable start", func(v *store.Settings) { v.DHCPRangeStart = "nope" }, "dhcp_range_start"},
+		{"unparseable end", func(v *store.Settings) { v.DHCPRangeEnd = "nope" }, "dhcp_range_end"},
+		{"ipv6 start", func(v *store.Settings) { v.DHCPRangeStart = "2001:db8::1" }, "dhcp_range_start"},
 		{"end below start", func(v *store.Settings) {
 			v.DHCPRangeStart, v.DHCPRangeEnd = "192.168.1.254", "192.168.1.128"
-		}, "dhcp.range_end"},
+		}, "dhcp_range_end"},
 		{"range larger than 65536 addresses", func(v *store.Settings) {
 			v.DHCPRangeStart, v.DHCPRangeEnd = "10.0.0.1", "10.2.0.1"
-		}, "dhcp.range_end"},
+		}, "dhcp_range_end"},
 		{"range of 65537 addresses, one past the cap", func(v *store.Settings) {
 			v.DHCPRangeStart, v.DHCPRangeEnd = "10.0.0.0", "10.1.0.0"
-		}, "dhcp.range_end"},
+		}, "dhcp_range_end"},
 		{"the whole IPv4 address space", func(v *store.Settings) {
 			v.DHCPRangeStart, v.DHCPRangeEnd = "0.0.0.0", "255.255.255.255"
-		}, "dhcp.range_end"},
-		{"unparseable gateway", func(v *store.Settings) { v.DHCPGateway = "nope" }, "dhcp.gateway"},
-		{"lease too short", func(v *store.Settings) { v.DHCPLeaseSeconds = 299 }, "dhcp.lease_seconds"},
-		{"lease too long", func(v *store.Settings) { v.DHCPLeaseSeconds = 604801 }, "dhcp.lease_seconds"},
-		{"unparseable secondary dns", func(v *store.Settings) { v.DHCPSecondaryDNS = "nope" }, "dhcp.secondary_dns"},
-		{"lease file at the same time", func(v *store.Settings) { v.DHCPLeaseFile = "/var/lib/misc/dnsmasq.leases" }, "dhcp.enabled"},
+		}, "dhcp_range_end"},
+		{"unparseable gateway", func(v *store.Settings) { v.DHCPGateway = "nope" }, "dhcp_gateway"},
+		{"lease too short", func(v *store.Settings) { v.DHCPLeaseSeconds = 299 }, "dhcp_lease_seconds"},
+		{"lease too long", func(v *store.Settings) { v.DHCPLeaseSeconds = 604801 }, "dhcp_lease_seconds"},
+		{"unparseable secondary dns", func(v *store.Settings) { v.DHCPSecondaryDNS = "nope" }, "dhcp_secondary_dns"},
+		{"lease file at the same time", func(v *store.Settings) { v.DHCPLeaseFile = "/var/lib/misc/dnsmasq.leases" }, "dhcp_enabled"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -392,6 +395,9 @@ func TestDHCPValidationRejects(t *testing.T) {
 			}
 			if fe.Field != c.field {
 				t.Fatalf("error names field %q, want %q", fe.Field, c.field)
+			}
+			if strings.Contains(fe.Field, ".") {
+				t.Errorf("field %q is not a key the client ever sends", fe.Field)
 			}
 		})
 	}

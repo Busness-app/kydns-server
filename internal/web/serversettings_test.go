@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -419,5 +420,28 @@ func TestPostServerSettingsKeepsTheDHCPConfiguration(t *testing.T) {
 		got.DHCPGateway != "192.168.1.1" || got.DHCPLeaseSeconds != 3600 ||
 		got.DHCPSecondaryDNS != "9.9.9.9" {
 		t.Fatalf("an unrelated settings save wiped the DHCP configuration: %+v", got)
+	}
+}
+
+// This handler rebuilds the whole settings row from what was posted, and the
+// DHCP fields have no boxes on the form: they are carried over from the
+// current values. If those cannot be read there is nothing to carry, so the
+// save must be refused rather than written with seven zeroes — which would
+// switch a running DHCP server off.
+func TestPostServerSettingsRefusesWhenTheCurrentValuesCannotBeRead(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	// Wired but never loaded, which is what liveSettings reports as not ok.
+	st := srv.o.Store
+	srv.o.Settings = settings.NewService(st, settings.NewHolder(func() (store.Settings, error) {
+		v, _, err := st.Settings()
+		return v, err
+	}), nil)
+
+	rec := postForm(t, h, "/settings/server", validForm(csrf), c)
+	if rec.Code == http.StatusSeeOther {
+		t.Fatal("the save was applied without the values it had to carry over")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400 with a reason on the form", rec.Code)
 	}
 }

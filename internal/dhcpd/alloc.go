@@ -107,6 +107,13 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 	defer a.mu.Unlock()
 	now := a.now()
 
+	// First claim wins, decided here rather than by the caller: two REQUESTs
+	// carrying one option 12 are handled on two goroutines, and a check that
+	// released the lock before committing would let both through.
+	if a.nameTakenLocked(hostname, mac, now) {
+		hostname = ""
+	}
+
 	commit := func(ip netip.Addr, fresh bool) (Lease, bool, bool) {
 		if held, ok := a.byIP[ip]; ok && held != mac {
 			delete(a.byMAC, held)
@@ -161,15 +168,24 @@ func (a *Allocator) Release(mac string) {
 	}
 }
 
-// Decline quarantines an address a client rejected as already in use.
-func (a *Allocator) Decline(ip netip.Addr) {
+// Decline quarantines an address a client rejected as already in use, and
+// reports whether it dropped that client's lease. A DECLINE is an
+// unauthenticated broadcast, so it is honoured only from the client that holds
+// the address, and only for an address that is ours to hold back: otherwise one
+// forged packet deletes any lease on the segment, and the quarantine map takes
+// entries from anyone who can send UDP.
+func (a *Allocator) Decline(mac string, ip netip.Addr) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if mac, ok := a.byIP[ip]; ok {
-		delete(a.byMAC, mac)
-		delete(a.byIP, ip)
+	if a.byIP[ip] != mac {
+		return false
 	}
-	a.quarantine[ip] = a.now().Add(quarantineFor)
+	delete(a.byMAC, mac)
+	delete(a.byIP, ip)
+	if a.inRange(ip) {
+		a.quarantine[ip] = a.now().Add(quarantineFor)
+	}
+	return true
 }
 
 // Quarantine keeps an address out of the pool, for a probe that found it in
@@ -194,16 +210,14 @@ func (a *Allocator) Leases() []Lease {
 	return out
 }
 
-// NameTaken reports whether an unexpired lease held by a different client
-// already claims this hostname. Option 12 is chosen by the client, so first
-// claim wins for the life of the lease and the loser gets no name.
-func (a *Allocator) NameTaken(hostname, mac string) bool {
+// nameTakenLocked reports whether an unexpired lease held by a different
+// client already claims this hostname. Option 12 is chosen by the client, so
+// first claim wins for the life of the lease and the loser gets no name.
+// Callers hold a.mu.
+func (a *Allocator) nameTakenLocked(hostname, mac string, now time.Time) bool {
 	if hostname == "" {
 		return false
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	now := a.now()
 	for _, l := range a.byMAC {
 		if l.MAC != mac && l.Hostname == hostname && l.Expires.After(now) {
 			return true

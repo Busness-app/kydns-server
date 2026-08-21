@@ -156,7 +156,9 @@ func TestQuarantinedAddressIsSkippedThenReleased(t *testing.T) {
 func TestDeclineQuarantines(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	l, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "one", netip.Addr{}, 24*time.Hour)
-	a.Decline(l.IP)
+	if !a.Decline("aa:aa:aa:aa:aa:aa", l.IP) {
+		t.Fatal("Decline refused the client that holds the address")
+	}
 	l2, _ := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if l2.IP == l.IP {
 		t.Fatalf("Allocate re-offered %v after it was declined", l.IP)
@@ -204,19 +206,25 @@ func TestLoadRestoresLeasesAcrossARestart(t *testing.T) {
 	}
 }
 
-func TestNameTaken(t *testing.T) {
+// First claim wins for the life of the lease, and the arbitration is part of
+// the commit rather than a check the caller makes first.
+func TestASecondClaimOnAHostnameGetsNoName(t *testing.T) {
 	a, _ := newTestAllocator(t)
 	if _, ok := a.Allocate("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}, 24*time.Hour); !ok {
 		t.Fatal("Allocate refused the first client")
 	}
-	if !a.NameTaken("laptop", "bb:bb:bb:bb:bb:bb") {
-		t.Fatal("NameTaken said laptop was free for a different MAC")
+	l, ok := a.Allocate("bb:bb:bb:bb:bb:bb", "laptop", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused the second client")
 	}
-	if a.NameTaken("laptop", "aa:aa:aa:aa:aa:aa") {
-		t.Fatal("NameTaken said a client's own name was taken from it")
+	if l.Hostname != "" {
+		t.Fatalf("hostname = %q, want none: laptop is already claimed", l.Hostname)
 	}
-	if a.NameTaken("desktop", "bb:bb:bb:bb:bb:bb") {
-		t.Fatal("NameTaken said an unused name was taken")
+	if again, _ := a.Allocate("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}, 24*time.Hour); again.Hostname != "laptop" {
+		t.Fatalf("hostname = %q, want the first claimant to keep its own name", again.Hostname)
+	}
+	if other, _ := a.Allocate("cc:cc:cc:cc:cc:cc", "desktop", netip.Addr{}, 24*time.Hour); other.Hostname != "desktop" {
+		t.Fatalf("hostname = %q, want an unused name to be granted", other.Hostname)
 	}
 }
 

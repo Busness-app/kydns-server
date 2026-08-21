@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -81,9 +82,15 @@ func (s *Server) Name() string { return "built-in" }
 
 // Leases satisfies discovery/dhcp.Source. Only named, unexpired leases reach
 // DNS: a client that sent no hostname gets an address and nothing else.
+//
+// Sorted, because the allocator holds leases in a map and the poller compares
+// an order-sensitive digest: unsorted, an unchanged lease set would rebuild
+// every zone snapshot on most polls.
 func (s *Server) Leases(context.Context) ([]idhcp.Lease, error) {
+	ls := s.opts.Alloc.Leases()
+	slices.SortFunc(ls, func(a, b Lease) int { return a.IP.Compare(b.IP) })
 	var out []idhcp.Lease
-	for _, l := range s.opts.Alloc.Leases() {
+	for _, l := range ls {
 		if l.Hostname == "" {
 			continue
 		}
@@ -192,11 +199,13 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 		}
 		s.opts.OnChange()
 	case dhcpv4.MessageTypeDecline:
-		if ip, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
-			s.opts.Alloc.Decline(ip.Unmap())
-			s.opts.Logger.Warn("client declined an address as already in use",
+		ip, ok := netip.AddrFromSlice(m.RequestedIPAddress())
+		if !ok || !s.opts.Alloc.Decline(mac, ip.Unmap()) {
+			s.opts.Logger.Warn("ignoring a decline for an address this client does not hold",
 				"mac", mac, "ip", ip.Unmap())
+			return
 		}
+		s.opts.Logger.Warn("client declined an address as already in use", "mac", mac, "ip", ip.Unmap())
 		if err := s.opts.Store.DeleteDHCPLease(mac); err != nil {
 			s.opts.Logger.Warn("could not delete a declined lease", "mac", mac, "error", err)
 		}
@@ -221,15 +230,21 @@ func (s *Server) offer(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac
 func (s *Server) ack(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, mac string) {
 	// A client asking to keep an address we do not control must be told so,
 	// or it will sit on it until the lease it thinks it has runs out.
-	if req, ok := netip.AddrFromSlice(m.RequestedIPAddress()); ok {
-		r := req.Unmap()
-		if r.IsValid() && !r.IsUnspecified() && !s.opts.Cfg.Subnet.Contains(r) {
-			s.nak(conn, peer, m)
-			return
-		}
+	asked := askedFor(m)
+	if asked.IsValid() && !s.opts.Cfg.Subnet.Contains(asked) {
+		s.nak(conn, peer, m)
+		return
 	}
 	l, ok := s.allocate(mac, m, true)
 	if !ok {
+		s.nak(conn, peer, m)
+		return
+	}
+	// RFC 2131 4.3.2: a client that named an address and cannot have it is
+	// NAKed, not quietly re-addressed. Silently answering with a different
+	// address is what a promoted replica would do to every client whose lease
+	// it does not know, and the client would go on using the old one.
+	if asked.IsValid() && l.IP != asked {
 		s.nak(conn, peer, m)
 		return
 	}
@@ -278,12 +293,12 @@ func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, boo
 		return l, true
 	}
 	hostname := sanitizeHostname(m.HostName())
-	if hostname != "" && s.opts.Alloc.NameTaken(hostname, mac) {
+	l, ok := s.opts.Alloc.Allocate(mac, hostname, requested, s.opts.Cfg.LeaseTime)
+	if ok && hostname != "" && l.Hostname == "" {
 		s.opts.Logger.Warn("two clients claim one hostname; the later one gets an address and no name",
 			"hostname", hostname, "mac", mac)
-		hostname = ""
 	}
-	return s.opts.Alloc.Allocate(mac, hostname, requested, s.opts.Cfg.LeaseTime)
+	return l, ok
 }
 
 func (s *Server) reply(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4, t dhcpv4.MessageType, yours netip.Addr) {
@@ -315,6 +330,20 @@ func (s *Server) nak(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	s.send(conn, peer, m,
 		dhcpv4.WithMessageType(dhcpv4.MessageTypeNak),
 		dhcpv4.WithOption(dhcpv4.OptServerIdentifier(self)))
+}
+
+// askedFor is the address a REQUEST names: option 50 in SELECTING and
+// INIT-REBOOT, ciaddr in RENEWING and REBINDING. An invalid result means the
+// client named none and will take whatever we give it.
+func askedFor(m *dhcpv4.DHCPv4) netip.Addr {
+	for _, ip := range []net.IP{m.RequestedIPAddress(), m.ClientIPAddr} {
+		if a, ok := netip.AddrFromSlice(ip); ok {
+			if a = a.Unmap(); a.IsValid() && !a.IsUnspecified() {
+				return a
+			}
+		}
+	}
+	return netip.Addr{}
 }
 
 // inform answers a client that has an address already and wants only options.

@@ -74,17 +74,22 @@ func from(ip string) net.Addr {
 // probeChaddr stands in for the random MAC DetectForeign generates.
 var probeChaddr = net.HardwareAddr{0x02, 0, 0, 0, 0, 1}
 
-func TestCollectForeignIgnoresOurOwnOffers(t *testing.T) {
-	self := netip.MustParseAddr("192.168.1.5")
-	got := collectForeign(wire(offerFrom("192.168.1.5", "192.168.1.10")), self)
-	if len(got) != 0 {
-		t.Fatalf("collectForeign = %+v, want none: that offer is ours", got)
+// dnsmasq, ISC dhcpd and systemd-networkd all answer with option 54 set to the
+// address of the interface they answered on, so a DHCP server sharing this host
+// identifies itself as us. Filtering that out reports a clear segment on the
+// one deployment this feature most has to get right.
+func TestCollectForeignReportsAServerSharingOurAddress(t *testing.T) {
+	got := collectForeign(wire(offerFrom("192.168.1.5", "192.168.1.10")))
+	if len(got) != 1 {
+		t.Fatalf("collectForeign = %+v, want one entry: a server on this host is still a second server", got)
+	}
+	if got[0].ServerID.String() != "192.168.1.5" {
+		t.Fatalf("entry = %+v, want the co-resident server named", got[0])
 	}
 }
 
 func TestCollectForeignReportsAnotherServer(t *testing.T) {
-	self := netip.MustParseAddr("192.168.1.5")
-	got := collectForeign(wire(offerFrom("192.168.1.1", "192.168.1.64")), self)
+	got := collectForeign(wire(offerFrom("192.168.1.1", "192.168.1.64")))
 	if len(got) != 1 {
 		t.Fatalf("collectForeign = %+v, want one entry", got)
 	}
@@ -94,21 +99,19 @@ func TestCollectForeignReportsAnotherServer(t *testing.T) {
 }
 
 func TestCollectForeignDedupesOneServerAnsweringTwice(t *testing.T) {
-	self := netip.MustParseAddr("192.168.1.5")
 	got := collectForeign(wire(
 		offerFrom("192.168.1.1", "192.168.1.64"),
 		offerFrom("192.168.1.1", "192.168.1.64"),
-	), self)
+	))
 	if len(got) != 1 {
 		t.Fatalf("collectForeign = %+v, want one entry after dedupe", got)
 	}
 }
 
 func TestCollectForeignIgnoresNonOffers(t *testing.T) {
-	self := netip.MustParseAddr("192.168.1.5")
 	ack := offerFrom("192.168.1.1", "192.168.1.64")
 	ack.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeAck))
-	if got := collectForeign(wire(ack), self); len(got) != 0 {
+	if got := collectForeign(wire(ack)); len(got) != 0 {
 		t.Fatalf("collectForeign = %+v, want none: an ACK is not an offer of service", got)
 	}
 }
@@ -123,15 +126,25 @@ func TestCollectForeignFallsBackToTheSourceWithoutAServerID(t *testing.T) {
 	m.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeOffer))
 	m.YourIPAddr = net.IP{192, 168, 1, 64}
 
-	got := collectForeign(
-		[]reply{{msg: m, src: netip.MustParseAddr("192.168.1.1")}},
-		netip.MustParseAddr("192.168.1.5"),
-	)
+	got := collectForeign([]reply{{msg: m, src: netip.MustParseAddr("192.168.1.1")}})
 	if len(got) != 1 {
 		t.Fatalf("collectForeign = %+v, want one entry from the source address", got)
 	}
 	if got[0].ServerID.String() != "192.168.1.1" || got[0].Offered.String() != "192.168.1.64" {
 		t.Fatalf("entry = %+v, want server 192.168.1.1 offering 192.168.1.64", got[0])
+	}
+}
+
+// An explicit 0.0.0.0 in option 54 is no more a server address than a missing
+// one. Reporting "a server at 0.0.0.0" is useless at the moment the operator
+// needs a name to go and turn something off.
+func TestCollectForeignFallsBackToTheSourceOnAnUnspecifiedServerID(t *testing.T) {
+	got := collectForeign([]reply{{
+		msg: offerFrom("0.0.0.0", "192.168.1.64"),
+		src: netip.MustParseAddr("192.168.1.1"),
+	}})
+	if len(got) != 1 || got[0].ServerID.String() != "192.168.1.1" {
+		t.Fatalf("collectForeign = %+v, want the source address named as the server", got)
 	}
 }
 
@@ -149,8 +162,11 @@ func TestNewProbeDiscoveryAsksForABroadcastReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newProbeDiscovery: %v", err)
 	}
-	if !m.IsBroadcast() {
-		t.Fatalf("flags = %#04x, want the broadcast bit set", m.Flags)
+	// The serialized flags field, not the struct: bytes 10-11 of the packet are
+	// what a server on the segment actually reads.
+	b := m.ToBytes()
+	if len(b) < 12 || b[10]&0x80 == 0 {
+		t.Fatalf("flags on the wire = %#02x%02x, want the broadcast bit set", b[10], b[11])
 	}
 }
 

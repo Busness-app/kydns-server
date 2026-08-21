@@ -175,8 +175,9 @@ func (p *Poller) Leases() []dhcp.Lease {
 	return append([]dhcp.Lease(nil), p.leases...)
 }
 
-// digest is an order-sensitive fingerprint of the lease set. The parser emits
-// a stable order, so string comparison is enough and costs less than a hash.
+// digest is an order-sensitive fingerprint of the lease set. Every source
+// emits a stable order, so string comparison is enough and costs less than a
+// hash — a source that did not would rebuild the zone on most polls.
 func digest(leases []dhcp.Lease) string {
 	var sb strings.Builder
 	for _, l := range leases {

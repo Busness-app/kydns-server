@@ -1,6 +1,7 @@
 package web
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -114,23 +115,27 @@ func (s *Server) postServerSettings(w http.ResponseWriter, r *http.Request) {
 
 	// The built-in DHCP server has no field on this form yet, and this handler
 	// rebuilds the whole document from what was posted: without carrying them
-	// over, saving anything else here switches a running DHCP server off.
-	if cur, ok := s.liveSettings(); ok {
-		v.DHCPEnabled, v.DHCPInterface = cur.DHCPEnabled, cur.DHCPInterface
-		v.DHCPRangeStart, v.DHCPRangeEnd = cur.DHCPRangeStart, cur.DHCPRangeEnd
-		v.DHCPGateway, v.DHCPLeaseSeconds = cur.DHCPGateway, cur.DHCPLeaseSeconds
-		v.DHCPSecondaryDNS = cur.DHCPSecondaryDNS
+	// over, saving anything else here switches a running DHCP server off. If
+	// the current values cannot be read, there is nothing to carry over, so the
+	// save is refused rather than written with seven zeroes.
+	cur, ok := s.liveSettings()
+	if !ok {
+		s.serverSettingsError(w, r, v,
+			errors.New("the current settings could not be read, so this save was not applied; try again"))
+		return
 	}
+	v.DHCPEnabled, v.DHCPInterface = cur.DHCPEnabled, cur.DHCPInterface
+	v.DHCPRangeStart, v.DHCPRangeEnd = cur.DHCPRangeStart, cur.DHCPRangeEnd
+	v.DHCPGateway, v.DHCPLeaseSeconds = cur.DHCPGateway, cur.DHCPLeaseSeconds
+	v.DHCPSecondaryDNS = cur.DHCPSecondaryDNS
 
 	// Renaming the private zone moves every manual record with it. That is the
 	// operator's data, so they see exactly what will change and say yes before
 	// it happens — once per rename, not on every save.
-	if cur, ok := s.liveSettings(); ok {
-		if plan := s.planZoneRename(cur.PrivateDomain, v.PrivateDomain); plan != nil &&
-			r.PostFormValue("confirm_rename") != v.PrivateDomain {
-			s.serverSettingsRename(w, r, v, plan)
-			return
-		}
+	if plan := s.planZoneRename(cur.PrivateDomain, v.PrivateDomain); plan != nil &&
+		r.PostFormValue("confirm_rename") != v.PrivateDomain {
+		s.serverSettingsRename(w, r, v, plan)
+		return
 	}
 
 	// Exactly what the operator typed in the confirmation box: anything derived

@@ -1,11 +1,15 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"log/slog"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yoshiofthewire/kydns-server/internal/dhcpd"
 	"github.com/yoshiofthewire/kydns-server/internal/discovery"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
@@ -88,8 +92,10 @@ func newTestRunner(role Role) (*dhcpRunner, *discovery.Poller) {
 	}, p
 }
 
-// A replica must not even try, so nothing it could fail at is reached.
-func TestReconcileOnAReplicaNeverStarts(t *testing.T) {
+// A replica must not even try, so nothing it could fail at is reached. It says
+// so, though: DHCP configured and not running with no reason at all reads as
+// broken rather than as correct.
+func TestReconcileOnAReplicaNeverStartsAndSaysWhy(t *testing.T) {
 	d, p := newTestRunner(RoleReplica)
 	d.Reconcile(store.Settings{
 		DHCPEnabled: true, DHCPInterface: "eth0",
@@ -100,11 +106,17 @@ func TestReconcileOnAReplicaNeverStarts(t *testing.T) {
 	if running {
 		t.Error("a replica started the DHCP listener")
 	}
-	if err != nil {
-		t.Errorf("a replica reported an error rather than simply not serving: %v", err)
+	if !errors.Is(err, errReplicaNoDHCP) {
+		t.Errorf("a replica reported %v, want the role refusal", err)
 	}
 	if p.Enabled() {
 		t.Error("a replica published a lease source")
+	}
+
+	// Not configured for DHCP at all: nothing to explain.
+	d.Reconcile(store.Settings{})
+	if _, err := d.Status(); err != nil {
+		t.Errorf("a node with DHCP off reported %v, want no reason at all", err)
 	}
 }
 
@@ -149,6 +161,11 @@ func TestParseSettingNamesTheField(t *testing.T) {
 	if a, err := parseSetting("dhcp.gateway", "192.168.1.1"); err != nil || a.String() != "192.168.1.1" {
 		t.Errorf("parseSetting(valid) = %v, %v", a, err)
 	}
+	// The validator trims before parsing, so " 192.168.1.100" saves green.
+	// Not trimming here would make it save and then never start.
+	if a, err := parseSetting("dhcp.range_start", " 192.168.1.100\t"); err != nil || a.String() != "192.168.1.100" {
+		t.Errorf("parseSetting(padded) = %v, %v; the validator accepts what this refuses", a, err)
+	}
 }
 
 // Promotion starts the listener. A replica is promoted precisely when the
@@ -171,8 +188,8 @@ func TestPromotionReconcilesDHCP(t *testing.T) {
 		DHCPGateway: "192.168.1.1", DHCPLeaseSeconds: 3600,
 	}
 	d.Reconcile(v)
-	if running, err := d.Status(); running || err != nil {
-		t.Fatalf("as a replica: running=%v, err=%v; want not running and no error", running, err)
+	if running, err := d.Status(); running || !errors.Is(err, errReplicaNoDHCP) {
+		t.Fatalf("as a replica: running=%v, err=%v; want not running, with the role as the reason", running, err)
 	}
 
 	promoter := &replicaPromoter{
@@ -205,5 +222,144 @@ func TestPromoteWithoutAnOnPromoteHook(t *testing.T) {
 	p := &replicaPromoter{st: openDB(t, t.TempDir()), role: NewRoleHolder(RoleReplica)}
 	if changed, err := p.Promote(); err != nil || !changed {
 		t.Fatalf("Promote with a nil onPromote = %v, %v", changed, err)
+	}
+}
+
+// fakeIface is the host state build reads. Injected, so no test in this file
+// needs a real interface, a raw socket, or a bind.
+func fakeIface(name string) (dhcpd.IfaceInfo, error) {
+	return dhcpd.IfaceInfo{
+		Name:   name,
+		Addr:   netip.MustParseAddr("192.168.1.5"),
+		Subnet: netip.MustParsePrefix("192.168.1.0/24"),
+	}, nil
+}
+
+func buildableSettings() store.Settings {
+	return store.Settings{
+		DHCPEnabled: true, DHCPInterface: "eth0",
+		DHCPRangeStart: "192.168.1.100", DHCPRangeEnd: "192.168.1.200",
+		DHCPGateway: "192.168.1.1", DHCPLeaseSeconds: 3600,
+	}
+}
+
+// newBuildableRunner is a runner whose host-state calls all succeed, so a test
+// reaches the decisions build makes rather than stopping at Qualifies.
+func newBuildableRunner(detect func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error)) (*dhcpRunner, *discovery.Poller) {
+	d, p := newTestRunner(RoleStandalone)
+	d.qualifies = func(string) error { return nil }
+	d.inspect = fakeIface
+	d.detectForeign = detect
+	return d, p
+}
+
+// The rogue check is the whole reason this feature can be turned on safely,
+// and a server sharing this host answers with our own address. Refusing has to
+// hold for that server too.
+func TestBuildRefusesWhenAnotherServerAnswers(t *testing.T) {
+	ours := netip.MustParseAddr("192.168.1.5")
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return []dhcpd.Foreign{{ServerID: ours, Offered: netip.MustParseAddr("192.168.1.64")}}, nil
+	})
+	srv, err := d.build(buildableSettings(), true)
+	if err == nil {
+		t.Fatalf("build returned %v with another DHCP server answering on the segment", srv)
+	}
+	var fe *ForeignServerError
+	if !errors.As(err, &fe) {
+		t.Fatalf("error = %v, want a ForeignServerError", err)
+	}
+	if !strings.Contains(err.Error(), ours.String()) {
+		t.Errorf("the refusal does not name the other server: %v", err)
+	}
+}
+
+// R22: a probe that could not run is not a clear segment. Guessing "no" would
+// drop the protection on exactly the hosts where the probe is hardest to run.
+func TestBuildRefusesWhenTheProbeCannotRun(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, errors.New("probe socket: permission denied")
+	})
+	srv, err := d.build(buildableSettings(), true)
+	if err == nil {
+		t.Fatalf("build returned %v after a probe that could not run", srv)
+	}
+	if !strings.Contains(err.Error(), "permission denied") || !strings.Contains(err.Error(), "eth0") {
+		t.Errorf("the refusal names neither the cause nor the interface: %v", err)
+	}
+}
+
+func TestBuildSkipsTheProbeWhenAListenerIsAlreadyBound(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		t.Fatal("the probe ran while our own listener held the interface")
+		return nil, nil
+	})
+	if _, err := d.build(buildableSettings(), false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+}
+
+func TestBuildRefusesAMalformedSecondaryDNS(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	v := buildableSettings()
+	v.DHCPSecondaryDNS = "9.9.9"
+	srv, err := d.build(v, true)
+	if err == nil {
+		t.Fatalf("build returned %v with a malformed secondary DNS, silently dropping it", srv)
+	}
+	if !strings.Contains(err.Error(), "secondary_dns") {
+		t.Errorf("the error does not name the setting: %v", err)
+	}
+}
+
+func TestNeedsProbe(t *testing.T) {
+	v := buildableSettings()
+	d, _ := newTestRunner(RoleStandalone)
+	if !d.needsProbe(v) {
+		t.Error("no listener is running, so the segment has to be checked")
+	}
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = v
+	if d.needsProbe(v) {
+		t.Error("our own listener holds this interface; probing again can only hear nothing")
+	}
+	other := v
+	other.DHCPInterface = "eth1"
+	if !d.needsProbe(other) {
+		t.Error("a different interface is a segment we have never checked")
+	}
+}
+
+// I4: Reconcile has three triggers — boot, a settings save, and promotion — so
+// a stop that is not followed by a start leaves the LAN with no DHCP server
+// and nothing to retry it.
+func TestARefusedBuildLeavesTheRunningListenerAlone(t *testing.T) {
+	d, p := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, errors.New("probe socket: permission denied")
+	})
+	// A listener that is up and serving the LAN, published to the poller.
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	d.poller.SetSource(d.running)
+
+	// A new interface, so the probe runs, and it fails.
+	v := d.current
+	v.DHCPInterface = "eth1"
+	d.Reconcile(v)
+
+	running, err := d.Status()
+	if !running {
+		t.Fatal("a build that refused took the working listener down, with nothing to bring it back")
+	}
+	if err == nil {
+		t.Error("the refusal was not reported")
+	}
+	if !p.Enabled() {
+		t.Error("the lease source was withdrawn from DNS by a build that never replaced it")
+	}
+	if d.current.DHCPInterface != "eth0" {
+		t.Errorf("current names %q, but the listener that is running is on eth0", d.current.DHCPInterface)
 	}
 }

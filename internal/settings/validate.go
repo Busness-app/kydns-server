@@ -124,40 +124,40 @@ func validateDHCP(v store.Settings) error {
 		return nil
 	}
 	if v.DHCPLeaseFile != "" {
-		return bad("dhcp.enabled",
+		return bad("dhcp_enabled",
 			"the built-in DHCP server and dhcp_lease_file cannot both be on; clear dhcp_lease_file first")
 	}
 	if strings.TrimSpace(v.DHCPInterface) == "" {
-		return bad("dhcp.interface", "an interface is required to serve DHCP")
+		return bad("dhcp_interface", "an interface is required to serve DHCP")
 	}
-	start, err := parseIPv4("dhcp.range_start", v.DHCPRangeStart)
+	start, err := parseIPv4("dhcp_range_start", v.DHCPRangeStart)
 	if err != nil {
 		return err
 	}
-	end, err := parseIPv4("dhcp.range_end", v.DHCPRangeEnd)
+	end, err := parseIPv4("dhcp_range_end", v.DHCPRangeEnd)
 	if err != nil {
 		return err
 	}
 	if end.Less(start) {
-		return bad("dhcp.range_end", "%s is below the range start %s", end, start)
+		return bad("dhcp_range_end", "%s is below the range start %s", end, start)
 	}
 	// The lease table is bounded by the range size, so cap the pool rather
 	// than requiring one /24: SuggestRange can propose a range that spans
 	// two /24s on anything wider than a /23, and that is legitimate.
 	size := uint64(be32(end.As4())) - uint64(be32(start.As4())) + 1
 	if size > uint64(dhcpMaxPoolSize) {
-		return bad("dhcp.range_end", "the range holds %d addresses, more than the %d-address limit", size, dhcpMaxPoolSize)
+		return bad("dhcp_range_end", "the range holds %d addresses, more than the %d-address limit", size, dhcpMaxPoolSize)
 	}
-	if _, err := parseIPv4("dhcp.gateway", v.DHCPGateway); err != nil {
+	if _, err := parseIPv4("dhcp_gateway", v.DHCPGateway); err != nil {
 		return err
 	}
 	if v.DHCPSecondaryDNS != "" {
-		if _, err := parseIPv4("dhcp.secondary_dns", v.DHCPSecondaryDNS); err != nil {
+		if _, err := parseIPv4("dhcp_secondary_dns", v.DHCPSecondaryDNS); err != nil {
 			return err
 		}
 	}
 	if v.DHCPLeaseSeconds < dhcpLeaseMin || v.DHCPLeaseSeconds > dhcpLeaseMax {
-		return bad("dhcp.lease_seconds", "must be between %d and %d seconds", dhcpLeaseMin, dhcpLeaseMax)
+		return bad("dhcp_lease_seconds", "must be between %d and %d seconds", dhcpLeaseMin, dhcpLeaseMax)
 	}
 	return nil
 }

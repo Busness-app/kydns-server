@@ -42,10 +42,10 @@ Applied live on save:
 server landed: the poller's source became swappable, which is what both
 features needed.
 
-Requires a restart, and says so:
-
-- `private_domain` — every zone snapshot, every FQDN, and the registry's
-  name validation are built from it.
+`private_domain` is applied live too: `Apply` renames the zone everywhere,
+including every manual record, behind a two-step confirmation. Nothing
+requires a restart today, which is why the restart banner has no keys left
+to compare.
 
 ## Precedence: the database wins, the file seeds once
 

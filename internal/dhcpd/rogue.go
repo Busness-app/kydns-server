@@ -28,10 +28,16 @@ func (f Foreign) String() string {
 }
 
 // DetectForeign broadcasts a DISCOVER from a random locally-administered MAC
-// and collects OFFERs from anyone that is not us. A positive result is what
-// refuses to start the listener: two DHCP servers on one segment breaks the
-// network, not one name.
-func DetectForeign(ctx context.Context, iface string, wait time.Duration, self netip.Addr) ([]Foreign, error) {
+// and collects every OFFER that comes back. A positive result is what refuses
+// to start the listener: two DHCP servers on one segment breaks the network,
+// not one name.
+//
+// Nothing is filtered as "ours". The probe runs only when our own listener is
+// not bound, and dnsmasq, ISC dhcpd and systemd-networkd all set option 54 to
+// the address of the interface they answered on — so a server sharing this
+// host answers with our address, and a self filter here would hide exactly the
+// co-resident server an operator is most likely to have.
+func DetectForeign(ctx context.Context, iface string, wait time.Duration) ([]Foreign, error) {
 	mac, err := probeMAC()
 	if err != nil {
 		return nil, fmt.Errorf("probe mac: %w", err)
@@ -62,7 +68,7 @@ func DetectForeign(ctx context.Context, iface string, wait time.Duration, self n
 		return nil, fmt.Errorf("probe send: %w", err)
 	}
 
-	return collectForeign(readReplies(conn, discover.TransactionID), self), nil
+	return collectForeign(readReplies(conn, discover.TransactionID)), nil
 }
 
 // newProbeDiscovery builds the probe DISCOVER. The broadcast flag is not
@@ -126,9 +132,8 @@ func bindToDevice(iface string) func(network, address string, c syscall.RawConn)
 }
 
 // collectForeign is the decision, split out so it is testable without a
-// network. Only OFFERs count, and only from a server identifier that is not
-// ours.
-func collectForeign(replies []reply, self netip.Addr) []Foreign {
+// network. Only OFFERs count, one entry per server.
+func collectForeign(replies []reply) []Foreign {
 	seen := map[netip.Addr]bool{}
 	var out []Foreign
 	for _, r := range replies {
@@ -136,11 +141,12 @@ func collectForeign(replies []reply, self netip.Addr) []Foreign {
 			continue
 		}
 		id, ok := netip.AddrFromSlice(r.msg.ServerIdentifier())
-		if !ok {
-			id = r.src // no option 54: an answer is still proof of a server
+		if id = id.Unmap(); !ok || id.IsUnspecified() {
+			// No usable option 54: an answer is still proof of a server, and
+			// naming its source beats reporting one at 0.0.0.0.
+			id = r.src
 		}
-		id = id.Unmap()
-		if !id.IsValid() || id == self || seen[id] {
+		if !id.IsValid() || seen[id] {
 			continue
 		}
 		offered, _ := netip.AddrFromSlice(r.msg.YourIPAddr)
