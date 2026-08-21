@@ -270,7 +270,8 @@ VALUES (1, 'home.arpa', '', '', '', 0, 60, 5, 3600, 300, 100, 0, 0, '', 30, 30, 
 		t.Fatalf("Settings() after migration: ok=%v err=%v", ok, err)
 	}
 	if v.DHCPEnabled || v.DHCPInterface != "" || v.DHCPRangeStart != "" ||
-		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" {
+		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" ||
+		v.DHCPAllowForeign {
 		t.Errorf("migrated DHCP settings = %+v, want the zero-value defaults", v)
 	}
 	if v.DHCPLeaseSeconds != 86400 {

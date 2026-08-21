@@ -19,6 +19,7 @@ func TestSettingsRoundTripsDHCPFields(t *testing.T) {
 	v.DHCPGateway = "192.168.1.1"
 	v.DHCPLeaseSeconds = 86400
 	v.DHCPSecondaryDNS = "192.168.1.3"
+	v.DHCPAllowForeign = true
 	if err := s.PutSettings(v); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -48,6 +49,7 @@ func TestDHCPSettingsDoNotBumpConfigVersion(t *testing.T) {
 
 	v.DHCPEnabled = true
 	v.DHCPInterface = "eth0"
+	v.DHCPAllowForeign = true
 	if err := s.PutSettings(v); err != nil {
 		t.Fatalf("write: %v", err)
 	}

@@ -406,7 +406,7 @@ func TestPostServerSettingsKeepsTheDHCPConfiguration(t *testing.T) {
 	cur.DHCPEnabled, cur.DHCPInterface = true, "eth0"
 	cur.DHCPRangeStart, cur.DHCPRangeEnd = "192.168.1.100", "192.168.1.200"
 	cur.DHCPGateway, cur.DHCPLeaseSeconds = "192.168.1.1", 3600
-	cur.DHCPSecondaryDNS = "9.9.9.9"
+	cur.DHCPSecondaryDNS, cur.DHCPAllowForeign = "9.9.9.9", true
 	if err := srv.o.Settings.Set(cur, ""); err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestPostServerSettingsKeepsTheDHCPConfiguration(t *testing.T) {
 	if !got.DHCPEnabled || got.DHCPInterface != "eth0" ||
 		got.DHCPRangeStart != "192.168.1.100" || got.DHCPRangeEnd != "192.168.1.200" ||
 		got.DHCPGateway != "192.168.1.1" || got.DHCPLeaseSeconds != 3600 ||
-		got.DHCPSecondaryDNS != "9.9.9.9" {
+		got.DHCPSecondaryDNS != "9.9.9.9" || !got.DHCPAllowForeign {
 		t.Fatalf("an unrelated settings save wiped the DHCP configuration: %+v", got)
 	}
 }

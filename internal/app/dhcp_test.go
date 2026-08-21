@@ -79,6 +79,14 @@ func TestDHCPConfigEqualCoversEveryBuildInput(t *testing.T) {
 	if !dhcpConfigEqual(base, other) {
 		t.Error("an unrelated setting restarts the listener")
 	}
+	// build reads this one, but it gates the start rather than shaping the
+	// listener: flipping it must not restart a server that is already serving.
+	// A refused start retries regardless, because nothing is running to skip.
+	other = base
+	other.DHCPAllowForeign = true
+	if !dhcpConfigEqual(base, other) {
+		t.Error("the foreign-server override restarts a listener it cannot change")
+	}
 }
 
 // newTestRunner builds a runner with a real poller and no listener. Nothing
@@ -392,5 +400,178 @@ func TestReSavingTheWorkingConfigClearsTheStaleError(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("Status reports %v beside a listener that is running the configuration just saved", err)
+	}
+}
+
+func TestForeignServerErrorNamesTheOtherServer(t *testing.T) {
+	err := &ForeignServerError{Found: []dhcpd.Foreign{{
+		ServerID: netip.MustParseAddr("192.168.1.1"),
+		Offered:  netip.MustParseAddr("192.168.1.64"),
+	}}}
+	msg := err.Error()
+	if !strings.Contains(msg, "192.168.1.1") {
+		t.Fatalf("error %q does not name the other server; an operator cannot act on it", msg)
+	}
+	if !strings.Contains(msg, "192.168.1.64") {
+		t.Fatalf("error %q does not say what was offered", msg)
+	}
+}
+
+func TestForeignServerIsFatalUnlessOverridden(t *testing.T) {
+	found := []dhcpd.Foreign{{
+		ServerID: netip.MustParseAddr("192.168.1.1"),
+		Offered:  netip.MustParseAddr("192.168.1.64"),
+	}}
+	if err := foreignVerdict(found, nil, false); err == nil {
+		t.Fatal("a foreign DHCP server was accepted without an override")
+	}
+	if err := foreignVerdict(found, nil, true); err != nil {
+		t.Fatalf("the override did not take: %v", err)
+	}
+	if err := foreignVerdict(nil, nil, false); err != nil {
+		t.Fatalf("a clear probe was treated as a failure: %v", err)
+	}
+	if err := foreignVerdict(nil, errors.New("probe socket: address in use"), false); err == nil {
+		t.Fatal("a probe that could not run was treated as a clear")
+	}
+	if err := foreignVerdict(nil, errors.New("probe socket: address in use"), true); err != nil {
+		t.Fatalf("the override did not cover a probe that could not run: %v", err)
+	}
+}
+
+// The override is what an operator whose own DHCP client holds :68 has to
+// reach for, so it has to survive the whole build path, not just the verdict.
+func TestBuildStartsWithTheOverrideOn(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return []dhcpd.Foreign{{
+			ServerID: netip.MustParseAddr("192.168.1.1"),
+			Offered:  netip.MustParseAddr("192.168.1.64"),
+		}}, errors.New("probe socket: address in use")
+	})
+	v := buildableSettings()
+	v.DHCPAllowForeign = true
+	if _, err := d.build(v, true); err != nil {
+		t.Fatalf("build refused with the override on: %v", err)
+	}
+}
+
+// The periodic probe warns and populates the banner. It never stops the
+// listener: pulling DHCP out from under a working network over one transient
+// answer is worse than the conflict it reacts to.
+func TestThePeriodicProbeWarnsAndLeavesTheListenerUp(t *testing.T) {
+	d, p := newTestRunner(RoleStandalone)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	d.poller.SetSource(d.running)
+
+	found := []dhcpd.Foreign{{
+		ServerID: netip.MustParseAddr("192.168.1.1"),
+		Offered:  netip.MustParseAddr("192.168.1.64"),
+	}}
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return found, nil
+	})
+
+	running, err := d.Status()
+	if !running {
+		t.Fatal("the periodic probe took a working listener down")
+	}
+	if err != nil {
+		t.Errorf("the periodic probe reported %v as a start failure", err)
+	}
+	if !p.Enabled() {
+		t.Error("the periodic probe withdrew the lease source from DNS")
+	}
+	if got := d.Foreign(); len(got) != 1 || got[0].ServerID != found[0].ServerID {
+		t.Fatalf("Foreign() = %+v, want the other server for the banner", got)
+	}
+}
+
+// R22 again: a probe that could not run is not a clear segment, so it must
+// not blank a banner that is reporting a real conflict.
+func TestAFailedPeriodicProbeIsNotReportedAsClear(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	found := []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return found, nil
+	})
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, errors.New("probe socket: address in use")
+	})
+	if got := d.Foreign(); len(got) != 1 {
+		t.Fatalf("Foreign() = %+v after a probe that could not run, want the last known conflict kept", got)
+	}
+}
+
+// Foreign() feeds a JSON payload the API builds without the lock. Handing out
+// the runner's own slice would let that read race the next probe's write.
+func TestForeignReturnsACopy(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}, nil
+	})
+	got := d.Foreign()
+	got[0].ServerID = netip.MustParseAddr("10.0.0.1")
+	if d.Foreign()[0].ServerID.String() != "192.168.1.1" {
+		t.Fatal("Foreign() hands out the runner's own slice")
+	}
+}
+
+// A watch that outlived its listener would go on probing a segment we no
+// longer serve, and a banner that outlived it would accuse the operator of a
+// conflict with a server that is no longer running.
+func TestStoppingTheListenerEndsTheWatchAndClearsTheBanner(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	stopped := false
+	d.stopWatch = func() { stopped = true }
+	d.foreign = []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}
+
+	d.Reconcile(store.Settings{})
+
+	if !stopped {
+		t.Error("the periodic probe outlived the listener it was checking on")
+	}
+	if got := d.Foreign(); got != nil {
+		t.Errorf("Foreign() = %+v after the listener stopped, want nothing to show", got)
+	}
+}
+
+func TestWatchForeignStopsWithItsContext(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.watchForeign(ctx, func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+			t.Error("the probe ran after the listener stopped")
+			return nil, nil
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchForeign outlived its context, so it keeps probing a segment we no longer serve")
+	}
+}
+
+// The watch is cancelled while a probe is already in flight on every stop, so
+// its result must not land on a runner that has already let the listener go.
+func TestAProbeInFlightWhenTheListenerStopsDoesNotRepopulateTheBanner(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	ctx, cancel := context.WithCancel(context.Background())
+	d.stopWatch = cancel
+
+	d.checkForeign(ctx, func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		d.Reconcile(store.Settings{}) // the listener goes down mid-probe
+		return []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}, nil
+	})
+
+	if got := d.Foreign(); got != nil {
+		t.Fatalf("Foreign() = %+v, want nothing: the listener it described is gone", got)
 	}
 }

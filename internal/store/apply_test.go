@@ -264,6 +264,7 @@ func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	local.DHCPGateway = "192.168.1.1"
 	local.DHCPLeaseSeconds = 43200
 	local.DHCPSecondaryDNS = "192.168.1.3"
+	local.DHCPAllowForeign = true
 	if err := s.PutSettings(local); err != nil {
 		t.Fatal(err)
 	}
@@ -280,6 +281,7 @@ func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	incoming.DHCPGateway = "10.0.0.1"
 	incoming.DHCPLeaseSeconds = 7200
 	incoming.DHCPSecondaryDNS = "10.0.0.3"
+	incoming.DHCPAllowForeign = false
 	if err := s.ApplySnapshot(SnapshotInput{Settings: incoming}); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +296,8 @@ func TestApplySnapshotPreservesNodeLocalSettings(t *testing.T) {
 	}
 	if got.DHCPInterface != local.DHCPInterface || got.DHCPRangeStart != local.DHCPRangeStart ||
 		got.DHCPRangeEnd != local.DHCPRangeEnd || got.DHCPGateway != local.DHCPGateway ||
-		got.DHCPLeaseSeconds != local.DHCPLeaseSeconds || got.DHCPSecondaryDNS != local.DHCPSecondaryDNS {
+		got.DHCPLeaseSeconds != local.DHCPLeaseSeconds || got.DHCPSecondaryDNS != local.DHCPSecondaryDNS ||
+		got.DHCPAllowForeign != local.DHCPAllowForeign {
 		t.Fatalf("Settings() = %+v after apply, want DHCP fields untouched by the incoming snapshot", got)
 	}
 }

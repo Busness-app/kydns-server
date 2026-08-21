@@ -48,7 +48,24 @@ type dhcpRunner struct {
 	current store.Settings
 	// lastError is what the UI shows when DHCP is configured but not running.
 	lastError error
+	// foreign is the last periodic probe result, for the UI banner. It never
+	// stops the listener: pulling DHCP out from under a working network over
+	// one transient answer is worse than the conflict it reacts to.
+	foreign []dhcpd.Foreign
+	// stopWatch ends the periodic probe when the listener stops.
+	stopWatch context.CancelFunc
 }
+
+// foreignProbe is one run of the rogue check. A func rather than the server
+// itself, so the watch is driven in a test without a socket.
+type foreignProbe func(context.Context, time.Duration) ([]dhcpd.Foreign, error)
+
+const (
+	// foreignWatchEvery is how often a running server re-checks for company.
+	foreignWatchEvery = 15 * time.Minute
+	// foreignProbeWait is how long each probe listens for OFFERs.
+	foreignProbeWait = 2 * time.Second
+)
 
 // Reconcile brings the listener in line with v. It is safe to call with
 // unchanged settings: an already-correct listener is left alone.
@@ -84,6 +101,9 @@ func (d *dhcpRunner) Reconcile(v store.Settings) {
 	}
 	d.running, d.current, d.lastError = srv, v, nil
 	d.poller.SetSource(srv)
+	watchCtx, cancel := context.WithCancel(context.Background())
+	d.stopWatch = cancel
+	go d.watchForeign(watchCtx, srv.ProbeForeign)
 	d.logger.Info("dhcp server started",
 		"interface", v.DHCPInterface, "range", v.DHCPRangeStart+"-"+v.DHCPRangeEnd)
 }
@@ -165,22 +185,19 @@ func (d *dhcpRunner) build(v store.Settings, probe bool) (*dhcpd.Server, error) 
 			start, end, info.Subnet, v.DHCPInterface)
 	}
 
-	// The rogue check is a start-time gate, not a periodic one. A positive
-	// result refuses: two servers on one segment breaks the network. So does
-	// an error — it means we do not know whether another server is there, and
-	// guessing "no" would drop the protection on exactly the hosts where the
-	// probe is hardest to run.
+	// The rogue check is a start-time gate, not a periodic one; re-checking a
+	// live segment is watchForeign's job.
 	if probe {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		foreign, err := detect(ctx, v.DHCPInterface, 2*time.Second)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"could not check whether another DHCP server is already answering on %q, so refusing to start: %w",
-				v.DHCPInterface, err)
+		foreign, probeErr := detect(ctx, v.DHCPInterface, foreignProbeWait)
+		if probeErr != nil {
+			// Named here rather than in foreignVerdict: on a multi-homed host
+			// "the probe failed" is half an answer without the segment.
+			probeErr = fmt.Errorf("interface %q: %w", v.DHCPInterface, probeErr)
 		}
-		if len(foreign) > 0 {
-			return nil, &ForeignServerError{Found: foreign}
+		if err := foreignVerdict(foreign, probeErr, v.DHCPAllowForeign); err != nil {
+			return nil, err
 		}
 	}
 
@@ -232,7 +249,12 @@ func (d *dhcpRunner) stopLocked() {
 	if err := d.running.Stop(); err != nil {
 		d.logger.Warn("dhcp listener did not close cleanly", "error", err)
 	}
+	if d.stopWatch != nil {
+		d.stopWatch()
+		d.stopWatch = nil
+	}
 	d.running = nil
+	d.foreign = nil
 	d.poller.SetSource(nil)
 	d.logger.Info("dhcp server stopped")
 }
@@ -242,6 +264,54 @@ func (d *dhcpRunner) Status() (running bool, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.running != nil, d.lastError
+}
+
+// watchForeign warns about another DHCP server appearing after we started.
+// It only ever logs and populates the banner.
+func (d *dhcpRunner) watchForeign(ctx context.Context, probe foreignProbe) {
+	t := time.NewTicker(foreignWatchEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		d.checkForeign(ctx, probe)
+	}
+}
+
+// checkForeign runs one periodic probe. A probe that could not run leaves the
+// last result alone rather than clearing it: "we could not check" is not "all
+// clear", and this one has no operator in front of it to say so to.
+func (d *dhcpRunner) checkForeign(ctx context.Context, probe foreignProbe) {
+	found, err := probe(ctx, foreignProbeWait)
+	if err != nil {
+		d.logger.Warn("periodic dhcp conflict probe failed", "error", err)
+		return
+	}
+	d.mu.Lock()
+	// Checked under the lock: stopLocked cancels this context and clears the
+	// banner in the same section, so an in-flight probe must not write its
+	// result back afterwards and describe a listener that is gone.
+	if ctx.Err() == nil {
+		d.foreign = found
+	}
+	d.mu.Unlock()
+	for _, f := range found {
+		d.logger.Warn("another DHCP server is answering on this network",
+			"server", f.ServerID.String(), "offered", f.Offered.String())
+	}
+}
+
+// Foreign returns the last periodic probe result, for the UI banner.
+func (d *dhcpRunner) Foreign() []dhcpd.Foreign {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.foreign) == 0 {
+		return nil
+	}
+	return append([]dhcpd.Foreign(nil), d.foreign...)
 }
 
 // dhcpConfigEqual reports whether two settings would produce the same
@@ -256,6 +326,30 @@ func dhcpConfigEqual(a, b store.Settings) bool {
 		a.DHCPLeaseSeconds == b.DHCPLeaseSeconds &&
 		a.DHCPSecondaryDNS == b.DHCPSecondaryDNS &&
 		a.PrivateDomain == b.PrivateDomain
+}
+
+// foreignVerdict decides whether a probe result blocks the start. The
+// override exists for operators who genuinely run two servers - split scopes,
+// a deliberate second scope on another VLAN - and is off by default because
+// the failure it guards against takes down the whole network rather than one
+// name.
+//
+// One key covers both refusals. A probe that could not run says we do not know
+// whether another server is there, and that is fatal precisely so it is never
+// mistaken for a clear. The operator who wants past that is the same operator
+// who wants past a detected server - most often the one whose own DHCP client
+// already holds :68 - so two boxes would be ceremony, not safety.
+func foreignVerdict(found []dhcpd.Foreign, probeErr error, allow bool) error {
+	if allow {
+		return nil
+	}
+	if probeErr != nil {
+		return fmt.Errorf("could not check whether another DHCP server is already answering, so refusing to start: %w", probeErr)
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return &ForeignServerError{Found: found}
 }
 
 // ForeignServerError names the other DHCP server, because "could not start"

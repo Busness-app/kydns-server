@@ -43,6 +43,7 @@ type settingsDTO struct {
 	DHCPGateway      string `json:"dhcp_gateway" yaml:"dhcp_gateway"`
 	DHCPLeaseSeconds int    `json:"dhcp_lease_seconds" yaml:"dhcp_lease_seconds"`
 	DHCPSecondaryDNS string `json:"dhcp_secondary_dns" yaml:"dhcp_secondary_dns"`
+	DHCPAllowForeign bool   `json:"dhcp_allow_foreign" yaml:"dhcp_allow_foreign"`
 
 	// ConfirmPublic authorises one public allow_query prefix for this request
 	// only. It is never stored and never returned, and it has no yaml tag: a
@@ -68,7 +69,7 @@ func toSettingsDTO(v store.Settings) settingsDTO {
 		DHCPEnabled:   v.DHCPEnabled, DHCPInterface: v.DHCPInterface,
 		DHCPRangeStart: v.DHCPRangeStart, DHCPRangeEnd: v.DHCPRangeEnd,
 		DHCPGateway: v.DHCPGateway, DHCPLeaseSeconds: v.DHCPLeaseSeconds,
-		DHCPSecondaryDNS: v.DHCPSecondaryDNS,
+		DHCPSecondaryDNS: v.DHCPSecondaryDNS, DHCPAllowForeign: v.DHCPAllowForeign,
 	}
 }
 
@@ -86,7 +87,7 @@ func fromSettingsDTO(d settingsDTO) store.Settings {
 		DHCPEnabled:   d.DHCPEnabled, DHCPInterface: d.DHCPInterface,
 		DHCPRangeStart: d.DHCPRangeStart, DHCPRangeEnd: d.DHCPRangeEnd,
 		DHCPGateway: d.DHCPGateway, DHCPLeaseSeconds: d.DHCPLeaseSeconds,
-		DHCPSecondaryDNS: d.DHCPSecondaryDNS,
+		DHCPSecondaryDNS: d.DHCPSecondaryDNS, DHCPAllowForeign: d.DHCPAllowForeign,
 	}
 }
 

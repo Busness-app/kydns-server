@@ -435,3 +435,24 @@ func TestPatchSettingsFansOutToTheLiveACL(t *testing.T) {
 		t.Error("the live ACL did not observe the settings change: apply was not wired through the API")
 	}
 }
+
+// The DTO's yaml tags are load-bearing: import decodes with yaml.Unmarshal,
+// and a field with no yaml tag decodes under its lowercased Go name instead of
+// its json name, so a restore would silently switch the override back off and
+// the node would refuse to start DHCP at the next boot.
+func TestImportPreservesTheForeignOverride(t *testing.T) {
+	srv, svc := testAPIWithSettings(t)
+	srv.do(t, "PATCH", "/api/v1/settings", `{"dhcp_allow_foreign":true}`)
+	if cur, _ := svc.Get(); !cur.DHCPAllowForeign {
+		t.Fatal("setup: PATCH did not set the override, so the DTO does not carry it at all")
+	}
+	doc := srv.do(t, "GET", "/api/v1/export?format=json", "").Body.String()
+
+	srv.do(t, "PATCH", "/api/v1/settings", `{"dhcp_allow_foreign":false}`)
+	if rec := srv.do(t, "POST", "/api/v1/import", doc); rec.Code >= 300 {
+		t.Fatalf("import: %d %s", rec.Code, rec.Body)
+	}
+	if cur, _ := svc.Get(); !cur.DHCPAllowForeign {
+		t.Error("an export/import round trip blanked dhcp_allow_foreign")
+	}
+}

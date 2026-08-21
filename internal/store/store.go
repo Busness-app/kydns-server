@@ -142,7 +142,8 @@ CREATE TABLE IF NOT EXISTS settings (
   dhcp_range_end     TEXT NOT NULL DEFAULT '',
   dhcp_gateway       TEXT NOT NULL DEFAULT '',
   dhcp_lease_seconds INTEGER NOT NULL DEFAULT 86400,
-  dhcp_secondary_dns TEXT NOT NULL DEFAULT ''
+  dhcp_secondary_dns TEXT NOT NULL DEFAULT '',
+  dhcp_allow_foreign INTEGER NOT NULL DEFAULT 0
 );
 -- Node-local: no config_version trigger. A lease is this node's own DHCP
 -- state, never a peer's, same as the tables below.
@@ -320,6 +321,7 @@ var migrations = []string{
 	   expires_at INTEGER NOT NULL,
 	   last_seen  INTEGER NOT NULL
 	 );`,
+	`ALTER TABLE settings ADD COLUMN dhcp_allow_foreign INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // migrate runs against a transaction Open already holds, so a crash
@@ -937,15 +939,15 @@ func (s *Store) ApplySnapshot(in SnapshotInput) error {
 	settings := in.Settings
 	var dhcpLeaseFile, dhcpInterface, dhcpRangeStart, dhcpRangeEnd, dhcpGateway, dhcpSecondaryDNS string
 	var discoveryInterval, dhcpLeaseSeconds int
-	var logQueries, logClientIP, dhcpEnabled bool
+	var logQueries, logClientIP, dhcpEnabled, dhcpAllowForeign bool
 	err = tx.QueryRow(`
 SELECT dhcp_lease_file, discovery_interval, log_queries, log_client_ip,
        dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
-       dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns
+       dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns, dhcp_allow_foreign
 FROM settings WHERE id = 1`).
 		Scan(&dhcpLeaseFile, &discoveryInterval, &logQueries, &logClientIP,
 			&dhcpEnabled, &dhcpInterface, &dhcpRangeStart, &dhcpRangeEnd,
-			&dhcpGateway, &dhcpLeaseSeconds, &dhcpSecondaryDNS)
+			&dhcpGateway, &dhcpLeaseSeconds, &dhcpSecondaryDNS, &dhcpAllowForeign)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -955,7 +957,7 @@ FROM settings WHERE id = 1`).
 		settings.DHCPEnabled, settings.DHCPInterface = dhcpEnabled, dhcpInterface
 		settings.DHCPRangeStart, settings.DHCPRangeEnd = dhcpRangeStart, dhcpRangeEnd
 		settings.DHCPGateway, settings.DHCPLeaseSeconds = dhcpGateway, dhcpLeaseSeconds
-		settings.DHCPSecondaryDNS = dhcpSecondaryDNS
+		settings.DHCPSecondaryDNS, settings.DHCPAllowForeign = dhcpSecondaryDNS, dhcpAllowForeign
 	}
 	if err := putSettings(tx, settings); err != nil {
 		return err

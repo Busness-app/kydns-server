@@ -1,10 +1,12 @@
 package dhcpd
 
 import (
+	"context"
 	"net"
 	"net/netip"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/insomniacslk/dhcp/dhcpv4"
 )
@@ -210,5 +212,95 @@ func TestReadRepliesSkipsGarbageAndKeepsReading(t *testing.T) {
 func TestReadRepliesEndsAtTheDeadline(t *testing.T) {
 	if got := readReplies(&scriptConn{}, dhcpv4.TransactionID{1, 2, 3, 4}); len(got) != 0 {
 		t.Fatalf("readReplies = %+v, want none", got)
+	}
+}
+
+// segmentConn is the segment itself, with no socket: a client message written
+// to :67 reaches every DHCP server on it, and every server's reply reaches the
+// probe on :68. Our own listener is one of those servers, which is the whole
+// difficulty the periodic probe has to deal with.
+type segmentConn struct {
+	net.PacketConn
+	srv *Server // us, bound and answering while the probe runs
+	// other is a second DHCP server on the segment, or nil for none.
+	other func(*dhcpv4.DHCPv4) *dhcpv4.DHCPv4
+	in    []datagram
+}
+
+func (c *segmentConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	m, err := dhcpv4.FromBytes(b)
+	if err != nil {
+		return len(b), nil
+	}
+	if addr.(*net.UDPAddr).Port == 67 {
+		c.srv.handle(c, &net.UDPAddr{IP: net.IPv4zero, Port: 68}, m)
+		if c.other != nil {
+			c.deliver(c.other(m))
+		}
+		return len(b), nil
+	}
+	c.deliver(m) // a server's reply, arriving at the probe socket
+	return len(b), nil
+}
+
+func (c *segmentConn) deliver(m *dhcpv4.DHCPv4) {
+	if m != nil {
+		c.in = append(c.in, datagram{b: m.ToBytes(), src: from("192.168.1.5")})
+	}
+}
+
+func (c *segmentConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	if len(c.in) == 0 {
+		return 0, nil, os.ErrDeadlineExceeded
+	}
+	d := c.in[0]
+	c.in = c.in[1:]
+	return copy(b, d.b), d.src, nil
+}
+
+func (c *segmentConn) SetDeadline(time.Time) error { return nil }
+func (c *segmentConn) Close() error                { return nil }
+
+func (c *segmentConn) probe(t *testing.T) []Foreign {
+	t.Helper()
+	got, err := detectForeign(context.Background(), time.Second,
+		func() (net.PacketConn, error) { return c, nil }, c.srv.ignoreXID)
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+	return got
+}
+
+// The periodic probe runs with our own listener bound, so our own server
+// answers it exactly as any other would.
+func TestProbeForeignIgnoresOurOwnAnswer(t *testing.T) {
+	s, _ := newTestServer(t)
+	if got := (&segmentConn{srv: s}).probe(t); len(got) != 0 {
+		t.Fatalf("probe = %+v on a segment whose only DHCP server is us", got)
+	}
+}
+
+// The test Part 1 lacked. dnsmasq, ISC dhcpd and systemd-networkd all put the
+// address of the interface they answered on in option 54, so a DHCP server
+// sharing this host identifies itself as us, digit for digit. It must still be
+// reported, with our own listener bound and answering the same DISCOVER.
+func TestProbeForeignReportsACoResidentServerAtOurOwnAddress(t *testing.T) {
+	s, _ := newTestServer(t)
+	ours := s.opts.Iface.Addr
+	seg := &segmentConn{srv: s, other: func(m *dhcpv4.DHCPv4) *dhcpv4.DHCPv4 {
+		o := offerFrom(ours.String(), "192.168.1.200")
+		o.TransactionID = m.TransactionID
+		return o
+	}}
+
+	got := seg.probe(t)
+	if len(got) != 1 || got[0].ServerID != ours {
+		t.Fatalf("probe = %+v, want the co-resident server at %s reported", got, ours)
+	}
+	// Our own listener offers from the test pool, which starts at .10. Reading
+	// that back here would mean the entry is our own reply wearing the other
+	// server's address, and the real server would be invisible behind it.
+	if got[0].Offered.String() != "192.168.1.200" {
+		t.Fatalf("entry = %+v, want the address the other server offered", got[0])
 	}
 }

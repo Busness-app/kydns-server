@@ -113,6 +113,11 @@ type Settings struct {
 	DHCPGateway      string
 	DHCPLeaseSeconds int
 	DHCPSecondaryDNS string
+	// DHCPAllowForeign lets the listener start although the rogue probe found
+	// another DHCP server, or could not run at all. Off by default: the
+	// failure it guards against takes down the whole network rather than one
+	// name.
+	DHCPAllowForeign bool
 }
 
 // AdminIdentity holds the admin credentials and linked KySignOn SSO identity.

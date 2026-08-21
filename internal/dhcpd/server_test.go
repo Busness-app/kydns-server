@@ -958,3 +958,29 @@ func TestRenewalOfALeaseWeDoKnowIsAcked(t *testing.T) {
 		t.Fatalf("renewal moved the client to %v, want %v", replies[0].YourIPAddr, held)
 	}
 }
+
+// The seam the periodic probe needs: while our listener is bound it answers
+// the probe like any other server, and nothing in the reply tells the two
+// apart. Dropping the probe's own transaction is what separates them.
+func TestIgnoreXIDDropsOnlyThatTransactionAndOnlyWhileHeld(t *testing.T) {
+	s, _ := newTestServer(t)
+	c := &captureConn{}
+	peer := &net.UDPAddr{IP: net.IPv4zero}
+	ours := discover("02:00:00:00:00:01", "")
+
+	restore := s.ignoreXID(ours.TransactionID)
+	s.handle(c, peer, ours)
+	if got := c.replies(t); len(got) != 0 {
+		t.Fatalf("our own listener answered its own probe with %+v", got)
+	}
+	s.handle(c, peer, discover("aa:aa:aa:aa:aa:aa", "laptop"))
+	if got := c.replies(t); len(got) != 1 {
+		t.Fatalf("replies = %+v, want a real client's DISCOVER answered while a probe is out", got)
+	}
+
+	restore()
+	s.handle(c, peer, ours)
+	if got := c.replies(t); len(got) != 2 {
+		t.Fatalf("replies = %+v, want the drop to end with the probe: that MAC can never get an address otherwise", got)
+	}
+}
