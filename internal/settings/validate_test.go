@@ -321,3 +321,92 @@ func TestValidateAcceptsHostBitsFormWithCanonicalConfirmation(t *testing.T) {
 		t.Fatal("confirming the raw host-bits form must not be accepted")
 	}
 }
+
+// dhcpSettings is a valid DHCP configuration every DHCP test starts from.
+func dhcpSettings() store.Settings {
+	v := valid()
+	v.DHCPEnabled = true
+	v.DHCPInterface = "eth0"
+	v.DHCPRangeStart = "192.168.1.128"
+	v.DHCPRangeEnd = "192.168.1.254"
+	v.DHCPGateway = "192.168.1.1"
+	v.DHCPLeaseSeconds = 86400
+	return v
+}
+
+func TestDHCPValidationAcceptsAGoodConfiguration(t *testing.T) {
+	if err := ValidateStored(dhcpSettings()); err != nil {
+		t.Fatalf("ValidateStored rejected a valid DHCP configuration: %v", err)
+	}
+}
+
+func TestDHCPDisabledIgnoresEveryOtherField(t *testing.T) {
+	v := dhcpSettings()
+	v.DHCPEnabled = false
+	v.DHCPInterface = ""
+	v.DHCPRangeStart = "nonsense"
+	if err := ValidateStored(v); err != nil {
+		t.Fatalf("ValidateStored rejected a disabled DHCP configuration: %v", err)
+	}
+}
+
+func TestDHCPValidationRejects(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*store.Settings)
+		field  string
+	}{
+		{"no interface", func(v *store.Settings) { v.DHCPInterface = "" }, "dhcp.interface"},
+		{"unparseable start", func(v *store.Settings) { v.DHCPRangeStart = "nope" }, "dhcp.range_start"},
+		{"unparseable end", func(v *store.Settings) { v.DHCPRangeEnd = "nope" }, "dhcp.range_end"},
+		{"ipv6 start", func(v *store.Settings) { v.DHCPRangeStart = "2001:db8::1" }, "dhcp.range_start"},
+		{"end below start", func(v *store.Settings) {
+			v.DHCPRangeStart, v.DHCPRangeEnd = "192.168.1.254", "192.168.1.128"
+		}, "dhcp.range_end"},
+		{"range larger than 65536 addresses", func(v *store.Settings) {
+			v.DHCPRangeStart, v.DHCPRangeEnd = "10.0.0.1", "10.2.0.1"
+		}, "dhcp.range_end"},
+		{"unparseable gateway", func(v *store.Settings) { v.DHCPGateway = "nope" }, "dhcp.gateway"},
+		{"lease too short", func(v *store.Settings) { v.DHCPLeaseSeconds = 299 }, "dhcp.lease_seconds"},
+		{"lease too long", func(v *store.Settings) { v.DHCPLeaseSeconds = 604801 }, "dhcp.lease_seconds"},
+		{"unparseable secondary dns", func(v *store.Settings) { v.DHCPSecondaryDNS = "nope" }, "dhcp.secondary_dns"},
+		{"lease file at the same time", func(v *store.Settings) { v.DHCPLeaseFile = "/var/lib/misc/dnsmasq.leases" }, "dhcp.enabled"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := dhcpSettings()
+			c.mutate(&v)
+			err := ValidateStored(v)
+			if err == nil {
+				t.Fatalf("ValidateStored accepted %s", c.name)
+			}
+			var fe FieldError
+			if !errors.As(err, &fe) {
+				t.Fatalf("error %v is not a FieldError; the form cannot highlight a field", err)
+			}
+			if fe.Field != c.field {
+				t.Fatalf("error names field %q, want %q", fe.Field, c.field)
+			}
+		})
+	}
+}
+
+func TestDHCPLeaseSecondsBoundariesAreInclusive(t *testing.T) {
+	for _, secs := range []int{300, 604800} {
+		v := dhcpSettings()
+		v.DHCPLeaseSeconds = secs
+		if err := ValidateStored(v); err != nil {
+			t.Fatalf("ValidateStored rejected the boundary value %d: %v", secs, err)
+		}
+	}
+}
+
+// A pool of exactly 65536 addresses is the cap, not past it, and must be
+// accepted.
+func TestDHCPRangeOf65536AddressesIsAccepted(t *testing.T) {
+	v := dhcpSettings()
+	v.DHCPRangeStart, v.DHCPRangeEnd = "10.0.0.0", "10.0.255.255"
+	if err := ValidateStored(v); err != nil {
+		t.Fatalf("ValidateStored rejected a 65536-address range: %v", err)
+	}
+}
