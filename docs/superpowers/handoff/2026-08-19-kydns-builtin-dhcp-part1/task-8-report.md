@@ -120,3 +120,127 @@ end-to-end. This is expected and was called out in the task framing, not a surpr
 
 See the SHA reported to the coordinator; subject `feat(dhcpd): detect another DHCP server before
 binding`, body extended by one line noting the R21 bound-socket change.
+
+## Fix round 1
+
+Seven review findings, all in `internal/dhcpd/rogue.go` and `internal/dhcpd/rogue_test.go`. Nothing
+else was touched; `go.mod`/`go.sum` are unchanged.
+
+### What changed, per finding
+
+- **F1 (Critical, R23) — the probe could not receive the reply.** `newProbeDiscovery` now builds
+  `dhcpv4.NewDiscovery(mac, dhcpv4.WithBroadcast(true))` (`rogue.go:65-71`). With the flag clear and
+  `ciaddr`/`giaddr` zero, RFC 2131 §4.1 has the server unicast the OFFER to `yiaddr`/`chaddr` — a MAC
+  on no NIC here and an address we do not hold — so the answer was structurally unreceivable on
+  exactly the networks this feature exists for.
+- **F2 (R24) — untestable receive path.** Extracted `newProbeDiscovery(mac)` and
+  `readReplies(conn net.PacketConn, xid dhcpv4.TransactionID) []reply` (`rogue.go:65-111`).
+  `DetectForeign` is now socket + deadline + send + `collectForeign(readReplies(...), self)` and is
+  the only untested part. The deadline arithmetic stays in `DetectForeign`; the read loop, the
+  unparseable-packet skip, and the correlation filter moved to the tested side.
+- **F3 (R25) — correlate by transaction ID.** The `strings.EqualFold` chaddr comparison is gone
+  (with the `strings` import); `readReplies` keeps a reply iff `m.TransactionID == xid`. A server
+  answering with `hlen = 0` — which `FromBytes` truncates `ClientHWAddr` to — no longer has its
+  genuine OFFER dropped.
+- **F4 — OFFER with no option 54.** `reply` pairs each parsed message with the datagram's source
+  address; `collectForeign` falls back to that source when `ServerIdentifier()` does not parse
+  (`rogue.go:136-139`). Our own server cannot be falsely reported through it: the source would be
+  our own address, which the existing `id == self` check already excludes.
+- **F5 — unlabeled errors.** `probe mac: %w`, `probe packet: %w`, `probe deadline: %w`, matching the
+  existing `probe socket:`/`probe send:` style. Every path out of `DetectForeign` now names what
+  failed, which is what Task 10 shows an operator when it refuses to start.
+- **F6 — `String()` rendering "invalid IP".** Prints `unknown` when `!f.Offered.IsValid()`.
+- **F7 — SO_REUSEADDR comment.** Narrowed to what is true: it lets the bind succeed where a host
+  DHCP client on `:68` would otherwise refuse, and promises nothing about which socket a unicast
+  datagram reaches. The sockopt itself is unchanged.
+
+### Test double: why not `captureConn`
+
+`captureConn` (`server_test.go:19`) embeds a nil `net.PacketConn` and overrides only `WriteTo`; it is
+a write sink. `readReplies` calls `ReadFrom`, which on `captureConn` would dispatch to the nil
+embedded interface and panic, and there is no way to feed it scripted input. `rogue_test.go` adds
+`scriptConn`, the read-side mirror: it replays a fixed list of datagrams and then returns
+`os.ErrDeadlineExceeded`, the way a passed deadline does. Same shape, same no-socket guarantee.
+
+### RED
+
+Method: the extraction (F2's `newProbeDiscovery`/`readReplies`/`reply`) was applied first with the
+pre-fix *decisions* left in place — `NewDiscovery(mac)` with no broadcast, the chaddr filter, no
+option-54 fallback, the old `String()`. The tests were then written against that, so each failure
+below is a real assertion failure on the shipped behaviour, not an `undefined:` compile error. The
+only difference between the RED and GREEN test files is that `readReplies` still took the probe MAC
+as a parameter in the pre-fix version, so the four call sites read `readReplies(conn, probeChaddr,
+xid)`; the assertions are byte-identical.
+
+```
+$ go test ./internal/dhcpd/ -run 'Foreign|ReadReplies|NewProbeDiscovery' -count=1
+--- FAIL: TestCollectForeignFallsBackToTheSourceWithoutAServerID (0.00s)
+    rogue_test.go:131: collectForeign = [], want one entry from the source address
+--- FAIL: TestForeignStringWithoutAnOfferedAddress (0.00s)
+    rogue_test.go:141: String() = "192.168.1.1 (offering invalid IP)", want "192.168.1.1 (offering unknown)"
+--- FAIL: TestNewProbeDiscoveryAsksForABroadcastReply (0.00s)
+    rogue_test.go:153: flags = 0x0000, want the broadcast bit set
+--- FAIL: TestReadRepliesKeepsAnOfferWhoseChaddrDiffers (0.00s)
+    rogue_test.go:165: readReplies = [], want the offer kept: its transaction ID is ours
+--- FAIL: TestReadRepliesDropsAnotherClientsOffer (0.00s)
+    rogue_test.go:178: readReplies = [{msg:0x3d59cb1669a0 src:...}], want none: that answers somebody else's DISCOVER
+FAIL	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.003s
+```
+
+- F1 is `TestNewProbeDiscoveryAsksForABroadcastReply`: `flags = 0x0000` is the defect verbatim.
+- F3 is the pair `TestReadRepliesKeepsAnOfferWhoseChaddrDiffers` (an OFFER with `hlen = 0`, right
+  xid — pre-fix it was silently dropped, the false-clear direction) and
+  `TestReadRepliesDropsAnotherClientsOffer` (matching chaddr, foreign xid — pre-fix it was kept).
+- The four existing `collectForeign` tests passed in this run, i.e. the extraction did not change
+  their behaviour.
+
+### GREEN
+
+```
+$ go test ./internal/dhcpd/ -run 'Foreign|ReadReplies|NewProbeDiscovery' -count=1 -v
+--- PASS: TestCollectForeignIgnoresOurOwnOffers (0.00s)
+--- PASS: TestCollectForeignReportsAnotherServer (0.00s)
+--- PASS: TestCollectForeignDedupesOneServerAnsweringTwice (0.00s)
+--- PASS: TestCollectForeignIgnoresNonOffers (0.00s)
+--- PASS: TestCollectForeignFallsBackToTheSourceWithoutAServerID (0.00s)
+--- PASS: TestForeignStringWithoutAnOfferedAddress (0.00s)
+--- PASS: TestNewProbeDiscoveryAsksForABroadcastReply (0.00s)
+--- PASS: TestReadRepliesKeepsAnOfferWhoseChaddrDiffers (0.00s)
+--- PASS: TestReadRepliesDropsAnotherClientsOffer (0.00s)
+--- PASS: TestReadRepliesSkipsGarbageAndKeepsReading (0.00s)
+--- PASS: TestReadRepliesEndsAtTheDeadline (0.00s)
+PASS
+ok  	github.com/yoshiofthewire/kydns-server/internal/dhcpd	0.003s
+```
+
+Seven new tests, four pre-existing ones unchanged in substance (they now pass through a `wire()`
+helper that wraps messages as `reply` values with no source address, since all four carry option 54
+and never consult it). New tests build addresses the shape the wire produces — 4-byte
+`net.IP{192, 168, 1, 1}` and real `ToBytes`/`FromBytes` round-trips — rather than 16-byte
+`net.ParseIP` values.
+
+### Full verification
+
+```
+$ go build ./...                            → no output
+$ go test ./internal/dhcpd/ -count=1        → ok (66 PASS: 59 pre-existing + 7 new)
+$ go test ./internal/dhcpd/ -race -count=2  → ok 1.015s, no race
+$ go test ./... -count=1                    → 19 packages, all ok, 0 FAIL
+$ go vet ./...                              → no output
+$ gofmt -l internal/dhcpd/                  → no output
+$ go mod tidy; git diff go.mod go.sum       → no output (unchanged)
+$ git status --short                        → only rogue.go and rogue_test.go modified
+```
+
+No test in `rogue_test.go` opens a socket: grepped clean for `net.Listen`, `net.Dial`,
+`ListenPacket`, `ListenUDP`, `AF_PACKET`, `nclient4`.
+
+### Concerns
+
+None blocking. Two things on record:
+
+- `DetectForeign` is still untested end-to-end (it opens a real socket), as designed. What remains
+  untested there is now only the socket construction, the deadline arithmetic, and the send — Task 10
+  is the first place those run for real.
+- Deliberately out of scope and unchanged: the read loop still ends only on the absolute deadline,
+  not on `ctx` cancellation. Bounded at 2 s; recorded as a deferred minor.

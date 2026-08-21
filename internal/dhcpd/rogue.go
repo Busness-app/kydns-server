@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strings"
 	"syscall"
 	"time"
 
@@ -21,7 +20,11 @@ type Foreign struct {
 }
 
 func (f Foreign) String() string {
-	return fmt.Sprintf("%s (offering %s)", f.ServerID, f.Offered)
+	offered := "unknown"
+	if f.Offered.IsValid() {
+		offered = f.Offered.String()
+	}
+	return fmt.Sprintf("%s (offering %s)", f.ServerID, offered)
 }
 
 // DetectForeign broadcasts a DISCOVER from a random locally-administered MAC
@@ -31,11 +34,11 @@ func (f Foreign) String() string {
 func DetectForeign(ctx context.Context, iface string, wait time.Duration, self netip.Addr) ([]Foreign, error) {
 	mac, err := probeMAC()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("probe mac: %w", err)
 	}
-	discover, err := dhcpv4.NewDiscovery(mac)
+	discover, err := newProbeDiscovery(mac)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("probe packet: %w", err)
 	}
 
 	// Bound to iface: an unbound socket leaves on the default route's
@@ -53,35 +56,59 @@ func DetectForeign(ctx context.Context, iface string, wait time.Duration, self n
 		deadline = d
 	}
 	if err := conn.SetDeadline(deadline); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("probe deadline: %w", err)
 	}
 	if _, err := conn.WriteTo(discover.ToBytes(), &net.UDPAddr{IP: net.IPv4bcast, Port: 67}); err != nil {
 		return nil, fmt.Errorf("probe send: %w", err)
 	}
 
-	var replies []*dhcpv4.DHCPv4
+	return collectForeign(readReplies(conn, discover.TransactionID), self), nil
+}
+
+// newProbeDiscovery builds the probe DISCOVER. The broadcast flag is not
+// optional: the probe MAC belongs to no NIC here and we hold no address, so
+// an OFFER unicast to yiaddr/chaddr — what a cleared flag asks for, and what
+// ISC dhcpd and dnsmasq do — could never reach us.
+func newProbeDiscovery(mac net.HardwareAddr) (*dhcpv4.DHCPv4, error) {
+	return dhcpv4.NewDiscovery(mac, dhcpv4.WithBroadcast(true))
+}
+
+// reply is one datagram that answered the probe, kept with the address it
+// came from.
+type reply struct {
+	msg *dhcpv4.DHCPv4
+	src netip.Addr
+}
+
+// readReplies drains the socket until its deadline, keeping the answers to
+// our own DISCOVER. The transaction ID is the correlator RFC 2131 requires a
+// server to echo; chaddr is not, because FromBytes truncates it to whatever
+// hlen the server chose to send.
+func readReplies(conn net.PacketConn, xid dhcpv4.TransactionID) []reply {
+	var out []reply
 	buf := make([]byte, 1500)
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, src, err := conn.ReadFrom(buf)
 		if err != nil {
-			break // deadline; that is the whole wait
+			return out // deadline; that is the whole wait
 		}
 		m, err := dhcpv4.FromBytes(buf[:n])
-		if err != nil {
-			continue
+		if err != nil || m.TransactionID != xid {
+			continue // unreadable, or an answer to somebody else's DISCOVER
 		}
-		if !strings.EqualFold(m.ClientHWAddr.String(), mac.String()) {
-			continue // an answer to somebody else's DISCOVER
+		var from netip.Addr
+		if u, ok := src.(*net.UDPAddr); ok {
+			from = u.AddrPort().Addr().Unmap()
 		}
-		replies = append(replies, m)
+		out = append(out, reply{msg: m, src: from})
 	}
-	return collectForeign(replies, self), nil
 }
 
 // bindToDevice returns a net.ListenConfig.Control func that binds the probe
 // socket to iface (SO_BINDTODEVICE) so the DISCOVER leaves on the segment
-// being checked, not whatever the default route picks. SO_REUSEADDR is cheap
-// insurance against a host DHCP client already holding :68.
+// being checked, not whatever the default route picks. SO_REUSEADDR lets the
+// bind succeed in cases a host DHCP client on :68 would otherwise refuse; it
+// promises nothing about which socket a unicast datagram then reaches.
 func bindToDevice(iface string) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		var serr error
@@ -101,22 +128,22 @@ func bindToDevice(iface string) func(network, address string, c syscall.RawConn)
 // collectForeign is the decision, split out so it is testable without a
 // network. Only OFFERs count, and only from a server identifier that is not
 // ours.
-func collectForeign(replies []*dhcpv4.DHCPv4, self netip.Addr) []Foreign {
+func collectForeign(replies []reply, self netip.Addr) []Foreign {
 	seen := map[netip.Addr]bool{}
 	var out []Foreign
-	for _, m := range replies {
-		if m.MessageType() != dhcpv4.MessageTypeOffer {
+	for _, r := range replies {
+		if r.msg.MessageType() != dhcpv4.MessageTypeOffer {
 			continue
 		}
-		id, ok := netip.AddrFromSlice(m.ServerIdentifier())
+		id, ok := netip.AddrFromSlice(r.msg.ServerIdentifier())
 		if !ok {
-			continue
+			id = r.src // no option 54: an answer is still proof of a server
 		}
 		id = id.Unmap()
 		if !id.IsValid() || id == self || seen[id] {
 			continue
 		}
-		offered, _ := netip.AddrFromSlice(m.YourIPAddr)
+		offered, _ := netip.AddrFromSlice(r.msg.YourIPAddr)
 		seen[id] = true
 		out = append(out, Foreign{ServerID: id, Offered: offered.Unmap()})
 	}
