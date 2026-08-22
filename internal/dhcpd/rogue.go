@@ -32,12 +32,32 @@ func (f Foreign) String() string {
 // to start the listener: two DHCP servers on one segment breaks the network,
 // not one name.
 //
-// Nothing is filtered as "ours". The probe runs only when our own listener is
+// Nothing is filtered as "ours". This form runs only when our own listener is
 // not bound, and dnsmasq, ISC dhcpd and systemd-networkd all set option 54 to
 // the address of the interface they answered on — so a server sharing this
 // host answers with our address, and a self filter here would hide exactly the
-// co-resident server an operator is most likely to have.
+// co-resident server an operator is most likely to have. Server.ProbeForeign
+// is the form that runs while we are bound.
 func DetectForeign(ctx context.Context, iface string, wait time.Duration) ([]Foreign, error) {
+	return detectForeign(ctx, wait, probeConn(ctx, iface), nil)
+}
+
+// probeConn opens the probe socket. It is bound to iface: an unbound socket
+// leaves on the default route's interface, which would probe the wrong segment
+// on a multi-homed host — exactly the case this feature exists for.
+func probeConn(ctx context.Context, iface string) func() (net.PacketConn, error) {
+	return func() (net.PacketConn, error) {
+		lc := net.ListenConfig{Control: bindToDevice(iface)}
+		return lc.ListenPacket(ctx, "udp4", ":68")
+	}
+}
+
+// detectForeign is the probe itself. ignore, when set, drops the probe's own
+// transaction at our running listener for the length of the probe, so its
+// answer never reaches the collector; see Server.ProbeForeign for why no
+// property of the reply could do that job. dial is a parameter so no test
+// opens a socket.
+func detectForeign(ctx context.Context, wait time.Duration, dial func() (net.PacketConn, error), ignore func(dhcpv4.TransactionID) func()) ([]Foreign, error) {
 	mac, err := probeMAC()
 	if err != nil {
 		return nil, fmt.Errorf("probe mac: %w", err)
@@ -47,15 +67,17 @@ func DetectForeign(ctx context.Context, iface string, wait time.Duration) ([]For
 		return nil, fmt.Errorf("probe packet: %w", err)
 	}
 
-	// Bound to iface: an unbound socket leaves on the default route's
-	// interface, which would probe the wrong segment on a multi-homed host —
-	// exactly the case this feature exists for.
-	lc := net.ListenConfig{Control: bindToDevice(iface)}
-	conn, err := lc.ListenPacket(ctx, "udp4", ":68")
+	conn, err := dial()
 	if err != nil {
 		return nil, fmt.Errorf("probe socket: %w", err)
 	}
 	defer conn.Close()
+	if ignore != nil {
+		// Registered before the DISCOVER goes out, so our own listener cannot
+		// answer it in the gap.
+		restore := ignore(discover.TransactionID)
+		defer restore()
+	}
 
 	deadline := time.Now().Add(wait)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {

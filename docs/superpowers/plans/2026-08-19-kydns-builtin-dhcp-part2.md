@@ -36,10 +36,12 @@ committed plan now needs" and "Additional Part 2 amendments" sections are the fu
    reservation moves a client to an address it does not currently hold. Both are unreachable in Part 1
    only because `SetReservations` is always given an empty map. **These belong at the top of this plan,
    not in its backlog.**
-6. **The rogue-server override is a prerequisite, not a feature.** Part 1's R22 makes a probe that could
-   not run refuse to start, and Part 1 has no override key — so a host whose own DHCP client holds `:68`
-   cannot enable DHCP at all. The override must cover the probe-error case as well as the
-   foreign-server-found case.
+6. **The rogue-server override is a prerequisite, not a feature — DECIDED.** Part 1's R22 makes a probe
+   that could not run refuse to start, and Part 1 has no override key, so a host whose own DHCP client
+   holds `:68` cannot enable DHCP at all. **One key, `dhcp_allow_foreign`, covers both refusals** — a
+   detected server and a probe that could not run. The operator who wants past one is the same operator
+   who wants past the other, so two boxes would be ceremony rather than safety. Task 1 is written to
+   this; see `foreignVerdict`.
 7. **The periodic probe must suppress our own answer by "is our listener bound", never by address.**
    `DetectForeign`/`collectForeign` no longer take a `self` parameter: an address-based filter cannot
    work, because a co-resident dnsmasq and our own listener both put *our* address in option 54 — which
@@ -50,10 +52,11 @@ committed plan now needs" and "Additional Part 2 amendments" sections are the fu
 9. **`Allocator` gained two signatures.** `Allocate(mac, hostname, requested, ttl)` takes an explicit
    lease duration, and `Offer(mac, requested, hold) (Lease, fresh, ok)` is the OFFER path's entry point.
    This plan calls neither today — only `SetReservations` — so it is a read-through check.
-10. **Two spec defects surfaced and are still open**: the Replication section promises unknown clients
-    "will be NAKed" (behaviour specified nowhere else, but now built), and the Security notes say
-    malformed packets are "counted" while no counter exists. Decide whether to build the metric or amend
-    the spec.
+10. **Two spec defects surfaced.** The malformed-packet counter is **decided and done**: the spec now
+    says such packets are dropped and deliberately not counted, because there is no metrics surface for
+    a single number to live in — if one ever arrives, a drop counter is the first thing to put on it.
+    Still open: the Replication section promises unknown clients "will be NAKed", behaviour specified
+    nowhere else in the design although Part 1 now implements it. Reconcile the wording in Task 6.
 
 ## Global Constraints
 
@@ -130,14 +133,20 @@ func TestForeignServerIsFatalUnlessOverridden(t *testing.T) {
 		ServerID: netip.MustParseAddr("192.168.1.1"),
 		Offered:  netip.MustParseAddr("192.168.1.64"),
 	}}
-	if err := foreignVerdict(found, false); err == nil {
+	if err := foreignVerdict(found, nil, false); err == nil {
 		t.Fatal("a foreign DHCP server was accepted without an override")
 	}
-	if err := foreignVerdict(found, true); err != nil {
+	if err := foreignVerdict(found, nil, true); err != nil {
 		t.Fatalf("the override did not take: %v", err)
 	}
-	if err := foreignVerdict(nil, false); err != nil {
+	if err := foreignVerdict(nil, nil, false); err != nil {
 		t.Fatalf("a clear probe was treated as a failure: %v", err)
+	}
+	if err := foreignVerdict(nil, errors.New("probe socket: address in use"), false); err == nil {
+		t.Fatal("a probe that could not run was treated as a clear")
+	}
+	if err := foreignVerdict(nil, errors.New("probe socket: address in use"), true); err != nil {
+		t.Fatalf("the override did not cover a probe that could not run: %v", err)
 	}
 }
 ```
@@ -187,8 +196,21 @@ In `internal/app/dhcp.go`:
 // scopes, a deliberate second scope on another VLAN - and is off by default
 // because the failure it guards against takes down the whole network rather
 // than one name.
-func foreignVerdict(found []dhcpd.Foreign, allow bool) error {
-	if len(found) == 0 || allow {
+//
+// One key covers both refusals. A probe that could not run says we do not
+// know whether another server is there, and Part 1 (ruling R22) treats that
+// as fatal precisely so it is never mistaken for a clear. The operator who
+// wants past that is the same operator who wants past a detected server -
+// most often the one whose own DHCP client already holds :68 - so making
+// them tick two boxes would be ceremony, not safety.
+func foreignVerdict(found []dhcpd.Foreign, probeErr error, allow bool) error {
+	if allow {
+		return nil
+	}
+	if probeErr != nil {
+		return fmt.Errorf("could not check whether another DHCP server is already answering, so refusing to start: %w", probeErr)
+	}
+	if len(found) == 0 {
 		return nil
 	}
 	return &ForeignServerError{Found: found}
@@ -198,7 +220,8 @@ func foreignVerdict(found []dhcpd.Foreign, allow bool) error {
 In `build`, replace the inline refusal:
 
 ```go
-	} else if err := foreignVerdict(foreign, v.DHCPAllowForeign); err != nil {
+	foreign, probeErr := dhcpd.DetectForeign(ctx, v.DHCPInterface, 2*time.Second)
+	if err := foreignVerdict(foreign, probeErr, v.DHCPAllowForeign); err != nil {
 		return nil, err
 	}
 ```
@@ -222,7 +245,15 @@ const foreignWatchEvery = 15 * time.Minute
 
 // watchForeign warns about another DHCP server appearing after we started.
 // It only ever logs and populates the banner.
-func (d *dhcpRunner) watchForeign(ctx context.Context, iface string, self netip.Addr) {
+//
+// Unlike the start-time probe, this one runs with our own listener bound, so
+// our own server answers it. Suppressing that answer by address does not
+// work and must not be attempted: a dnsmasq sharing this host puts OUR
+// interface address in option 54 exactly as our own reply does, which is how
+// a second DHCP server on the same machine became invisible in Part 1 (see
+// the amendments at the top of this document). The probe's transaction ID is
+// the only thing that separates them - see Step 2a.
+func (d *dhcpRunner) watchForeign(ctx context.Context, iface string) {
 	t := time.NewTicker(foreignWatchEvery)
 	defer t.Stop()
 	for {
@@ -231,7 +262,7 @@ func (d *dhcpRunner) watchForeign(ctx context.Context, iface string, self netip.
 			return
 		case <-t.C:
 		}
-		found, err := dhcpd.DetectForeign(ctx, iface, 2*time.Second, self)
+		found, err := d.probeForeign(ctx, iface)
 		if err != nil {
 			d.logger.Warn("periodic dhcp conflict probe failed", "error", err)
 			continue
@@ -253,6 +284,35 @@ func (d *dhcpRunner) Foreign() []dhcpd.Foreign {
 	return append([]dhcpd.Foreign(nil), d.foreign...)
 }
 ```
+
+- [ ] **Step 2a: Decide how the periodic probe ignores our own reply**
+
+`probeForeign` above is deliberately not written out, because it needs a seam
+Part 1 does not have yet and the choice belongs to whoever implements this task.
+
+The constraint is hard: while the listener is bound, our own server answers the
+probe, and **no property of the packet distinguishes our reply from a DHCP
+server sharing this host.** Both carry our interface address in option 54, and
+both echo the probe's transaction ID, because ours is answering the same
+broadcast. Filtering on either one re-creates the exact blindness that let a
+co-resident dnsmasq go undetected in Part 1.
+
+The one thing that does distinguish them is that *we know which DISCOVER is
+ours*. The recommended shape is therefore to have the probe tell the running
+`dhcpd.Server` to drop one transaction ID for the duration of the probe -
+roughly `srv.IgnoreXID(xid)` returning a cancel func, checked at the top of
+`handle` alongside the existing empty-MAC guard. Every OFFER that comes back is
+then foreign by construction, with no filtering and nothing to get wrong later.
+
+Whatever is chosen, the test that matters is the one Part 1 lacked: **a fake
+responder whose server identifier equals our own interface address must still
+be reported.** If that test passes only because our own listener is not running
+in the test, it is not testing this.
+
+Alternatives considered and rejected: filtering by address (blind to a
+co-resident server - the Part 1 defect); filtering by xid (our own reply echoes
+it too); and skipping the periodic probe while bound (it would then never run,
+since it only runs while bound).
 
 In `Reconcile`, after a successful start:
 
@@ -1506,4 +1566,4 @@ Everything the spec asks for is now covered across the two plans. Part 1's self-
 
 **Type consistency.** `dhcpd.Foreign` and `dhcpd.ReservationProblem` are the internal types; `adminapi.DHCPForeign` and `adminapi.DHCPProblem` are their JSON shapes; `web.foreignView` and `web.problemView` are their template shapes. `Reservations` takes `[]store.Service` and returns `map[string]netip.Addr` keyed by the normalized MAC, which is what `Allocator.SetReservations` from Part 1 Task 5 accepts. `registry.NormalizeMAC` and `dhcpd.normalizeMAC` must produce identical output for any MAC a client can send — that is the assumption reservations rest on, and `TestPutServiceNormalizesMAC` plus Part 1's `TestSanitizeHostname` are the closest things to a check. If either normalizer changes, both change.
 
-**Known scope note.** `dhcpd.normalizeMAC` is unexported and `registry.NormalizeMAC` is exported, so the shared assumption between them is not enforced by the compiler. Making one call the other would mean `registry` importing `dhcpd` or the reverse, and neither dependency is one this codebase wants. Part 1's ruling R17 narrowed the gap considerably: both now parse via `net.ParseMAC` and re-render, so dashes, Cisco dot-quad form and missing zero-padding all converge on the same output rather than being compared as raw strings. The comment on each still names the other, and that remains the only compiler-visible guard — but it is no longer the whole guard.
+**Known scope note.** `dhcpd.normalizeMAC` is unexported and `registry.NormalizeMAC` is exported, so the shared assumption between them is not enforced by the compiler. Making one call the other would mean `registry` importing `dhcpd` or the reverse, and neither dependency is one this codebase wants. Part 1's ruling R17 narrowed the gap considerably: both now parse via `net.ParseMAC` and re-render, so dashes and Cisco dot-quad form converge on the same output rather than being compared as raw strings. (**Correction, made during Part 2 and proven by executing it:** missing zero-padding does *not* converge. `net.ParseMAC("a:b:c:d:e:f")` returns an error, so both normalizers return the empty string and the reservation is refused rather than silently mismatched. Safe direction, wrong claim.) The comment on each still names the other, and that remains the only compiler-visible guard — but it is no longer the whole guard.

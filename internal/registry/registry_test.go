@@ -318,3 +318,136 @@ func TestReplaceAllNormalizes(t *testing.T) {
 		t.Errorf("record = %+v, want the normalized name and uppercased type", recs[0])
 	}
 }
+
+func TestPutServiceNormalizesMAC(t *testing.T) {
+	r, _ := newRegistry(t)
+	id, err := r.PutService(store.Service{
+		Name:      "kypost",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+		MAC:       "AA-BB-CC-DD-EE-FF",
+	})
+	if err != nil {
+		t.Fatalf("PutService: %v", err)
+	}
+	got, err := r.Service(id)
+	if err != nil {
+		t.Fatalf("Service: %v", err)
+	}
+	if got.MAC != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("stored MAC = %q, want the normalized form", got.MAC)
+	}
+}
+
+func TestPutServiceRejectsAMalformedMAC(t *testing.T) {
+	r, _ := newRegistry(t)
+	_, err := r.PutService(store.Service{
+		Name: "kypost", Addresses: []store.Address{{Address: "192.168.1.20"}},
+		MAC: "nonsense",
+	})
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Field != "mac" {
+		t.Fatalf("PutService with a malformed MAC = %v, want a validation error on mac", err)
+	}
+}
+
+func TestPutServiceRejectsADuplicateMAC(t *testing.T) {
+	r, _ := newRegistry(t)
+	if _, err := r.PutService(store.Service{
+		Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	}); err != nil {
+		t.Fatalf("first PutService: %v", err)
+	}
+	_, err := r.PutService(store.Service{
+		Name: "two", Addresses: []store.Address{{Address: "192.168.1.21"}},
+		MAC: "AA:BB:CC:DD:EE:FF", // same MAC, different spelling
+	})
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Field != "mac" || ve.Code != "duplicate" {
+		t.Fatalf("PutService accepted two services reserving one MAC: err = %v", err)
+	}
+}
+
+func TestPutServiceAllowsManyServicesWithNoMAC(t *testing.T) {
+	r, _ := newRegistry(t)
+	for _, n := range []string{"one", "two", "three"} {
+		if _, err := r.PutService(store.Service{
+			Name: n, Addresses: []store.Address{{Address: "192.168.1.20"}},
+		}); err != nil {
+			t.Fatalf("PutService(%s): %v", n, err)
+		}
+	}
+}
+
+func TestPutServiceKeepsItsOwnMACOnUpdate(t *testing.T) {
+	r, _ := newRegistry(t)
+	id, err := r.PutService(store.Service{
+		Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Re-saving the same service must not trip the duplicate check against
+	// itself.
+	if _, err := r.PutService(store.Service{
+		ID: id, Name: "one", Addresses: []store.Address{{Address: "192.168.1.99"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+}
+
+// macUnique's own empty-MAC guard, not PutService's, is what lets an import
+// document contain any number of unreserved services.
+func TestReplaceAllAllowsManyServicesWithNoMAC(t *testing.T) {
+	r, _ := newRegistry(t)
+	if err := r.ReplaceAll(nil, []store.Service{
+		{Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "two", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "three", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+	}, nil); err != nil {
+		t.Fatalf("ReplaceAll: %v", err)
+	}
+	got, err := r.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d services, want 3", len(got))
+	}
+}
+
+// ReplaceAll validates the whole document before writing any of it, so its
+// duplicate check has to look at the document rather than at the store it is
+// about to wipe. Every imported service arrives with ID 0, which is exactly
+// the case an "is this me?" check by ID gets wrong.
+func TestReplaceAllRejectsADuplicateMACInTheDocument(t *testing.T) {
+	r, _ := newRegistry(t)
+	err := r.ReplaceAll(nil, []store.Service{
+		{Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}}, MAC: "aa:bb:cc:dd:ee:ff"},
+		{Name: "two", Addresses: []store.Address{{Address: "192.168.1.21"}}, MAC: "AA-BB-CC-DD-EE-FF"},
+	}, nil)
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Field != "mac" || ve.Code != "duplicate" {
+		t.Fatalf("ReplaceAll accepted a document reserving one MAC twice: err = %v", err)
+	}
+}
+
+// A replacement document is validated against itself, not against the
+// services it is replacing, so re-importing an export must not collide with
+// the rows it is about to delete.
+func TestReplaceAllAcceptsAMACAlreadyInTheStore(t *testing.T) {
+	r, _ := newRegistry(t)
+	if _, err := r.PutService(store.Service{
+		Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := r.ReplaceAll(nil, []store.Service{
+		{Name: "one", Addresses: []store.Address{{Address: "192.168.1.20"}}, MAC: "aa:bb:cc:dd:ee:ff"},
+	}, nil); err != nil {
+		t.Fatalf("ReplaceAll re-importing the same reservation: %v", err)
+	}
+}

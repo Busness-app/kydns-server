@@ -129,6 +129,10 @@ form.stack > label, .fields > label { font-family: var(--font-mono); font-size: 
                                       padding-top: .62rem; line-height: 1.35; }
 form.stack > :not(label), .fields > :not(label) { grid-column: 2; }
 form.stack > button, .fields > button { justify-self: start; margin-top: .3rem; }
+/* A submit that has to come first in DOM order - implicit submission picks
+   the first one, and Enter must save rather than run a wizard - but last on
+   screen, where the operator looks for it. */
+form.stack > button.last { order: 1; }
 form.stack > p, .fields > p { margin: .1rem 0 .3rem; font-size: .82rem; }
 input[type=text], input[type=password], input[type=number], textarea, select {
   background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: .5rem .65rem;

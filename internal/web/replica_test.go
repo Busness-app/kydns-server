@@ -4,26 +4,33 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
+	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 const testPrimaryAddr = "10.0.0.9:8443"
 
 // replicaWeb wires a logged-in server behind the web write gate. The returned
 // status is read per request, so a test can flip the role mid-test the way
-// promotion does.
-func replicaWeb(t *testing.T) (http.Handler, *http.ServeMux, *Server, *ReplicaStatus, *http.Cookie, string) {
+// promotion does. Extra tweaks are applied after the role, so a test can seed
+// the state a screen needs before it renders the controls under test.
+func replicaWeb(t *testing.T, tweak ...func(*Options)) (http.Handler, *http.ServeMux, *Server, *ReplicaStatus, *http.Cookie, string) {
 	t.Helper()
 	status := &ReplicaStatus{
 		Role: "replica", PrimaryAddr: testPrimaryAddr, LastSyncUnix: time.Now().Unix(),
 	}
-	mux, srv := newWeb(t, func(o *Options) {
+	mux, srv := newWeb(t, append([]func(*Options){func(o *Options) {
 		o.Replication = func() ReplicaStatus { return *status }
-	})
+	}}, tweak...)...)
 	h := srv.WriteGate(mux)
 	setupAndLogin(t, h)
 	c := loginCookie(t, h)
@@ -84,10 +91,23 @@ func TestReplicaRefusesEveryPostRoute(t *testing.T) {
 // PathJoin was added deliberately: the gate refuses writes because the next
 // pull discards them, and pairing is the write that creates the pull. Without
 // it an unpaired replica has no way to start and a removed one no way back.
-func TestExemptSetIsExactlyTheFiveNamedPaths(t *testing.T) {
+//
+// PathDHCPSettings and PathDHCPSuggest were added deliberately too, by ruling
+// P22. The DHCP settings are node-local - ApplySnapshot re-reads all eight
+// dhcp_* columns out of the local row, so a pull cannot discard them - and
+// refusing them left an operator unable to prepare a standby, which they found
+// out during a failover. Suggest writes nothing at all; it reads the interface
+// and re-renders the form beside Save.
+//
+// What a replica may actually change is not decided here. This gate decides
+// only that the post is answered; settings.Service refuses any write reaching
+// past the eight DHCP fields, which is why /dhcp/reserve - a service write, and
+// replicated - is not on this list.
+func TestExemptSetIsExactlyTheSevenNamedPaths(t *testing.T) {
 	want := map[string]bool{
 		PathSetup: true, PathLogin: true, PathLogout: true,
 		PathPromote: true, PathJoin: true,
+		PathDHCPSettings: true, PathDHCPSuggest: true,
 	}
 	if !maps.Equal(webWriteExempt, want) {
 		t.Fatalf("webWriteExempt = %v, want %v", webWriteExempt, want)
@@ -95,7 +115,7 @@ func TestExemptSetIsExactlyTheFiveNamedPaths(t *testing.T) {
 
 	_, _, srv, _, _, _ := replicaWeb(t)
 	registered := registeredPostRoutes(t, srv)
-	for _, p := range []string{PathSetup, PathLogin, PathLogout, PathPromote, PathJoin} {
+	for p := range want {
 		if !slices.Contains(registered, p) {
 			t.Errorf("exempt path %s is not a registered route: the exemption is dead or misspelled", p)
 		}
@@ -299,5 +319,171 @@ func TestPrimaryRendersNormally(t *testing.T) {
 	}
 	if strings.Contains(body, "Managed by") || strings.Contains(body, staleBannerTitle) {
 		t.Error("a primary renders replica chrome")
+	}
+}
+
+// The failure this task exists to end: an operator could not prepare a standby,
+// and found out during a failover. The DHCP settings are node-local, so a
+// replica holds its own and the next pull preserves them.
+func TestReplicaMaySaveTheDHCPForm(t *testing.T) {
+	h, _, srv, _, c, csrf := replicaWeb(t)
+
+	rec := postForm(t, h, PathDHCPSettings, dhcpFormValues(csrf), c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST %s on a replica = %d, want 303:\n%s", PathDHCPSettings, rec.Code, rec.Body)
+	}
+	cur, err := srv.o.Settings.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cur.DHCPEnabled || cur.DHCPInterface != "eth0" || cur.DHCPLeaseSeconds != 86400 {
+		t.Fatalf("the save did not reach the settings: %+v", cur)
+	}
+	// The replicated half is untouched, because the write never carried it.
+	if cur.PrivateDomain != testSettings().PrivateDomain || cur.TTL != testSettings().TTL {
+		t.Errorf("a DHCP save moved a replicated setting: %+v", cur)
+	}
+}
+
+// buttonTag is the opening tag of the button labelled label, which sits just
+// before it. Fatal rather than empty when the label is missing: a selector that
+// silently matches nothing is how an assertion stops being one.
+func buttonTag(t *testing.T, body, label string) string {
+	t.Helper()
+	i := strings.Index(body, label)
+	if i < 0 {
+		t.Fatalf("the %s button is missing from the page:\n%s", label, body)
+	}
+	open := strings.LastIndex(body[:i], "<button")
+	if open < 0 {
+		t.Fatalf("no opening tag before %s; the selector has gone stale", label)
+	}
+	return body[open:i]
+}
+
+// A form whose controls are disabled is a form an operator cannot use, so the
+// exemption would be unreachable through the only UI that offers it. Reserve is
+// the control beside it that must stay disabled: it saves a service, which is
+// replicated.
+//
+// The lease is seeded because the Reserve button lives in the lease-row loop.
+// Without one the row never renders and this test asserted nothing about it.
+func TestTheDHCPFormIsEditableOnAReplicaButReserveIsNot(t *testing.T) {
+	h, _, _, _, c, _ := replicaWeb(t, withDHCP(fakeDHCP{running: true}), func(o *Options) {
+		o.Leases = func() []dhcp.Lease {
+			return []dhcp.Lease{{
+				Hostname: "laptop", IP: "192.168.1.50", MAC: "aa:bb:cc:dd:ee:01",
+				Expires: time.Now().Add(time.Hour),
+			}}
+		}
+	})
+	body := get(t, h, "/dhcp", c).Body.String()
+	for _, label := range []string{">Save<", ">Fill in from this interface<"} {
+		if tag := buttonTag(t, body, label); strings.Contains(tag, "disabled") {
+			t.Errorf("the %s button is disabled on a replica: %s", label, tag)
+		}
+	}
+	tag := buttonTag(t, body, ">Reserve<")
+	if !strings.Contains(tag, "disabled") {
+		t.Errorf("the Reserve button is editable on a replica: %s", tag)
+	}
+	if !strings.Contains(tag, "Managed by "+testPrimaryAddr) {
+		t.Errorf("the disabled Reserve button does not say who manages it: %s", tag)
+	}
+}
+
+// storedSettings is the persisted row, read past the in-memory holder: a write
+// that reached the database and still looked refused would leave the holder
+// untouched, and a test reading the holder would call that "wrote nothing".
+func storedSettings(t *testing.T, srv *Server) store.Settings {
+	t.Helper()
+	v, ok, err := srv.o.Store.Settings()
+	if err != nil || !ok {
+		t.Fatalf("reading the stored settings: %v (ok=%v)", err, ok)
+	}
+	return v
+}
+
+// Suggest fills the form in and saves nothing, which is why it is exempt.
+func TestSuggestOnAReplicaAnswersAndWritesNothing(t *testing.T) {
+	h, _, srv, _, c, csrf := replicaWeb(t)
+	before := storedSettings(t, srv)
+	rec := postForm(t, h, PathDHCPSuggest, dhcpFormValues(csrf), c)
+	if rec.Code == http.StatusConflict {
+		t.Fatalf("POST %s on a replica = 409: the wizard is refused beside a Save that is not", PathDHCPSuggest)
+	}
+	if after := storedSettings(t, srv); !reflect.DeepEqual(before, after) {
+		t.Errorf("the suggest button wrote:\nbefore %+v\nafter  %+v", before, after)
+	}
+}
+
+// The two transports answer the same refusal the same way. A replica may save
+// this form, so the only way it is refused as read-only is a pull landing
+// between the form read and the write — an operator who did nothing wrong, and
+// who needs the address of the box the rest of the settings live on. The race
+// itself cannot be staged from a test: liveSettings and Set read the same
+// holder inside one request, with nothing in between to inject into.
+func TestTheDHCPSaveRefusalMatchesTheAPI(t *testing.T) {
+	_, _, srv, status, _, _ := replicaWeb(t)
+
+	code, msg := srv.dhcpSaveRefusal(settings.ErrReadOnlyReplica)
+	if code != http.StatusConflict {
+		t.Errorf("a read-only refusal on the DHCP form = %d, want the 409 the API answers with", code)
+	}
+	// Against adminapi's own clause, not a copy of its wording: a copy here
+	// would let the two transports drift apart while both tests stayed green.
+	if !strings.HasSuffix(msg, adminapi.ManagedOn(testPrimaryAddr)) {
+		t.Errorf("the refusal does not end the way the API's does: %q", msg)
+	}
+	if !strings.Contains(msg, testPrimaryAddr) {
+		t.Errorf("the refusal does not name the primary: %q", msg)
+	}
+
+	// An unpaired replica knows no address. The settings error already ends
+	// "on its primary", so there is nothing to append and nothing to repeat.
+	status.PrimaryAddr = ""
+	if _, msg := srv.dhcpSaveRefusal(settings.ErrReadOnlyReplica); strings.Contains(msg, "make this change on") {
+		t.Errorf("the refusal says where twice when it knows no address: %q", msg)
+	}
+	status.PrimaryAddr = testPrimaryAddr
+
+	// A validation failure is the operator's own input and stays a 400.
+	code, _ = srv.dhcpSaveRefusal(errSettingsUnread)
+	if code != http.StatusBadRequest {
+		t.Errorf("a plain rejection = %d, want 400", code)
+	}
+
+	// Promotion ends the refusal, so nothing here is pinned to being a replica.
+	status.Role = "primary"
+	status.PrimaryAddr = ""
+	if _, msg := srv.dhcpSaveRefusal(settings.ErrReadOnlyReplica); strings.Contains(msg, testPrimaryAddr) {
+		t.Errorf("a promoted node still names a primary: %q", msg)
+	}
+}
+
+// The neighbouring DHCP post is a service write, which is replicated: it stays
+// refused, and the sweep above would not say so on its own if it were exempted.
+func TestReserveIsStillRefusedOnAReplica(t *testing.T) {
+	h, _, _, _, c, csrf := replicaWeb(t)
+	rec := postForm(t, h, "/dhcp/reserve",
+		url.Values{"csrf_token": {csrf}, "ip": {"192.168.1.50"}}, c)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("POST /dhcp/reserve on a replica = %d, want 409:\n%s", rec.Code, rec.Body)
+	}
+}
+
+// Promotion widens the form to the whole row, on the next request rather than
+// the next restart.
+func TestPromotionRestoresTheServerSettingsForm(t *testing.T) {
+	h, _, srv, status, c, csrf := replicaWeb(t)
+	if rec := postForm(t, h, "/settings/server", validForm(csrf), c); rec.Code != http.StatusConflict {
+		t.Fatalf("POST /settings/server on a replica = %d, want 409", rec.Code)
+	}
+	status.Role = "primary"
+	if rec := postForm(t, h, "/settings/server", validForm(csrf), c); rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /settings/server after promotion = %d, want 303:\n%s", rec.Code, rec.Body)
+	}
+	if _, err := srv.o.Settings.Get(); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -169,6 +169,11 @@ missing zero-padding, or no separators would silently fail to match. Both normal
 `net.ParseMAC`, closing a hazard Part 2's own self-review had flagged as guarded by nothing but a
 comment. *Cost if wrong: none.*
 
+> **Correction, made during Part 2 and proven by executing it.** Of the three spellings named above,
+> `net.ParseMAC` accepts dashes and Cisco dot-quad form but *rejects* unpadded input such as
+> `a:b:c:d:e:f`. Both normalizers therefore return the empty string for it and the reservation is
+> refused, not silently mismatched — the safe direction, but not what this paragraph claimed.
+
 ## Part 2's plan is now stale
 
 `docs/superpowers/plans/2026-08-19-kydns-builtin-dhcp-part2.md` was committed before these rulings and

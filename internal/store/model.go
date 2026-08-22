@@ -27,6 +27,11 @@ type Service struct {
 	// discarding the address.
 	ProxyAddress  string
 	RouteViaProxy bool
+
+	// MAC is an optional DHCP reservation. Empty is the normal case. The
+	// address it reserves is derived, not stored: it is the service's unique
+	// address inside the DHCP subnet.
+	MAC string
 }
 
 // Record is a manually authored record. View == "" means every view.
@@ -113,6 +118,11 @@ type Settings struct {
 	DHCPGateway      string
 	DHCPLeaseSeconds int
 	DHCPSecondaryDNS string
+	// DHCPAllowForeign lets the listener start although the rogue probe found
+	// another DHCP server, or could not run at all. Off by default: the
+	// failure it guards against takes down the whole network rather than one
+	// name.
+	DHCPAllowForeign bool
 }
 
 // AdminIdentity holds the admin credentials and linked KySignOn SSO identity.

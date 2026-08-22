@@ -393,3 +393,222 @@ func TestDeclineFromAnEmptyMACIsRefused(t *testing.T) {
 		t.Fatalf("an empty MAC quarantined %d addresses, want none", n)
 	}
 }
+
+// Rule 1 reaches commit, and commit evicts whoever holds the address. On the
+// ACK path that is the spec's "that address, always"; on the tentative path it
+// would let one unauthenticated DISCOVER destroy a stranger's live lease.
+func TestOfferForAReservationLeavesAnotherClientsLeaseAlone(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const victim, thief = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"
+	held, ok := a.Allocate(victim, "nas", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused the first client")
+	}
+	a.SetReservations(map[string]netip.Addr{thief: held.IP})
+
+	got, fresh, ok := a.Offer(thief, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused the reserved client entirely")
+	}
+	if got.IP == held.IP {
+		t.Fatalf("offered %v, which another client is still leasing", got.IP)
+	}
+	if !fresh {
+		t.Fatal("fresh = false for a dynamic address the client has never held")
+	}
+	ls := a.Leases()
+	if len(ls) != 2 {
+		t.Fatalf("leases = %+v, want both clients", ls)
+	}
+	for _, l := range ls {
+		if l.MAC != victim {
+			continue
+		}
+		if l.IP != held.IP || l.Hostname != "nas" || !l.Expires.Equal(epoch.Add(24*time.Hour)) {
+			t.Fatalf("victim's lease = %+v, want %v named nas for the full term", l, held.IP)
+		}
+		return
+	}
+	t.Fatalf("leases = %+v, want the victim still holding %v", ls, held.IP)
+}
+
+// The R18 guard keys on prev.IP == ip, so a reservation for an address the
+// client does not hold slips past it: the tentative hold lands on the new
+// address and takes the old lease's name and term with it.
+func TestOfferForAReservationDoesNotMoveTheClientOffItsLease(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	held, ok := a.Allocate(mac, "nas", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused the client")
+	}
+	res := netip.MustParseAddr("192.168.1.20") // outside the range, as a reservation may be
+	a.SetReservations(map[string]netip.Addr{mac: res})
+
+	got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused the reserved client")
+	}
+	if got.IP != res {
+		t.Fatalf("offered %v, want the reserved %v promised", got.IP, res)
+	}
+	if fresh {
+		t.Fatal("fresh = true for a reservation; rule 1 is never probed")
+	}
+	ls := a.Leases()
+	if len(ls) != 1 {
+		t.Fatalf("leases = %+v, want the one lease the client is still using", ls)
+	}
+	if ls[0].IP != held.IP || ls[0].Hostname != "nas" || !ls[0].Expires.Equal(epoch.Add(24*time.Hour)) {
+		t.Fatalf("lease = %+v, want %v named nas for the full term until the client commits", ls[0], held.IP)
+	}
+}
+
+// Rule 1 falling through and rule 2 refusing at the same time is reachable
+// from a reservation map alone: the client's reservation is under another
+// client's lease, and its current address is reserved to a third MAC. Rules 3
+// and 4 then commit a fresh address over a lease it is still using.
+func TestOfferKeepsALiveLeaseWhenTheReservationRulesBothRefuse(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const macA, macB, macC = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb", "cc:cc:cc:cc:cc:cc"
+	first, _ := a.Allocate(macA, "nas", netip.Addr{}, 24*time.Hour)
+	second, _ := a.Allocate(macB, "backup", netip.Addr{}, 24*time.Hour)
+	a.SetReservations(map[string]netip.Addr{macB: first.IP, macC: second.IP})
+
+	got, fresh, ok := a.Offer(macB, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused a client that is already holding an address")
+	}
+	if got.IP != second.IP {
+		t.Fatalf("offered %v, want the %v the client is still using", got.IP, second.IP)
+	}
+	if fresh {
+		t.Fatal("fresh = true for an address the client already holds")
+	}
+	ls := a.Leases()
+	if len(ls) != 2 {
+		t.Fatalf("leases = %+v, want both clients still leased", ls)
+	}
+	for _, l := range ls {
+		if l.MAC != macB {
+			continue
+		}
+		if l.IP != second.IP || l.Hostname != "backup" || !l.Expires.Equal(epoch.Add(24*time.Hour)) {
+			t.Fatalf("lease = %+v, want %v named backup for the full term", l, second.IP)
+		}
+		return
+	}
+	t.Fatalf("leases = %+v, want the client still holding %v", ls, second.IP)
+}
+
+// The other half of the Part 1 R18 note: a restored lease whose address falls
+// outside a range the operator has since narrowed. Rule 2's usable() check
+// skips it, so the same fall-through destroys a lease still in use.
+func TestOfferKeepsALiveLeaseOutsideANarrowedRange(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	old := netip.MustParseAddr("192.168.1.50") // handed out before the range shrank
+	a.Load([]Lease{{MAC: mac, IP: old, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+	got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused a client that is already holding an address")
+	}
+	if got.IP != old {
+		t.Fatalf("offered %v, want the %v the client is still using", got.IP, old)
+	}
+	if fresh {
+		t.Fatal("fresh = true for an address the client already holds")
+	}
+	ls := a.Leases()
+	if len(ls) != 1 || ls[0].IP != old || ls[0].Hostname != "nas" || !ls[0].Expires.Equal(epoch.Add(24*time.Hour)) {
+		t.Fatalf("leases = %+v, want nas still at %v for the full term", ls, old)
+	}
+}
+
+// The committing path must still move a client off an address that is no
+// longer ours to give. The tentative guard above deliberately does not.
+func TestAllocateStillMovesAClientOffAnAddressOutsideTheRange(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	old := netip.MustParseAddr("192.168.1.50")
+	a.Load([]Lease{{MAC: mac, IP: old, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+	l, ok := a.Allocate(mac, "nas", netip.Addr{}, 24*time.Hour)
+	if !ok {
+		t.Fatal("Allocate refused a client holding an out-of-range address")
+	}
+	if want := netip.MustParseAddr("192.168.1.10"); l.IP != want {
+		t.Fatalf("REQUEST left the client at %v, want it moved into the range at %v", l.IP, want)
+	}
+}
+
+// free() and rule 1 both ask this, and both mean "somebody else": a client is
+// never its own squatter.
+func TestHeldByAnotherIgnoresTheClientsOwnLease(t *testing.T) {
+	a, _ := newTestAllocator(t)
+	const mine, other = "aa:aa:aa:aa:aa:aa", "bb:bb:bb:bb:bb:bb"
+	l, _ := a.Allocate(mine, "nas", netip.Addr{}, 24*time.Hour)
+	if a.heldByAnotherLocked(l.IP, mine, epoch) {
+		t.Fatalf("%v reported held by another client; it is this client's own lease", l.IP)
+	}
+	if !a.heldByAnotherLocked(l.IP, other, epoch) {
+		t.Fatalf("%v not reported held against a different client", l.IP)
+	}
+}
+
+// The fall-through guard must not hand back an address that was never ours to
+// give. Host and Gateway can sit inside a wide range, and an interface
+// renumber or a router swap turns a legitimately persisted lease into one of
+// them: offering it back loops the client through DISCOVER and NAK forever.
+func TestOfferNeverPromisesAProtectedAddress(t *testing.T) {
+	cfg := testConfig()
+	for _, tc := range []struct {
+		name string
+		ip   netip.Addr
+	}{
+		{"the server's own address", cfg.Host},
+		{"the gateway", cfg.Gateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newTestAllocator(t)
+			const mac = "aa:aa:aa:aa:aa:aa"
+			a.Load([]Lease{{MAC: mac, IP: tc.ip, Hostname: "nas", Expires: epoch.Add(24 * time.Hour)}})
+
+			got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+			if !ok {
+				t.Fatal("Offer refused a client holding a protected address")
+			}
+			if got.IP == tc.ip {
+				t.Fatalf("offered %v, which is %s", got.IP, tc.name)
+			}
+			if !fresh {
+				t.Fatalf("fresh = false for %v, which is new to this client and must be probed", got.IP)
+			}
+		})
+	}
+}
+
+// The guard turns on held, not on having any record at all: an expired
+// holding is new to us again and must be probed, not handed straight back.
+func TestOfferDoesNotHandBackAnExpiredHolding(t *testing.T) {
+	a, now := newTestAllocator(t)
+	const mac = "aa:aa:aa:aa:aa:aa"
+	old := netip.MustParseAddr("192.168.1.50") // out of range, so rule 2 refuses it
+	a.Load([]Lease{{MAC: mac, IP: old, Hostname: "nas", Expires: epoch.Add(time.Minute)}})
+	*now = now.Add(time.Hour)
+
+	got, fresh, ok := a.Offer(mac, netip.Addr{}, time.Minute)
+	if !ok {
+		t.Fatal("Offer refused a client whose holding has expired")
+	}
+	if got.IP == old {
+		t.Fatalf("offered the expired %v back, want a fresh address in the range", old)
+	}
+	if want := netip.MustParseAddr("192.168.1.10"); got.IP != want {
+		t.Fatalf("offered %v, want %v", got.IP, want)
+	}
+	if !fresh {
+		t.Fatal("fresh = false for an address the client no longer holds; it would never be probed")
+	}
+}

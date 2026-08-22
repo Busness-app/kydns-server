@@ -31,14 +31,14 @@ SELECT private_domain, reverse_zones, upstreams, allow_query, allow_tailscale,
        log_queries, log_client_ip, dhcp_lease_file, discovery_interval,
        health_interval, health_timeout, health_workers,
        dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
-       dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns
+       dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns, dhcp_allow_foreign
 FROM settings WHERE id = 1`).Scan(
 		&v.PrivateDomain, &rz, &up, &aq, &v.AllowTailscale,
 		&v.TTL, &v.CacheMinTTL, &v.CacheMaxTTL, &v.NegativeMaxTTL, &v.CacheEntries,
 		&v.LogQueries, &v.LogClientIP, &v.DHCPLeaseFile, &v.DiscoveryInterval,
 		&v.HealthInterval, &v.HealthTimeout, &v.HealthWorkers,
 		&v.DHCPEnabled, &v.DHCPInterface, &v.DHCPRangeStart, &v.DHCPRangeEnd,
-		&v.DHCPGateway, &v.DHCPLeaseSeconds, &v.DHCPSecondaryDNS)
+		&v.DHCPGateway, &v.DHCPLeaseSeconds, &v.DHCPSecondaryDNS, &v.DHCPAllowForeign)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Settings{}, false, nil
 	}
@@ -55,6 +55,36 @@ func (s *Store) PutSettings(v Settings) error {
 	return putSettings(s.db, v)
 }
 
+// PutDHCPSettings writes the eight node-local dhcp_* columns and leaves every
+// other one exactly as it is. It exists for the replica write path: a whole-row
+// write there would put back whatever the background pull applied between the
+// caller's read and this write. One statement, so it is correct against
+// ApplySnapshot either way round — this commits first and ApplySnapshot re-reads
+// and preserves these columns, or ApplySnapshot commits first and this leaves
+// its work alone.
+func (s *Store) PutDHCPSettings(v Settings) error {
+	res, err := s.db.Exec(`
+UPDATE settings SET dhcp_enabled = ?, dhcp_interface = ?, dhcp_range_start = ?,
+  dhcp_range_end = ?, dhcp_gateway = ?, dhcp_lease_seconds = ?,
+  dhcp_secondary_dns = ?, dhcp_allow_foreign = ?
+WHERE id = 1`,
+		v.DHCPEnabled, v.DHCPInterface, v.DHCPRangeStart, v.DHCPRangeEnd,
+		v.DHCPGateway, v.DHCPLeaseSeconds, v.DHCPSecondaryDNS, v.DHCPAllowForeign)
+	if err != nil {
+		return err
+	}
+	// A missing row would make this a silent no-op, and the caller would be
+	// told the save landed.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("there are no settings to update yet")
+	}
+	return nil
+}
+
 // execer is the shared slice of *sql.DB and *sql.Tx, so the settings write can
 // stand alone or join a larger transaction.
 type execer interface {
@@ -68,8 +98,8 @@ INSERT INTO settings (id, private_domain, reverse_zones, upstreams, allow_query,
   cache_entries, log_queries, log_client_ip, dhcp_lease_file,
   discovery_interval, health_interval, health_timeout, health_workers,
   dhcp_enabled, dhcp_interface, dhcp_range_start, dhcp_range_end,
-  dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns)
-VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  dhcp_gateway, dhcp_lease_seconds, dhcp_secondary_dns, dhcp_allow_foreign)
+VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
   private_domain=excluded.private_domain, reverse_zones=excluded.reverse_zones,
   upstreams=excluded.upstreams, allow_query=excluded.allow_query,
@@ -84,14 +114,15 @@ ON CONFLICT(id) DO UPDATE SET
   dhcp_enabled=excluded.dhcp_enabled, dhcp_interface=excluded.dhcp_interface,
   dhcp_range_start=excluded.dhcp_range_start, dhcp_range_end=excluded.dhcp_range_end,
   dhcp_gateway=excluded.dhcp_gateway, dhcp_lease_seconds=excluded.dhcp_lease_seconds,
-  dhcp_secondary_dns=excluded.dhcp_secondary_dns`,
+  dhcp_secondary_dns=excluded.dhcp_secondary_dns,
+  dhcp_allow_foreign=excluded.dhcp_allow_foreign`,
 		v.PrivateDomain, packList(v.ReverseZones), packList(v.Upstreams),
 		packList(v.AllowQuery), v.AllowTailscale, v.TTL, v.CacheMinTTL,
 		v.CacheMaxTTL, v.NegativeMaxTTL, v.CacheEntries, v.LogQueries,
 		v.LogClientIP, v.DHCPLeaseFile, v.DiscoveryInterval, v.HealthInterval,
 		v.HealthTimeout, v.HealthWorkers,
 		v.DHCPEnabled, v.DHCPInterface, v.DHCPRangeStart, v.DHCPRangeEnd,
-		v.DHCPGateway, v.DHCPLeaseSeconds, v.DHCPSecondaryDNS)
+		v.DHCPGateway, v.DHCPLeaseSeconds, v.DHCPSecondaryDNS, v.DHCPAllowForeign)
 	return err
 }
 

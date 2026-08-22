@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
+	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -84,29 +85,60 @@ func (s *Server) getDiscovered(w http.ResponseWriter, r *http.Request) {
 	s.render(w, r, "discovered.html", s.discoveredData(""))
 }
 
-// postPromote turns a lease into a durable service. Leases are never
-// persisted, so promotion is the only path from discovery into the database.
-func (s *Server) postPromote(w http.ResponseWriter, r *http.Request) {
-	ip := r.PostFormValue("ip")
-	var hostname string
+// promoteLease turns the lease at ip into a durable service. Leases are never
+// persisted, so this is the only path from discovery into the database, and
+// both the Discovered screen and the DHCP tab's Reserve button take it.
+//
+// The MAC comes with the address when it can: on the built-in server that is
+// what pins the lease as a reservation, and with an external lease file it is
+// inert, since the two cannot be on at once.
+//
+// ip names the lease; nothing else the form carries is trusted, because a
+// posted address with no lease behind it would otherwise reserve whatever it
+// named.
+func (s *Server) promoteLease(ip string) error {
 	if s.discoveryOn() {
 		for _, l := range s.leases() {
-			if l.IP == ip {
-				hostname = l.Hostname
-				break
+			// An unnamed lease has nothing to call the service, so it is not a
+			// candidate rather than an error of its own.
+			if l.IP != ip || l.Hostname == "" {
+				continue
 			}
+			_, err := s.o.Registry.PutService(store.Service{
+				Name: l.Hostname, MAC: s.reservableMAC(l.MAC),
+				Addresses: []store.Address{{Address: l.IP}},
+			})
+			return err
 		}
 	}
-	if hostname == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		s.render(w, r, "discovered.html",
-			s.discoveredData(fmt.Sprintf("No current lease for %s.", ip)))
-		return
+	return fmt.Errorf("no current lease for %s", ip)
+}
+
+// reservableMAC is the MAC to promote with, or "" for a name without a
+// reservation. Promote's contract is the name; a lease identifier the registry
+// would reject must not cost the operator that. Two identifiers reach here: a
+// dnsmasq file holding DHCPv6 leases puts an IAID in the MAC column, and one
+// device with two hostnames holds two leases on one MAC, which only one
+// service may claim.
+func (s *Server) reservableMAC(mac string) string {
+	if mac == "" || registry.ValidateMAC(mac) != nil {
+		return ""
 	}
-	if _, err := s.o.Registry.PutService(store.Service{
-		Name:      hostname,
-		Addresses: []store.Address{{Address: ip}},
-	}); err != nil {
+	svcs, err := s.o.Registry.Services()
+	if err != nil {
+		return ""
+	}
+	norm := registry.NormalizeMAC(mac)
+	for _, svc := range svcs {
+		if svc.MAC == norm {
+			return ""
+		}
+	}
+	return mac
+}
+
+func (s *Server) postPromote(w http.ResponseWriter, r *http.Request) {
+	if err := s.promoteLease(r.PostFormValue("ip")); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		s.render(w, r, "discovered.html", s.discoveredData(err.Error()))
 		return

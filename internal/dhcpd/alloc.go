@@ -114,18 +114,20 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 		hostname = ""
 	}
 
+	prev, hasPrev := a.byMAC[mac]
+	held := hasPrev && prev.Expires.After(now) // a lease this client is still using
+
 	commit := func(ip netip.Addr, fresh bool) (Lease, bool, bool) {
-		if held, ok := a.byIP[ip]; ok && held != mac {
-			delete(a.byMAC, held)
+		if holder, ok := a.byIP[ip]; ok && holder != mac {
+			delete(a.byMAC, holder)
 		}
-		prev, hasPrev := a.byMAC[mac]
 		if hasPrev && prev.IP != ip {
 			delete(a.byIP, prev.IP)
 		}
 		l := Lease{MAC: mac, IP: ip, Hostname: hostname, Expires: now.Add(ttl)}
 		// A tentative hold never weakens a live lease on the same address:
 		// its name stays and its expiry only ever moves later.
-		if tentative && hasPrev && prev.IP == ip && prev.Expires.After(now) {
+		if tentative && held && prev.IP == ip {
 			l.Hostname = prev.Hostname
 			if prev.Expires.After(l.Expires) {
 				l.Expires = prev.Expires
@@ -137,13 +139,40 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 	}
 
 	// 1. A reservation always wins, in or out of the dynamic range, but
-	// never our own address or the gateway.
+	// never our own address or the gateway. A REQUEST takes it whatever is in
+	// the way; a DISCOVER is not a lease operation, so it may promise the
+	// reservation but never destroy a live lease to keep the promise.
 	if ip, ok := a.reserved[mac]; ok && !a.protected(ip) {
-		return commit(ip, false)
+		switch {
+		case !tentative:
+			return commit(ip, false)
+		case a.heldByAnotherLocked(ip, mac, now):
+			// Another client is still using it. Offering it would point two
+			// clients at one address, so fall through to a dynamic one; the
+			// REQUEST for that address still takes the reservation.
+		case held && prev.IP != ip:
+			// Promise the reservation without taking it. Nothing else can be
+			// given the address anyway — free() bars a reserved address from
+			// every other client — so only the REQUEST that commits the move
+			// need drop the lease this client is still using.
+			return Lease{MAC: mac, IP: ip, Expires: now.Add(ttl)}, false, true
+		default:
+			return commit(ip, false)
+		}
 	}
 	// 2. Renew what this client already holds, if it is still ours to give.
 	if l, ok := a.byMAC[mac]; ok && a.usable(l.IP) && a.reservedIP[l.IP] == "" {
 		return commit(l.IP, !l.Expires.After(now)) // an expired holding is new to us again
+	}
+	// A tentative hold never moves a client off a lease it is still using:
+	// rules 3 and 4 commit, and commit deletes the old entry. Reached only
+	// when rules 1 and 2 have both refused, so the address may no longer be
+	// ours to give — but the client is on it either way, and a DISCOVER is
+	// not the moment to take it away. The REQUEST still decides. Our own
+	// address and the gateway are the exception: they were never ours to
+	// give, so returning one only loops the client through DISCOVER and NAK.
+	if tentative && held && !a.protected(prev.IP) {
+		return prev, false, true
 	}
 	// 3. Honour a requested address that is free.
 	if requested.IsValid() && a.free(requested, mac, now) {
@@ -187,6 +216,16 @@ func (a *Allocator) Decline(mac string, ip netip.Addr) bool {
 		a.quarantine[ip] = a.now().Add(quarantineFor)
 	}
 	return true
+}
+
+// reservationFor is the address reserved to mac, if any. Package-internal:
+// only the packet path uses it, to tell a squatted reservation apart from a
+// forged decline.
+func (a *Allocator) reservationFor(mac string) (netip.Addr, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ip, ok := a.reserved[mac]
+	return ip, ok
 }
 
 // Quarantine keeps an address out of the pool, for a probe that found it in
@@ -238,12 +277,18 @@ func (a *Allocator) free(ip netip.Addr, mac string, now time.Time) bool {
 	if holder, ok := a.reservedIP[ip]; ok && holder != mac {
 		return false
 	}
-	if holder, ok := a.byIP[ip]; ok && holder != mac {
-		if l, ok := a.byMAC[holder]; ok && l.Expires.After(now) {
-			return false
-		}
+	return !a.heldByAnotherLocked(ip, mac, now)
+}
+
+// heldByAnotherLocked reports whether ip is under an unexpired lease belonging
+// to some other client. Callers hold a.mu.
+func (a *Allocator) heldByAnotherLocked(ip netip.Addr, mac string, now time.Time) bool {
+	holder, ok := a.byIP[ip]
+	if !ok || holder == mac {
+		return false
 	}
-	return true
+	l, ok := a.byMAC[holder]
+	return ok && l.Expires.After(now)
 }
 
 // usable reports whether ip is one this server may hand out at all.

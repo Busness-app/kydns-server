@@ -86,3 +86,51 @@ func TestValidationErrorCarriesField(t *testing.T) {
 		t.Errorf("Field = %q, Code = %q, want both populated", ve.Field, ve.Code)
 	}
 }
+
+func TestValidateMAC(t *testing.T) {
+	good := []string{
+		"aa:bb:cc:dd:ee:ff",
+		"AA:BB:CC:DD:EE:FF",
+		"aa-bb-cc-dd-ee-ff",
+		"", // a service without a reservation is the normal case
+	}
+	for _, s := range good {
+		if err := ValidateMAC(s); err != nil {
+			t.Errorf("ValidateMAC(%q) = %v, want nil", s, err)
+		}
+	}
+	bad := []string{
+		"nonsense",
+		"aa:bb:cc:dd:ee",
+		"aa:bb:cc:dd:ee:ff:00:11", // an EUI-64, not an Ethernet MAC
+		"zz:bb:cc:dd:ee:ff",
+	}
+	for _, s := range bad {
+		if err := ValidateMAC(s); err == nil {
+			t.Errorf("ValidateMAC(%q) = nil, want an error", s)
+		}
+	}
+}
+
+// TestNormalizeMAC is deliberately the same table as dhcpd's TestNormalizeMAC.
+// The two normalizers are separate functions - registry must not import dhcpd
+// for one string helper - so these two tables are the only thing that will say
+// so if they ever diverge. A reservation and a lease compare as plain strings,
+// so divergence would silently stop matching them.
+func TestNormalizeMAC(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff"},
+		{"aa-bb-cc-dd-ee-ff", "aa:bb:cc:dd:ee:ff"},
+		{"aabb.ccdd.eeff", "aa:bb:cc:dd:ee:ff"},
+		{"AABBCCDDEEFF", "aa:bb:cc:dd:ee:ff"}, // no separators; the comment claims this
+		{"  aa:bb:cc:dd:ee:ff  ", "aa:bb:cc:dd:ee:ff"},
+		{"a:b:c:d:e:f", "a:b:c:d:e:f"}, // does not parse; falls back lowercased
+		{"not-a-mac", "not-a-mac"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := NormalizeMAC(c.in); got != c.want {
+			t.Errorf("NormalizeMAC(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

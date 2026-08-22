@@ -7,8 +7,12 @@
 .env
 /kydns.yaml
 
-# Isolated workspaces for in-progress plans.
+# Isolated workspaces for in-progress plans. Claude Code puts its own under
+# .claude/, which /.worktrees/ does not cover -- a worktree recorded there
+# lands as a gitlink with no .gitmodules and clones as a broken subproject.
 /.worktrees/
+/.claude/worktrees/
+/.claude/settings.local.json
 
 dist/
 

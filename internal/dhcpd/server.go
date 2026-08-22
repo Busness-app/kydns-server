@@ -59,6 +59,52 @@ type Server struct {
 	mu     sync.Mutex
 	srv    *server4.Server
 	cancel context.CancelFunc
+	// ignored holds the transaction IDs of probes this server sent itself.
+	// See ProbeForeign.
+	ignored map[dhcpv4.TransactionID]bool
+}
+
+// ProbeForeign runs the rogue check while this listener is bound, which is
+// what the periodic probe needs. Our own server answers that probe exactly as
+// any other would, and no property of the reply tells the two apart: a dnsmasq
+// sharing this host puts OUR interface address in option 54 just as we do, and
+// it echoes the probe's transaction ID for the same reason we do. So the
+// probe's transaction is dropped here instead, at the one place that knows
+// which DISCOVER is ours, and every OFFER that comes back is another server's
+// by construction.
+func (s *Server) ProbeForeign(ctx context.Context, wait time.Duration) ([]Foreign, error) {
+	return s.probeForeignWith(ctx, wait, probeConn(ctx, s.opts.Iface.Name))
+}
+
+// probeForeignWith is ProbeForeign with the socket handed in, so a test drives
+// the real composition rather than reassembling it. Passing nil for ignore
+// here is the defect this split exists to pin: our own listener would answer,
+// win collectForeign's dedupe by ServerID, and hide a co-resident server.
+func (s *Server) probeForeignWith(ctx context.Context, wait time.Duration, dial func() (net.PacketConn, error)) ([]Foreign, error) {
+	return detectForeign(ctx, wait, dial, s.ignoreXID)
+}
+
+// ignoreXID drops one transaction until the returned func is called. It is
+// scoped to the probe: leaving it set would blackhole a real client that later
+// picked the same ID.
+func (s *Server) ignoreXID(xid dhcpv4.TransactionID) func() {
+	s.mu.Lock()
+	if s.ignored == nil {
+		s.ignored = map[dhcpv4.TransactionID]bool{}
+	}
+	s.ignored[xid] = true
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.ignored, xid)
+		s.mu.Unlock()
+	}
+}
+
+func (s *Server) isIgnored(xid dhcpv4.TransactionID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ignored[xid]
 }
 
 func New(o Options) *Server {
@@ -195,6 +241,11 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	if mac == "" {
 		return
 	}
+	// Our own conflict probe. Answering it would make this server
+	// indistinguishable from one sharing the host; see ProbeForeign.
+	if s.isIgnored(m.TransactionID) {
+		return
+	}
 	switch m.MessageType() {
 	case dhcpv4.MessageTypeDiscover:
 		s.offer(conn, peer, m, mac)
@@ -209,6 +260,18 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	case dhcpv4.MessageTypeDecline:
 		ip, ok := netip.AddrFromSlice(m.RequestedIPAddress())
 		if !ok || !s.opts.Alloc.Decline(mac, ip.Unmap()) {
+			// An OFFER only promises a reservation, it does not lease it, so
+			// Decline refuses the one case an operator most needs to hear:
+			// something else on the segment already answers to that address.
+			// ponytail: the spec says a DECLINE quarantines like a probe hit.
+			// It cannot here — rule 1 ignores the quarantine list, so a
+			// quarantine would change nothing — so this logs instead. Revisit
+			// when Task 4 has a status payload to hang it on.
+			if r, reserved := s.opts.Alloc.reservationFor(mac); reserved && r == ip.Unmap() {
+				s.opts.Logger.Warn("a reserved address is already in use by another device; check the reservation",
+					"mac", mac, "ip", ip.Unmap())
+				return
+			}
 			s.opts.Logger.Warn("ignoring a decline for an address this client does not hold",
 				"mac", mac, "ip", ip.Unmap())
 			return
@@ -386,10 +449,9 @@ func toIPs(as []netip.Addr) []net.IP {
 }
 
 // normalizeMAC is the one form a MAC is stored and compared in. It parses so
-// that a reservation typed with dashes, without zero-padding, or with no
-// separators at all still compares equal to what ClientHWAddr.String()
-// produces; a MAC that does not parse falls back to a trimmed, lowercased
-// copy rather than being dropped.
+// that a reservation typed with dashes or with no separators at all still
+// compares equal to what ClientHWAddr.String() produces; a MAC that does not
+// parse falls back to a trimmed, lowercased copy rather than being dropped.
 func normalizeMAC(s string) string {
 	s = strings.TrimSpace(s)
 	if hw, err := net.ParseMAC(s); err == nil {

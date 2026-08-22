@@ -1,11 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"net/netip"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +82,14 @@ func TestDHCPConfigEqualCoversEveryBuildInput(t *testing.T) {
 	if !dhcpConfigEqual(base, other) {
 		t.Error("an unrelated setting restarts the listener")
 	}
+	// build reads this one, but it gates the start rather than shaping the
+	// listener: flipping it must not restart a server that is already serving.
+	// A refused start retries regardless, because nothing is running to skip.
+	other = base
+	other.DHCPAllowForeign = true
+	if !dhcpConfigEqual(base, other) {
+		t.Error("the foreign-server override restarts a listener it cannot change")
+	}
 }
 
 // newTestRunner builds a runner with a real poller and no listener. Nothing
@@ -86,9 +97,10 @@ func TestDHCPConfigEqualCoversEveryBuildInput(t *testing.T) {
 func newTestRunner(role Role) (*dhcpRunner, *discovery.Poller) {
 	p := discovery.NewPoller(nil, time.Hour, nil, slog.New(slog.DiscardHandler))
 	return &dhcpRunner{
-		poller: p,
-		logger: slog.New(slog.DiscardHandler),
-		role:   func() Role { return role },
+		poller:   p,
+		logger:   slog.New(slog.DiscardHandler),
+		role:     func() Role { return role },
+		services: func() ([]store.Service, error) { return nil, nil },
 	}, p
 }
 
@@ -175,9 +187,10 @@ func TestPromotionReconcilesDHCP(t *testing.T) {
 	roleHolder := NewRoleHolder(RoleReplica)
 	p := discovery.NewPoller(nil, time.Hour, nil, slog.New(slog.DiscardHandler))
 	d := &dhcpRunner{
-		poller: p,
-		logger: slog.New(slog.DiscardHandler),
-		role:   roleHolder.Current,
+		poller:   p,
+		logger:   slog.New(slog.DiscardHandler),
+		role:     roleHolder.Current,
+		services: func() ([]store.Service, error) { return nil, nil },
 	}
 	// No such interface, so the reconcile refuses at Qualifies before any
 	// socket is opened. That refusal is the observable proof it ran at all: a
@@ -392,5 +405,636 @@ func TestReSavingTheWorkingConfigClearsTheStaleError(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("Status reports %v beside a listener that is running the configuration just saved", err)
+	}
+}
+
+func TestForeignServerErrorNamesTheOtherServer(t *testing.T) {
+	err := &ForeignServerError{Found: []dhcpd.Foreign{{
+		ServerID: netip.MustParseAddr("192.168.1.1"),
+		Offered:  netip.MustParseAddr("192.168.1.64"),
+	}}}
+	msg := err.Error()
+	if !strings.Contains(msg, "192.168.1.1") {
+		t.Fatalf("error %q does not name the other server; an operator cannot act on it", msg)
+	}
+	if !strings.Contains(msg, "192.168.1.64") {
+		t.Fatalf("error %q does not say what was offered", msg)
+	}
+}
+
+func TestForeignServerIsFatalUnlessOverridden(t *testing.T) {
+	found := []dhcpd.Foreign{{
+		ServerID: netip.MustParseAddr("192.168.1.1"),
+		Offered:  netip.MustParseAddr("192.168.1.64"),
+	}}
+	if err := foreignVerdict(found, nil, false); err == nil {
+		t.Fatal("a foreign DHCP server was accepted without an override")
+	}
+	if err := foreignVerdict(found, nil, true); err != nil {
+		t.Fatalf("the override did not take: %v", err)
+	}
+	if err := foreignVerdict(nil, nil, false); err != nil {
+		t.Fatalf("a clear probe was treated as a failure: %v", err)
+	}
+	if err := foreignVerdict(nil, errors.New("probe socket: address in use"), false); err == nil {
+		t.Fatal("a probe that could not run was treated as a clear")
+	}
+	if err := foreignVerdict(nil, errors.New("probe socket: address in use"), true); err != nil {
+		t.Fatalf("the override did not cover a probe that could not run: %v", err)
+	}
+}
+
+// The override is what an operator whose own DHCP client holds :68 has to
+// reach for, so it has to survive the whole build path, not just the verdict.
+func TestBuildStartsWithTheOverrideOn(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return []dhcpd.Foreign{{
+			ServerID: netip.MustParseAddr("192.168.1.1"),
+			Offered:  netip.MustParseAddr("192.168.1.64"),
+		}}, errors.New("probe socket: address in use")
+	})
+	v := buildableSettings()
+	v.DHCPAllowForeign = true
+	if _, err := d.build(v, true); err != nil {
+		t.Fatalf("build refused with the override on: %v", err)
+	}
+}
+
+// The periodic probe warns and populates the banner. It never stops the
+// listener: pulling DHCP out from under a working network over one transient
+// answer is worse than the conflict it reacts to.
+func TestThePeriodicProbeWarnsAndLeavesTheListenerUp(t *testing.T) {
+	d, p := newTestRunner(RoleStandalone)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	d.poller.SetSource(d.running)
+
+	found := []dhcpd.Foreign{{
+		ServerID: netip.MustParseAddr("192.168.1.1"),
+		Offered:  netip.MustParseAddr("192.168.1.64"),
+	}}
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return found, nil
+	})
+
+	running, err := d.Status()
+	if !running {
+		t.Fatal("the periodic probe took a working listener down")
+	}
+	if err != nil {
+		t.Errorf("the periodic probe reported %v as a start failure", err)
+	}
+	if !p.Enabled() {
+		t.Error("the periodic probe withdrew the lease source from DNS")
+	}
+	if got := d.Foreign(); len(got) != 1 || got[0].ServerID != found[0].ServerID {
+		t.Fatalf("Foreign() = %+v, want the other server for the banner", got)
+	}
+}
+
+// R22 again: a probe that could not run is not a clear segment, so it must
+// not blank a banner that is reporting a real conflict.
+func TestAFailedPeriodicProbeIsNotReportedAsClear(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	found := []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return found, nil
+	})
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, errors.New("probe socket: address in use")
+	})
+	if got := d.Foreign(); len(got) != 1 {
+		t.Fatalf("Foreign() = %+v after a probe that could not run, want the last known conflict kept", got)
+	}
+}
+
+// Foreign() feeds a JSON payload the API builds without the lock. Handing out
+// the runner's own slice would let that read race the next probe's write.
+func TestForeignReturnsACopy(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.checkForeign(context.Background(), func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		return []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}, nil
+	})
+	got := d.Foreign()
+	got[0].ServerID = netip.MustParseAddr("10.0.0.1")
+	if d.Foreign()[0].ServerID.String() != "192.168.1.1" {
+		t.Fatal("Foreign() hands out the runner's own slice")
+	}
+}
+
+// A watch that outlived its listener would go on probing a segment we no
+// longer serve, and a banner that outlived it would accuse the operator of a
+// conflict with a server that is no longer running.
+func TestStoppingTheListenerEndsTheWatchAndClearsTheBanner(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	stopped := false
+	d.stopWatch = func() { stopped = true }
+	d.foreign = []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}
+
+	d.Reconcile(store.Settings{})
+
+	if !stopped {
+		t.Error("the periodic probe outlived the listener it was checking on")
+	}
+	if got := d.Foreign(); got != nil {
+		t.Errorf("Foreign() = %+v after the listener stopped, want nothing to show", got)
+	}
+}
+
+func TestWatchForeignStopsWithItsContext(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		d.watchForeign(ctx, func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+			t.Error("the probe ran after the listener stopped")
+			return nil, nil
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchForeign outlived its context, so it keeps probing a segment we no longer serve")
+	}
+}
+
+// The watch is cancelled while a probe is already in flight on every stop, so
+// its result must not land on a runner that has already let the listener go.
+func TestAProbeInFlightWhenTheListenerStopsDoesNotRepopulateTheBanner(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	ctx, cancel := context.WithCancel(context.Background())
+	d.stopWatch = cancel
+
+	d.checkForeign(ctx, func(context.Context, time.Duration) ([]dhcpd.Foreign, error) {
+		d.Reconcile(store.Settings{}) // the listener goes down mid-probe
+		return []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}, nil
+	})
+
+	if got := d.Foreign(); got != nil {
+		t.Fatalf("Foreign() = %+v, want nothing: the listener it described is gone", got)
+	}
+}
+
+// Revoking the override cannot take down a listener that is already serving
+// the LAN — the same reasoning that keeps the periodic probe from doing it —
+// but the save takes the unchanged-config early return, so without a line in
+// the log an operator who has just found a server they do not trust gets no
+// answer at all.
+func TestRevokingTheOverrideWhileRunningSaysSo(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	var log bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&log, nil))
+	on := buildableSettings()
+	on.DHCPAllowForeign = true
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = on
+	d.poller.SetSource(d.running)
+
+	off := on
+	off.DHCPAllowForeign = false
+	d.Reconcile(off)
+
+	if running, err := d.Status(); !running || err != nil {
+		t.Fatalf("revoking the override: running=%v err=%v, want the listener left alone", running, err)
+	}
+	if !strings.Contains(log.String(), "override") {
+		t.Errorf("revoking the override logged nothing: %q", log.String())
+	}
+	if !strings.Contains(log.String(), "restart") {
+		t.Errorf("the log does not say when the change takes effect: %q", log.String())
+	}
+
+	// Once per transition: every later save of the same settings is silent.
+	log.Reset()
+	d.Reconcile(off)
+	if log.Len() != 0 {
+		t.Errorf("an unrelated later save logged the transition again: %q", log.String())
+	}
+}
+
+// stopLocked must not reach the watch through running: the two are set in the
+// same critical section today, so an early return that skips the cancel is
+// latent rather than live, and latent-until-it-isn't leaks a goroutine
+// probing a segment we no longer serve.
+func TestStopLockedCancelsTheWatchWithNoListener(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	stopped := false
+	d.stopWatch = func() { stopped = true }
+	d.foreign = []dhcpd.Foreign{{ServerID: netip.MustParseAddr("192.168.1.1")}}
+
+	d.mu.Lock()
+	d.stopLocked()
+	d.mu.Unlock()
+
+	if !stopped {
+		t.Error("stopLocked left the watch running because no listener was set")
+	}
+	if d.stopWatch != nil {
+		t.Error("stopLocked left a spent cancel behind")
+	}
+	if got := d.Foreign(); got != nil {
+		t.Errorf("Foreign() = %+v after stopLocked, want nothing to show", got)
+	}
+}
+
+// ranWithin reports whether fn returned, so a lock taken twice fails a test
+// rather than hanging it.
+func ranWithin(fn func()) bool {
+	done := make(chan struct{})
+	go func() { defer close(done); fn() }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(5 * time.Second):
+		return false
+	}
+}
+
+// reservedRunner is a runner holding a listener's allocator without a socket:
+// everything reservations touch is reachable without a bind.
+func reservedRunner(svcs []store.Service) (*dhcpRunner, *dhcpd.Allocator) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	info, _ := fakeIface("eth0")
+	alloc := dhcpd.NewAllocator(dhcpd.Config{
+		Subnet:    info.Subnet,
+		Start:     netip.MustParseAddr("192.168.1.100"),
+		End:       netip.MustParseAddr("192.168.1.200"),
+		Host:      info.Addr,
+		Gateway:   netip.MustParseAddr("192.168.1.1"),
+		LeaseTime: time.Hour,
+	}, time.Now)
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = buildableSettings()
+	d.alloc, d.subnet = alloc, info.Subnet
+	d.services = func() ([]store.Service, error) { return svcs, nil }
+	return d, alloc
+}
+
+// The lock rules pull against each other: Reconcile holds d.mu for its whole
+// body, and the refresh reads the store, which must not run under it. Both
+// are checked here because getting either wrong hangs the daemon at boot.
+func TestReconcileRefreshesReservationsWithoutHoldingItsLock(t *testing.T) {
+	d, alloc := reservedRunner([]store.Service{{
+		Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}})
+	svcs := d.services
+	d.services = func() ([]store.Service, error) {
+		// Status takes d.mu. Held across a database query, the whole UI
+		// would block for the length of it.
+		if !ranWithin(func() { d.Status() }) {
+			t.Error("Status blocked while the service list was being read")
+		}
+		return svcs()
+	}
+
+	if !ranWithin(func() { d.Reconcile(d.current) }) {
+		t.Fatal("Reconcile never returned; d.mu was taken twice")
+	}
+
+	l, ok := alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.20") {
+		t.Fatalf("the reserved client got %v (ok=%v), want its reservation", l.IP, ok)
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Errorf("Problems() = %+v, want none", p)
+	}
+}
+
+// Reason is shown verbatim, so an inactive reservation has to tell the
+// operator what to do about it.
+func TestUnresolvedReservationsAreReportedForTheUI(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "offsite", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "10.9.0.20"}},
+	}})
+	d.RefreshReservations()
+
+	got := d.Problems()
+	if len(got) != 1 || got[0].Service != "offsite" || got[0].Reason == "" {
+		t.Fatalf("Problems() = %+v, want one entry naming offsite with a reason", got)
+	}
+	got[0].Service = "mutated"
+	if d.Problems()[0].Service != "offsite" {
+		t.Error("Problems() hands out the live report, so a caller can corrupt it")
+	}
+}
+
+// The store read runs outside d.mu, so a stop can land in the middle of one.
+// Publishing afterwards would show problems for a server no longer serving.
+func TestAStopDuringARefreshDoesNotRepublishTheProblems(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "offsite", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "10.9.0.20"}},
+	}})
+	svcs, reads := d.services, 0
+	d.services = func() ([]store.Service, error) {
+		reads++
+		if reads == 1 {
+			// Only on the outermost read: Reconcile reads the list too, to
+			// seed the listener it may build, and re-entering on that one
+			// would recurse forever without testing anything.
+			d.Reconcile(store.Settings{}) // dhcp turned off mid-read
+		}
+		return svcs()
+	}
+
+	if !ranWithin(func() { d.RefreshReservations() }) {
+		t.Fatal("the refresh never returned")
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Fatalf("Problems() = %+v after the listener stopped, want none", p)
+	}
+	// Nothing is running, so there is nothing to reserve for and no reason to
+	// go back to the database.
+	settled := reads
+	d.RefreshReservations()
+	if reads != settled {
+		t.Fatalf("the service list was read again; a stopped runner still queries")
+	}
+}
+
+// The staleness re-check has two halves for two different reasons the running
+// listener can move under a refresh. This isolates the alloc half: reconcile
+// (the locked half of Reconcile) clears d.alloc on a stop but never touches
+// gen - only the public Reconcile's trailing RefreshReservations bumps that -
+// so a stop landing mid-read must be caught by alloc alone, with gen equal
+// throughout.
+func TestTheAllocGuardCatchesAStopThatGenAloneWouldMiss(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "offsite", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "10.9.0.20"}},
+	}})
+	svcs := d.services
+	d.services = func() ([]store.Service, error) {
+		// The locked reconcile, not the public Reconcile: it never calls
+		// RefreshReservations, so gen stays exactly where this refresh
+		// captured it.
+		d.reconcile(store.Settings{}, RoleStandalone, nil, nil)
+		return svcs()
+	}
+
+	if !ranWithin(func() { d.RefreshReservations() }) {
+		t.Fatal("the refresh never returned")
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Fatalf("Problems() = %+v after the listener stopped, want none", p)
+	}
+}
+
+// A registry write refreshes while the UI reads. -race is the point of this
+// one; it passes trivially without it.
+func TestRefreshReservationsIsSafeAlongsideTheUIReads(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(3)
+		go func() { defer wg.Done(); d.RefreshReservations() }()
+		go func() { defer wg.Done(); d.Problems() }()
+		go func() { defer wg.Done(); d.Status() }()
+	}
+	wg.Wait()
+}
+
+// Two registry writes overlap: registry.onChange is not serialized, so a
+// refresh that started first can finish last. Without a sequence number the
+// older service list is published on top of the newer one and sticks there
+// until the next write.
+func TestAnOverlappingRefreshNeverPublishesTheOlderList(t *testing.T) {
+	d, alloc := reservedRunner(nil)
+	older := []store.Service{
+		{Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "offsite", MAC: "11:22:33:44:55:66",
+			Addresses: []store.Address{{Address: "10.9.0.20"}}},
+	}
+	newer := []store.Service{{Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.21"}}}}
+
+	var first sync.Once
+	entered, release := make(chan struct{}), make(chan struct{})
+	d.services = func() ([]store.Service, error) {
+		oldest := false
+		first.Do(func() { oldest = true })
+		if !oldest {
+			return newer, nil
+		}
+		close(entered)
+		<-release // the second refresh overtakes while this one is reading
+		return older, nil
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); d.RefreshReservations() }()
+	<-entered
+	d.RefreshReservations() // runs start to finish with the newer list
+	close(release)
+	<-done
+
+	l, ok := alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.21") {
+		t.Fatalf("the client got %v (ok=%v); the service was moved to .21", l.IP, ok)
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Fatalf("Problems() = %+v, want none: offsite is gone from the newer list", p)
+	}
+}
+
+// serve.go never sets d.start; a real node relies entirely on the nil default
+// resolving to the real bind. Calling it would open :67, which no test here
+// may do, so this checks function identity instead - the same technique
+// proves the default without ever dialing a socket.
+func TestANilStartHookDefaultsToTheRealListener(t *testing.T) {
+	d := &dhcpRunner{}
+	got := reflect.ValueOf(d.effectiveStart()).Pointer()
+	want := reflect.ValueOf(startListener).Pointer()
+	if got != want {
+		t.Fatal("a nil start hook did not default to startListener; every DHCP-enabled node would panic at boot")
+	}
+}
+
+// The one line the feature hangs on: Reconcile records the allocator it just
+// built, and only after the listener binds. Recorded earlier, stopLocked wipes
+// it; recorded nowhere, every reservation is silently inactive and the suite
+// stays green. Start is injected because reaching that line otherwise takes
+// :67, which no test here may hold.
+func TestASuccessfulReconcileArmsTheNewAllocator(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	d.start = func(built) error { return nil }
+	d.services = func() ([]store.Service, error) {
+		// Spelled as a legacy row: normalizing is what makes the wire find it.
+		return []store.Service{{Name: "kypost", MAC: "AA-BB-CC-DD-EE-FF",
+			Addresses: []store.Address{{Address: "192.168.1.20"}}}}, nil
+	}
+	d.Reconcile(buildableSettings())
+	t.Cleanup(func() { d.Reconcile(store.Settings{}) })
+
+	running, err := d.Status()
+	if !running || err != nil {
+		t.Fatalf("Status() = %v, %v; want a running listener and no reason", running, err)
+	}
+	if d.alloc == nil || d.subnet != netip.MustParsePrefix("192.168.1.0/24") {
+		t.Fatalf("alloc=%v subnet=%v; the listener's allocator was not recorded", d.alloc, d.subnet)
+	}
+	l, ok := d.alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.20") {
+		t.Fatalf("the reserved client got %v (ok=%v), want its reservation", l.IP, ok)
+	}
+}
+
+// The socket answers the first DISCOVER the instant it is open. Reservations
+// that land afterwards leave a window where a stranger is handed a reserved
+// address - and after a power cut the whole segment DISCOVERs at once, which
+// is exactly when this reconcile runs.
+func TestTheAllocatorIsArmedBeforeTheListenerBinds(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	// Inside the pool, so an unarmed allocator would hand it straight out.
+	reserved := netip.MustParseAddr("192.168.1.100")
+	d.services = func() ([]store.Service, error) {
+		return []store.Service{{Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Addresses: []store.Address{{Address: reserved.String()}}}}, nil
+	}
+	var atBind netip.Addr
+	d.start = func(b built) error {
+		// The first DISCOVER on the socket this call is about to open.
+		l, _, _ := b.alloc.Offer("99:99:99:99:99:99", netip.Addr{}, time.Minute)
+		atBind = l.IP
+		return nil
+	}
+	d.Reconcile(buildableSettings())
+	t.Cleanup(func() { d.Reconcile(store.Settings{}) })
+
+	if atBind == reserved {
+		t.Fatalf("the first DISCOVER after the bind was offered %v, which is kypost's reservation", atBind)
+	}
+}
+
+// The seed read is what arms a listener before it binds. Continuing with an
+// empty list would bind an allocator that hands a reserved address to whoever
+// DISCOVERs first, report running with no error, and show nothing on the tab -
+// and nothing retries until the next save. Refusing is what every other
+// unmeetable precondition in build does.
+func TestASeedReadErrorRefusesToStart(t *testing.T) {
+	d, p := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	var bound bool
+	d.start = func(built) error { bound = true; return nil }
+	d.services = func() ([]store.Service, error) {
+		return nil, errors.New("service 7: not found")
+	}
+
+	d.Reconcile(buildableSettings())
+
+	if bound {
+		t.Fatal("the listener bound with no reservations after the service list could not be read")
+	}
+	running, err := d.Status()
+	if running || err == nil {
+		t.Fatalf("Status() = %v, %v; want refused with a reason", running, err)
+	}
+	if !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "service list") {
+		t.Errorf("the refusal does not say what could not be read: %v", err)
+	}
+	if p.Enabled() {
+		t.Error("a refused build published a lease source")
+	}
+}
+
+// The same read failing while a listener is already serving must not take it
+// down: its allocator is already armed, and a store hiccup is not a reason to
+// stop answering the LAN.
+func TestASeedReadErrorLeavesTheRunningListenerAlone(t *testing.T) {
+	d, _ := reservedRunner(nil)
+	d.services = func() ([]store.Service, error) {
+		return nil, errors.New("service 7: not found")
+	}
+	armed := d.alloc
+	// reservedRunner leaves start nil, which is the real bind: pinned here so
+	// a regression fails the test rather than reaching for :67.
+	d.start = func(built) error {
+		t.Error("a build refused for want of the service list replaced the running listener")
+		return nil
+	}
+
+	// A changed config, so this is the rebuild path rather than the early
+	// return: that is the path that could have stopped it.
+	v := d.current
+	v.DHCPRangeEnd = "192.168.1.150"
+	d.Reconcile(v)
+
+	if running, _ := d.Status(); !running {
+		t.Fatal("a failed service read stopped a listener that was serving the LAN")
+	}
+	if d.alloc != armed {
+		t.Error("the running listener's allocator was replaced by a build that refused")
+	}
+}
+
+// A node with DHCP off must not pay for a service query on every settings
+// save, and the role is read once so a promotion landing mid-Reconcile cannot
+// let the skip seed a starting listener with nothing.
+func TestReconcileDoesNotReadTheServicesWhenDHCPIsOff(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.services = func() ([]store.Service, error) {
+		t.Fatal("the service list was read on a node with DHCP off")
+		return nil, nil
+	}
+	d.Reconcile(store.Settings{})
+}
+
+// The refresh read is the other half: it must never publish on an error, or
+// the allocator loses the reservations it is already serving.
+func TestARefreshReadErrorLeavesTheArmedReservationsAlone(t *testing.T) {
+	d, alloc := reservedRunner([]store.Service{{
+		Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}})
+	d.RefreshReservations()
+	d.services = func() ([]store.Service, error) { return nil, errors.New("database is locked") }
+	d.RefreshReservations()
+
+	l, ok := alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.20") {
+		t.Fatalf("the reserved client got %v (ok=%v) after a failed refresh, want its reservation", l.IP, ok)
+	}
+}
+
+// The override is not a build input, so granting it while running takes the
+// unchanged-config early return. If that return does not record it, d.current
+// still says false and the later revocation - the one an operator makes after
+// finding a server they do not trust - says nothing at all.
+func TestGrantingTheOverrideWhileRunningIsStillRecorded(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	var log bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&log, nil))
+	off := buildableSettings()
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = off
+	d.poller.SetSource(d.running)
+
+	on := off
+	on.DHCPAllowForeign = true
+	d.Reconcile(on) // granted while running
+
+	log.Reset()
+	d.Reconcile(off) // and revoked again
+	if !strings.Contains(log.String(), "override") {
+		t.Errorf("revoking an override granted while running logged nothing: %q", log.String())
 	}
 }

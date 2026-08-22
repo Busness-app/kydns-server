@@ -42,6 +42,18 @@ Applied live on save:
 server landed: the poller's source became swappable, which is what both
 features needed.
 
+That server's own keys joined the same table at the same time —
+`dhcp_enabled`, `dhcp_interface`, `dhcp_range_start`, `dhcp_range_end`,
+`dhcp_gateway`, `dhcp_lease_seconds`, `dhcp_secondary_dns`,
+`dhcp_allow_foreign` — and apply live too: `apply` reconciles the listener,
+which starts, stops, or rebinds it. They are node-local, like
+`dhcp_lease_file`, `discovery.interval`, and the two log flags:
+`store.ApplySnapshot` reads every one of them back out of the row it is
+replacing, so a pull from a primary can never carry them. The practical
+consequence is that a replica has no supported way to configure DHCP at all —
+the API, the CLI, and the web forms all refuse writes on a replica — so a
+standby is configured after promotion, not before.
+
 `private_domain` is applied live too: `Apply` renames the zone everywhere,
 including every manual record, behind a two-step confirmation. Nothing
 requires a restart today, which is why the restart banner has no keys left
@@ -199,17 +211,17 @@ kept for the first key that needs it again.
 ## API and CLI
 
 - `GET /api/v1/settings` — the effective settings as JSON.
-- `PUT /api/v1/settings` — a **partial** document. Fields are pointers;
+- `PATCH /api/v1/settings` — a **partial** document. Fields are pointers;
   absent keys are unchanged.
 
-Partial PUT makes `kydns settings set ttl=120` a single request rather
+A partial PATCH makes `kydns settings set ttl=120` a single request rather
 than a read-modify-write that could clobber a concurrent edit from the
 UI. The web form posts every field, so it is unaffected.
 
 CLI: `kydns settings get` prints effective values; `kydns settings set
-key=value ...` sends one partial PUT.
+key=value ...` sends one partial PATCH.
 
-Settings join the export document in `snapshotDoc`, so a backup is
+Settings join the export document, `transfer`, so a backup is
 complete, and are accepted on import.
 
 ## Web UI
@@ -246,7 +258,7 @@ tells the operator to edit the config file. It becomes a pointer to the
   serving.
 - Seeding: a fresh database seeds from YAML; a second start with a
   changed YAML does not overwrite the stored values.
-- `internal/adminapi`: partial PUT leaves absent fields alone; a public
+- `internal/adminapi`: a partial PATCH leaves absent fields alone; a public
   prefix without confirmation is rejected; export and re-import
   round-trips settings.
 - `internal/config/example_test.go` is updated for the reduced file and

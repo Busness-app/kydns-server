@@ -33,7 +33,7 @@ type API struct {
 	policy          *policy.Service
 	settings        *settings.Service
 	metrics         *dnsserver.Metrics
-	dhcpStatus      func() (bool, error)
+	dhcp            DHCPRunner
 	replicaStatus   func() ReplicaStatus
 	replicaAdmin    ReplicaAdmin
 	replicaJoiner   ReplicaJoiner
@@ -127,6 +127,11 @@ type serviceDTO struct {
 	CheckInsecure bool         `json:"check_insecure,omitempty" yaml:"check_insecure,omitempty"`
 	ProxyAddress  string       `json:"proxy_address,omitempty" yaml:"proxy_address,omitempty"`
 	RouteViaProxy bool         `json:"route_via_proxy,omitempty" yaml:"route_via_proxy,omitempty"`
+	// MAC is the DHCP reservation. The yaml tag matches its lowercased Go
+	// name already, so it is not load-bearing for this field specifically —
+	// it stays for consistency with every sibling field, and as insurance
+	// if MAC is ever renamed to something whose lowercase differs from json.
+	MAC string `json:"mac,omitempty" yaml:"mac,omitempty"`
 }
 
 type recordDTO struct {
@@ -168,22 +173,32 @@ func (a *API) Handler() http.Handler {
 	return a.WriteGate(mux)
 }
 
-// The three writes a replica must still accept. Promote is the operator's
-// deliberate escape from being a replica; the two pairing calls are how a
-// node becomes one. Everything else a replica accepts would be silently
-// overwritten by the primary on the next pull.
+// The writes a replica must still accept. Promote is the operator's deliberate
+// escape from being a replica; the two pairing calls are how a node becomes
+// one. Everything else a replica accepts would be silently overwritten by the
+// primary on the next pull.
 const (
 	PathReplicaPairPeek = "/api/v1/replica/pair/peek"
 	PathReplicaJoin     = "/api/v1/replica/join"
 	PathReplicaPromote  = "/api/v1/replica/promote"
+	PathSettings        = "/api/v1/settings"
 )
 
 // writeExempt is the whole exemption list, shared with route registration so
 // renaming a route cannot silently un-exempt it.
+//
+// PathSettings is exempt because the DHCP settings are node-local: no cv_
+// trigger names a dhcp_ column and ApplySnapshot re-reads all eight out of the
+// local row, so a pull cannot discard them, and refusing them left an operator
+// unable to prepare a standby. What that reaches is not the settings row but
+// settings.Service, which on a replica refuses any write touching a field
+// outside the eight - a partial update naming one DHCP key and one other is
+// refused whole, with ErrReadOnlyReplica.
 var writeExempt = map[string]bool{
 	PathReplicaPairPeek: true,
 	PathReplicaJoin:     true,
 	PathReplicaPromote:  true,
+	PathSettings:        true,
 }
 
 // authenticated is the one bearer-token check, shared so the write gate and
@@ -240,6 +255,7 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("GET /api/v1/leases", auth(a.listLeases))
 	mux.HandleFunc("POST /api/v1/leases/{ip}/promote", auth(a.promoteLease))
 	mux.HandleFunc("GET /api/v1/dhcp/status", auth(a.getDHCPStatus))
+	mux.HandleFunc("GET /api/v1/dhcp/suggest", auth(a.dhcpSuggest))
 	mux.HandleFunc("GET /api/v1/health", auth(a.listHealth))
 	mux.HandleFunc("GET /api/v1/stats", auth(a.stats))
 	mux.HandleFunc("POST /api/v1/cache/flush", auth(a.flushCache))
@@ -256,8 +272,8 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("DELETE /api/v1/blacklists/rules/{kind}/{id}", auth(a.deleteBlacklistRule))
 	mux.HandleFunc("GET /api/v1/blacklists/test", auth(a.testBlacklist))
 
-	mux.HandleFunc("GET /api/v1/settings", auth(a.getSettings))
-	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
+	mux.HandleFunc("GET "+PathSettings, auth(a.getSettings))
+	mux.HandleFunc("PATCH "+PathSettings, auth(a.patchSettings))
 
 	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
 
@@ -305,13 +321,46 @@ func (a *API) WriteGate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		where := st.PrimaryAddr
-		if where == "" {
-			where = "its primary"
-		}
 		writeErr(w, http.StatusConflict, "read_only_replica", "",
-			"this node is a read-only replica; make this change on "+where)
+			"this node is a read-only replica; "+makeThisChangeOn(st.managedBy()))
 	})
+}
+
+// managedBy names the box to make the change on.
+func (s ReplicaStatus) managedBy() string {
+	if s.PrimaryAddr == "" {
+		return "its primary"
+	}
+	return s.PrimaryAddr
+}
+
+// makeThisChangeOn is the one sentence a refused write ends with, wherever the
+// refusal was decided. The gate says it for every non-exempt route; the
+// settings handler says it for the route the DHCP exemption moved outside the
+// gate, so an operator reads the same instruction either way.
+func makeThisChangeOn(where string) string { return "make this change on " + where }
+
+// ManagedOn is that sentence as a clause to append to a refusal decided past
+// the gate, and empty when no address is known: those refusals already end
+// "on its primary", so the placeholder would only say it twice. Exported
+// because the web transport appends the same clause, and a copy of the wording
+// there could drift from this one unnoticed.
+func ManagedOn(primaryAddr string) string {
+	if primaryAddr == "" {
+		return ""
+	}
+	return "; " + makeThisChangeOn(primaryAddr)
+}
+
+// primaryAddr is this node's primary's address, for a handler refusing a write
+// the gate let past, and empty when there is none or it is not yet known. It
+// reads the status per call, the way the gate does, so promotion is followed
+// without a restart.
+func (a *API) primaryAddr() string {
+	if a.replicaStatus == nil {
+		return ""
+	}
+	return a.replicaStatus().PrimaryAddr
 }
 
 func (a *API) getReplicaStatus(w http.ResponseWriter, _ *http.Request) {
@@ -401,7 +450,7 @@ func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 func toServiceDTO(s store.Service) serviceDTO {
 	d := serviceDTO{
 		ID: s.ID, Name: s.Name, Aliases: s.Aliases, CheckURL: s.CheckURL, CheckInsecure: s.CheckInsecure,
-		ProxyAddress: s.ProxyAddress, RouteViaProxy: s.RouteViaProxy,
+		ProxyAddress: s.ProxyAddress, RouteViaProxy: s.RouteViaProxy, MAC: s.MAC,
 	}
 	for _, a := range s.Addresses {
 		d.Addresses = append(d.Addresses, addressDTO{Address: a.Address, View: a.View})
@@ -412,7 +461,7 @@ func toServiceDTO(s store.Service) serviceDTO {
 func fromServiceDTO(d serviceDTO) store.Service {
 	s := store.Service{
 		ID: d.ID, Name: d.Name, Aliases: d.Aliases, CheckURL: d.CheckURL, CheckInsecure: d.CheckInsecure,
-		ProxyAddress: d.ProxyAddress, RouteViaProxy: d.RouteViaProxy,
+		ProxyAddress: d.ProxyAddress, RouteViaProxy: d.RouteViaProxy, MAC: d.MAC,
 	}
 	for _, a := range d.Addresses {
 		s.Addresses = append(s.Addresses, store.Address{Address: a.Address, View: a.View})
@@ -740,7 +789,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 	// only checks; nothing is written or applied until applySettingsDoc below.
 	if doc.Settings != nil && a.settings != nil {
 		if err := a.settings.CheckWrite(fromSettingsDTO(*doc.Settings), ""); err != nil {
-			writeSettingsErr(w, err)
+			a.writeSettingsErr(w, err)
 			return
 		}
 	}
@@ -767,7 +816,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := a.applySettingsDoc(doc.Settings); err != nil {
-			writeSettingsErr(w, err)
+			a.writeSettingsErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "replace"})
@@ -797,7 +846,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.applySettingsDoc(doc.Settings); err != nil {
-		writeSettingsErr(w, err)
+		a.writeSettingsErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mode": "merge"})

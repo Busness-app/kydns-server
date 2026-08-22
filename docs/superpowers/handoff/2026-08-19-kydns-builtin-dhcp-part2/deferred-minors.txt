@@ -1,0 +1,8 @@
+146:Task 1: minor (deferred): `ProbeForeign`'s own body is uncovered — tests drive `detectForeign`
+186:Task 2: minor (deferred): uniqueness is checked in a separate transaction from the write, with no lock
+192:Task 2: minor (deferred): the new migration test is a third fixture where extending
+297:Task 2b: minor (deferred): the guard's returned Lease has its IP pinned but not its Hostname/Expires —
+518:Task 5: minor (deferred): a dropped MAC is not announced to the operator; there is no flash-message
+520:Task 5: minor (deferred): Enter in the settings form runs the wizard rather than Save, because the
+522:Task 5: minor (deferred): Reserve creates but never updates, so a name collision reports "duplicate
+573:Task 6: minor (deferred): SECURITY.md:37-41 says "only the exceptions are" and enumerates six, but

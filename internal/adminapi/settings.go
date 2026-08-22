@@ -43,6 +43,7 @@ type settingsDTO struct {
 	DHCPGateway      string `json:"dhcp_gateway" yaml:"dhcp_gateway"`
 	DHCPLeaseSeconds int    `json:"dhcp_lease_seconds" yaml:"dhcp_lease_seconds"`
 	DHCPSecondaryDNS string `json:"dhcp_secondary_dns" yaml:"dhcp_secondary_dns"`
+	DHCPAllowForeign bool   `json:"dhcp_allow_foreign" yaml:"dhcp_allow_foreign"`
 
 	// ConfirmPublic authorises one public allow_query prefix for this request
 	// only. It is never stored and never returned, and it has no yaml tag: a
@@ -68,7 +69,7 @@ func toSettingsDTO(v store.Settings) settingsDTO {
 		DHCPEnabled:   v.DHCPEnabled, DHCPInterface: v.DHCPInterface,
 		DHCPRangeStart: v.DHCPRangeStart, DHCPRangeEnd: v.DHCPRangeEnd,
 		DHCPGateway: v.DHCPGateway, DHCPLeaseSeconds: v.DHCPLeaseSeconds,
-		DHCPSecondaryDNS: v.DHCPSecondaryDNS,
+		DHCPSecondaryDNS: v.DHCPSecondaryDNS, DHCPAllowForeign: v.DHCPAllowForeign,
 	}
 }
 
@@ -86,7 +87,7 @@ func fromSettingsDTO(d settingsDTO) store.Settings {
 		DHCPEnabled:   d.DHCPEnabled, DHCPInterface: d.DHCPInterface,
 		DHCPRangeStart: d.DHCPRangeStart, DHCPRangeEnd: d.DHCPRangeEnd,
 		DHCPGateway: d.DHCPGateway, DHCPLeaseSeconds: d.DHCPLeaseSeconds,
-		DHCPSecondaryDNS: d.DHCPSecondaryDNS,
+		DHCPSecondaryDNS: d.DHCPSecondaryDNS, DHCPAllowForeign: d.DHCPAllowForeign,
 	}
 }
 
@@ -126,7 +127,7 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.settings.Set(fromSettingsDTO(d), d.ConfirmPublic); err != nil {
-		writeSettingsErr(w, err)
+		a.writeSettingsErr(w, err)
 		return
 	}
 	out, err := a.settings.Get()
@@ -139,11 +140,21 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request) {
 
 // writeSettingsErr turns a FieldError into the same shape every other endpoint
 // returns, so a client highlights the input without special-casing settings.
-func writeSettingsErr(w http.ResponseWriter, err error) {
+func (a *API) writeSettingsErr(w http.ResponseWriter, err error) {
 	var fe settings.FieldError
-	if errors.As(err, &fe) {
+	switch {
+	case errors.As(err, &fe):
 		writeErr(w, http.StatusBadRequest, "invalid", fe.Field, fe.Msg)
-		return
+	case errors.Is(err, settings.ErrReadOnlyReplica):
+		// The same code, status and closing sentence the write gate answers
+		// with. This endpoint is exempt from that gate so a replica can
+		// configure its own DHCP; a patch reaching past those fields is the
+		// refusal the gate would have made, and a client must not have to tell
+		// the two apart. The settings package cannot know the address, so the
+		// transport is what names it, and says nothing when it has none.
+		writeErr(w, http.StatusConflict, "read_only_replica", "",
+			err.Error()+ManagedOn(a.primaryAddr()))
+	default:
+		writeRegistryErr(w, err)
 	}
-	writeRegistryErr(w, err)
 }

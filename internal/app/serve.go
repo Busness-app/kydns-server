@@ -113,7 +113,16 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return fmt.Errorf("initial snapshot: %w", err)
 	}
 
+	// Declared before the callback so it captures the variable; it is
+	// assigned below, once the role it reads has been decided.
+	var dhcpRun *dhcpRunner
+
 	reg := registry.New(st, privateFQDN, func() error {
+		// A service's address or MAC changing changes what its reservation
+		// resolves to, so this is the same event.
+		if dhcpRun != nil {
+			dhcpRun.RefreshReservations()
+		}
 		if err := holder.Rebuild(); err != nil {
 			// The write is already committed; the old snapshot keeps serving.
 			logger.Error("snapshot rebuild failed, still serving the previous snapshot", "error", err)
@@ -215,10 +224,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// Read per Reconcile rather than captured, so a promotion starts DHCP
 	// without a restart.
-	dhcpRun := &dhcpRunner{
-		poller: poller,
-		store:  st,
-		logger: logger,
+	dhcpRun = &dhcpRunner{
+		poller:   poller,
+		store:    st,
+		logger:   logger,
+		services: st.Services,
 		onChange: func() {
 			if err := poller.Poll(ctx); err != nil {
 				logger.Warn("lease refresh after a dhcp change failed", "error", err)
@@ -234,7 +244,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		zoneHolder: holder, registry: reg, logger: logger, prevUpstreams: boot.Upstreams,
 		dhcp: dhcpRun,
 	}
-	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
+	// The role is read per write, not captured: a replica may configure its own
+	// node-local DHCP settings and nothing else, and promotion must widen that
+	// without a restart.
+	settingsSvc := settings.NewService(st, settingsHolder, live.Apply,
+		func() bool { return roleHolder.Current() == RoleReplica })
 
 	errs := make(chan error, 3)
 	repl, err := startReplication(ctx, cfg, role, st,
@@ -291,7 +305,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithSettings(settingsSvc).
 		WithMetrics(dnsSrv.Metrics()).
 		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
-		WithDHCP(dhcpRun.Status).
+		WithDHCP(dhcpRun).
 		WithReplicaAdmin(&replicaAdmin{st: st, srv: repl.srv}).
 		// Wired on every node: promotion answers "already a primary" rather than
 		// an error, and a replica must never find this endpoint missing.

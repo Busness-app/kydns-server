@@ -12,9 +12,9 @@ import (
 )
 
 // loggedIn returns a handler, server, session cookie, and CSRF token.
-func loggedIn(t *testing.T) (http.Handler, *Server, *http.Cookie, string) {
+func loggedIn(t *testing.T, tweak ...func(*Options)) (http.Handler, *Server, *http.Cookie, string) {
 	t.Helper()
-	h, srv := newWeb(t)
+	h, srv := newWeb(t, tweak...)
 	setupAndLogin(t, h)
 	c := loginCookie(t, h)
 	sess, ok := srv.o.Sessions.Get(c.Value)

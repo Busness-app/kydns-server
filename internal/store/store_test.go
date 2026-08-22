@@ -270,7 +270,8 @@ VALUES (1, 'home.arpa', '', '', '', 0, 60, 5, 3600, 300, 100, 0, 0, '', 30, 30, 
 		t.Fatalf("Settings() after migration: ok=%v err=%v", ok, err)
 	}
 	if v.DHCPEnabled || v.DHCPInterface != "" || v.DHCPRangeStart != "" ||
-		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" {
+		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" ||
+		v.DHCPAllowForeign {
 		t.Errorf("migrated DHCP settings = %+v, want the zero-value defaults", v)
 	}
 	if v.DHCPLeaseSeconds != 86400 {
@@ -302,6 +303,86 @@ VALUES ('aa:bb:cc:dd:ee:ff', '192.168.1.50', 'printer', 0, 0)`); err != nil {
 	}
 	if svcs[0].ProxyAddress != "" || svcs[0].RouteViaProxy {
 		t.Errorf("reopened row = %+v, want the new fields at their zero values", svcs[0])
+	}
+}
+
+// The real upgrade path for the dhcp_* columns. TestOpenMigratesAnOlderDatabase
+// cannot cover it: its fixture has no settings table, so schema's CREATE TABLE
+// builds the current shape before migrate runs and every dhcp ALTER is a
+// swallowed no-op. Here the table already exists in its pre-DHCP shape, so the
+// migrations are the only thing that can add the columns — and Settings()
+// names every one of them, so a missing ALTER fails Open outright and the
+// daemon does not boot.
+func TestOpenAddsTheDHCPColumnsToAnExistingSettingsTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v3.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A database at user_version 3: services and settings both exist, and no
+	// dhcp_* column does.
+	if _, err := db.Exec(`
+CREATE TABLE services (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  check_url       TEXT NOT NULL DEFAULT '',
+  check_insecure  INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch()),
+  proxy_address   TEXT NOT NULL DEFAULT '',
+  route_via_proxy INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE settings (
+  id                 INTEGER PRIMARY KEY CHECK (id = 1),
+  private_domain     TEXT NOT NULL,
+  reverse_zones      TEXT NOT NULL,
+  upstreams          TEXT NOT NULL,
+  allow_query        TEXT NOT NULL,
+  allow_tailscale    INTEGER NOT NULL,
+  ttl                INTEGER NOT NULL,
+  cache_min_ttl      INTEGER NOT NULL,
+  cache_max_ttl      INTEGER NOT NULL,
+  negative_max_ttl   INTEGER NOT NULL,
+  cache_entries      INTEGER NOT NULL,
+  log_queries        INTEGER NOT NULL,
+  log_client_ip      INTEGER NOT NULL,
+  dhcp_lease_file    TEXT NOT NULL,
+  discovery_interval INTEGER NOT NULL,
+  health_interval    INTEGER NOT NULL,
+  health_timeout     INTEGER NOT NULL,
+  health_workers     INTEGER NOT NULL
+);
+INSERT INTO settings (id, private_domain, reverse_zones, upstreams, allow_query,
+  allow_tailscale, ttl, cache_min_ttl, cache_max_ttl, negative_max_ttl,
+  cache_entries, log_queries, log_client_ip, dhcp_lease_file,
+  discovery_interval, health_interval, health_timeout, health_workers)
+VALUES (1, 'home.arpa', '', '', '', 0, 60, 5, 3600, 300, 100, 0, 0, '', 30, 30, 5, 8);
+PRAGMA user_version = 3;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on a database whose settings table predates DHCP: %v", err)
+	}
+	defer s.Close()
+
+	v, ok, err := s.Settings()
+	if err != nil || !ok {
+		t.Fatalf("Settings() after migration: ok=%v err=%v", ok, err)
+	}
+	if v.PrivateDomain != "home.arpa" {
+		t.Errorf("PrivateDomain = %q, want the pre-existing row preserved", v.PrivateDomain)
+	}
+	if v.DHCPEnabled || v.DHCPInterface != "" || v.DHCPRangeStart != "" ||
+		v.DHCPRangeEnd != "" || v.DHCPGateway != "" || v.DHCPSecondaryDNS != "" ||
+		v.DHCPAllowForeign {
+		t.Errorf("migrated DHCP settings = %+v, want the ALTER defaults", v)
+	}
+	if v.DHCPLeaseSeconds != 86400 {
+		t.Errorf("DHCPLeaseSeconds = %d, want the documented default of 86400", v.DHCPLeaseSeconds)
 	}
 }
 
@@ -400,5 +481,114 @@ func TestReplaceAllRollsBackOnFailure(t *testing.T) {
 	}
 	if len(svcs) != 1 || svcs[0].Name != "keeper" {
 		t.Fatalf("Services() after a failed replace = %+v, want only keeper untouched", svcs)
+	}
+}
+
+// Open runs schema before migrate, and every CREATE is IF NOT EXISTS, so a
+// fixture that omits the services table entirely would have it created in the
+// modern shape and prove nothing. The table has to exist in its old shape for
+// the ALTER to be the thing under test.
+func TestOpenAddsTheMACColumnToAnExistingServicesTable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v5.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+CREATE TABLE services (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL UNIQUE,
+  check_url       TEXT NOT NULL DEFAULT '',
+  check_insecure  INTEGER NOT NULL DEFAULT 0,
+  proxy_address   TEXT NOT NULL DEFAULT '',
+  route_via_proxy INTEGER NOT NULL DEFAULT 0,
+  created_at      INTEGER NOT NULL DEFAULT (unixepoch())
+);
+INSERT INTO services (id, name) VALUES (1, 'kypost');
+PRAGMA user_version = 5;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() on a database whose services table predates reservations: %v", err)
+	}
+	defer s.Close()
+
+	old, err := s.Service(1)
+	if err != nil {
+		t.Fatalf("Service(1) after migration: %v", err)
+	}
+	if old.Name != "kypost" || old.MAC != "" {
+		t.Errorf("migrated service = %+v, want the pre-existing row with no reservation", old)
+	}
+	id, err := s.PutService(Service{
+		Name: "printer", Addresses: []Address{{Address: "192.168.1.50"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	})
+	if err != nil {
+		t.Fatalf("PutService after migration: %v", err)
+	}
+	got, err := s.Service(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MAC != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("MAC = %q, want it written to and read from the migrated column", got.MAC)
+	}
+}
+
+func TestServiceMACRoundTrips(t *testing.T) {
+	s := open(t)
+	id, err := s.PutService(Service{
+		Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An update must carry the MAC too, not just the insert.
+	if _, err := s.PutService(Service{
+		ID: id, Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}},
+		MAC: "11:22:33:44:55:66",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svcs, err := s.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].MAC != "11:22:33:44:55:66" {
+		t.Fatalf("Services() = %+v, want the updated MAC", svcs)
+	}
+}
+
+// A reservation is service configuration: a promoted replica must have it, so
+// unlike the dhcp_* settings it rides the existing cv_services triggers.
+func TestServiceMACBumpsConfigVersion(t *testing.T) {
+	s := open(t)
+	id, err := s.PutService(Service{Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutService(Service{
+		ID: id, Name: "kypost", Addresses: []Address{{Address: "192.168.1.20"}},
+		MAC: "aa:bb:cc:dd:ee:ff",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after <= before {
+		t.Fatalf("config_version = %d after adding a reservation, want more than %d", after, before)
 	}
 }

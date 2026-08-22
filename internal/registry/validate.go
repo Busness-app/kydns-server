@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"strings"
 )
@@ -90,6 +91,38 @@ func ValidateName(name, privateFQDN string) error {
 func ValidateAddress(s string) error {
 	if _, err := netip.ParseAddr(s); err != nil {
 		return invalid("address", "address_invalid", "%q is not an IP address", s)
+	}
+	return nil
+}
+
+// NormalizeMAC is the one form a MAC is stored and compared in: lowercase,
+// colon-separated, which is what net.HardwareAddr renders. Its body is
+// deliberately identical to dhcpd's normalizeMAC - the two are separate only
+// because registry must not import dhcpd for one string helper - so a
+// reservation and a lease compare as plain strings. TestNormalizeMAC in each
+// package pins the agreement.
+func NormalizeMAC(s string) string {
+	s = strings.TrimSpace(s)
+	if hw, err := net.ParseMAC(s); err == nil {
+		return hw.String()
+	}
+	return strings.ToLower(s)
+}
+
+// ValidateMAC accepts an empty MAC - most services have no reservation - and
+// otherwise requires a 6-byte Ethernet address. Longer forms parse as MACs
+// but are not something a DHCPv4 client will present.
+func ValidateMAC(s string) error {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	hw, err := net.ParseMAC(s)
+	if err != nil {
+		return invalid("mac", "malformed", "%q is not a MAC address", s)
+	}
+	if len(hw) != 6 {
+		return invalid("mac", "malformed", "%q is not a 6-byte Ethernet MAC address", s)
 	}
 	return nil
 }

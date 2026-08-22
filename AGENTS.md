@@ -40,7 +40,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 Keep these aligned:
 
 - `README.md` — product scope and user-facing capabilities.
-- `DESGINE.md` — architecture. Replication is designed but deferred.
+- `DESGINE.md` — architecture. Replication ships (`internal/replica`).
 - `LOGGING.md` — logging and privacy requirements.
 - `SECURITY.md` — security policy and trust boundaries.
 - `CONTRIBUTING.md` — contribution and verification workflow.
@@ -78,6 +78,11 @@ Code, one concern per package:
   and decision (deny/allow/list) for the DNS pipeline.
 - `internal/discovery`, `internal/health` — DHCP leases and check probes.
   Runtime state only; never persisted unless an operator promotes it.
+- `internal/dhcpd` — the optional built-in DHCPv4 server. It implements
+  `discovery/dhcp.Source`, so its leases reach DNS by the lease-file path.
+  Node-local: its settings never replicate, and a replica never serves it.
+  Its leases are the one discovery result that is persisted, so a restart
+  cannot re-issue an address that is still in use.
 - `internal/adminapi`, `internal/web`, `internal/auth` — JSON API, server-side
   rendered UI, sessions and password hashing.
 - `internal/cli` — the API client behind the non-`serve` commands.

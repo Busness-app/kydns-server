@@ -92,7 +92,29 @@ func (r *Registry) validateService(svc store.Service, known map[string]bool, zon
 			return svc, err
 		}
 	}
+	if err := ValidateMAC(svc.MAC); err != nil {
+		return svc, err
+	}
+	svc.MAC = NormalizeMAC(svc.MAC)
 	return svc, nil
+}
+
+// macUnique rejects a reservation another service already holds. Callers pass
+// the set svc has to be unique within, because validateService may not read
+// the store: PutService compares against the stored services, ReplaceAll
+// against the document it is about to write. A service being created has ID 0,
+// so it must differ from every other; an update may match only itself. An
+// empty MAC is no reservation at all and never collides.
+func macUnique(svc store.Service, others []store.Service) error {
+	if svc.MAC == "" {
+		return nil
+	}
+	for _, o := range others {
+		if o.MAC == svc.MAC && (svc.ID == 0 || o.ID != svc.ID) {
+			return invalid("mac", "duplicate", "%s is already reserved by the service %q", svc.MAC, o.Name)
+		}
+	}
+	return nil
 }
 
 // PutService validates, writes, then rebuilds. A failed validation never
@@ -105,6 +127,17 @@ func (r *Registry) PutService(svc store.Service) (int64, error) {
 	svc, err = r.validateService(svc, known, r.Zone())
 	if err != nil {
 		return 0, err
+	}
+	// Read the other services only when there is a reservation to check, so
+	// the common service without one still costs a single write.
+	if svc.MAC != "" {
+		stored, err := r.s.Services()
+		if err != nil {
+			return 0, err
+		}
+		if err := macUnique(svc, stored); err != nil {
+			return 0, err
+		}
 	}
 	id, err := r.s.PutService(svc)
 	if err != nil {
@@ -248,6 +281,9 @@ func (r *Registry) ReplaceAll(views []store.View, services []store.Service, reco
 	for _, svc := range services {
 		svc, err := r.validateService(svc, known, zone)
 		if err != nil {
+			return err
+		}
+		if err := macUnique(svc, ss); err != nil {
 			return err
 		}
 		ss = append(ss, svc)

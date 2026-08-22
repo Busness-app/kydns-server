@@ -136,6 +136,9 @@ admin:
 discovery:
   # DHCP lease discovery is off until you point at a lease file. KyDNS does
   # not guess the path. dnsmasq is the supported format today.
+  # This reads someone else's leases. KyDNS's own DHCP server is configured
+  # under DHCP in the web UI and has no keys in this file; the two cannot
+  # both be on, and a save that has both is refused.
   # A first-run seed; edit it under Settings, where it applies immediately.
   dhcp_lease_file: ""
   # dhcp_lease_file: /var/lib/misc/dnsmasq.leases

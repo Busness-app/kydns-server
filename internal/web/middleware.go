@@ -96,11 +96,13 @@ const roleReplica = "replica"
 // transport, not the API's own exempt path, because the screen calls adminapi
 // in-process.
 const (
-	PathSetup   = "/setup"
-	PathLogin   = "/login"
-	PathLogout  = "/logout"
-	PathPromote = "/replication/promote"
-	PathJoin    = "/replication/join"
+	PathSetup        = "/setup"
+	PathLogin        = "/login"
+	PathLogout       = "/logout"
+	PathPromote      = "/replication/promote"
+	PathJoin         = "/replication/join"
+	PathDHCPSettings = "/dhcp/settings"
+	PathDHCPSuggest  = "/dhcp/suggest"
 )
 
 // webWriteExempt is the whole exemption list. Signing in is how an operator
@@ -112,9 +114,23 @@ const (
 // the next pull discards them, and pairing is what creates that pull. Refusing
 // it strands an unpaired replica with no way to start, and a replica the
 // primary has removed with no way to come back.
+//
+// The DHCP settings are node-local: no cv_ trigger names a dhcp_ column, and
+// ApplySnapshot re-reads all eight out of the local row before writing, so a
+// pull cannot discard them. The gate's own rationale therefore does not apply
+// to them, and refusing them left an operator unable to prepare a standby -
+// discovered during a failover, which is the worst possible moment. The
+// suggest button beside Save writes nothing at all; it reads the interface and
+// re-renders the form.
+//
+// This exempts the two paths, not the settings row behind them: what a replica
+// may actually change is enforced in settings.Service, which refuses any write
+// reaching past the eight DHCP fields. /dhcp/reserve is not here, because it
+// saves a service, which is replicated and would be discarded.
 var webWriteExempt = map[string]bool{
 	PathSetup: true, PathLogin: true, PathLogout: true,
 	PathPromote: true, PathJoin: true,
+	PathDHCPSettings: true, PathDHCPSuggest: true,
 }
 
 // managedBy names the box to make the change on.

@@ -91,6 +91,10 @@ type fakeWriter struct {
 	writes  int
 	failErr error
 
+	// narrowWrites counts PutDHCPSettings, so a test can tell the two write
+	// paths apart rather than inferring one from what landed.
+	narrowWrites int
+
 	// renames records the zone move, so a test can prove Set routed the write
 	// through the transactional path rather than the plain one.
 	renames [][2]string
@@ -105,6 +109,20 @@ func (f *fakeWriter) PutSettings(v store.Settings) error {
 	return nil
 }
 
+// PutDHCPSettings overlays the eight columns the real UPDATE touches, so a
+// test sees exactly what the store would have left behind.
+func (f *fakeWriter) PutDHCPSettings(v store.Settings) error {
+	if f.failErr != nil {
+		return f.failErr
+	}
+	f.cur.DHCPEnabled, f.cur.DHCPInterface = v.DHCPEnabled, v.DHCPInterface
+	f.cur.DHCPRangeStart, f.cur.DHCPRangeEnd = v.DHCPRangeStart, v.DHCPRangeEnd
+	f.cur.DHCPGateway, f.cur.DHCPLeaseSeconds = v.DHCPGateway, v.DHCPLeaseSeconds
+	f.cur.DHCPSecondaryDNS, f.cur.DHCPAllowForeign = v.DHCPSecondaryDNS, v.DHCPAllowForeign
+	f.narrowWrites++
+	return nil
+}
+
 func (f *fakeWriter) PutSettingsRenamingZone(v store.Settings, from, to string) (int, error) {
 	if f.failErr != nil {
 		return 0, f.failErr
@@ -115,6 +133,11 @@ func (f *fakeWriter) PutSettingsRenamingZone(v store.Settings, from, to string) 
 	return 0, nil
 }
 
+// notAReplica is what a node that cannot be one passes. Stated rather than
+// left nil: NewService reads a nil isReplica as "replica", so the whole-row
+// write path is only reached by a caller that has said it may take one.
+func notAReplica() bool { return false }
+
 func newTestService(t *testing.T) (*fakeWriter, *Service, *[]*Snapshot) {
 	t.Helper()
 	w := &fakeWriter{cur: valid()}
@@ -123,7 +146,7 @@ func newTestService(t *testing.T) (*fakeWriter, *Service, *[]*Snapshot) {
 		t.Fatalf("initial rebuild: %v", err)
 	}
 	var applied []*Snapshot
-	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) })
+	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) }, notAReplica)
 	return w, svc, &applied
 }
 
@@ -274,7 +297,7 @@ func TestServiceSetDoesNotReadSourceAfterAWriteSucceeds(t *testing.T) {
 	h.publish(&Snapshot{Raw: valid()})
 
 	var applied []*Snapshot
-	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) })
+	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) }, notAReplica)
 
 	v := valid()
 	v.TTL = 120

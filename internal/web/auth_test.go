@@ -47,7 +47,9 @@ func testConfig() *config.Config {
 }
 
 // newSettings wires a settings service over st, seeded with testSettings.
-func newSettings(t *testing.T, st *store.Store) *settings.Service {
+// isReplica is the same answer the write gate gives, so the service refuses
+// what the gate would have refused.
+func newSettings(t *testing.T, st *store.Store, isReplica func() bool) *settings.Service {
 	t.Helper()
 	if err := st.PutSettings(testSettings()); err != nil {
 		t.Fatal(err)
@@ -59,7 +61,7 @@ func newSettings(t *testing.T, st *store.Store) *settings.Service {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	return settings.NewService(st, h, nil)
+	return settings.NewService(st, h, nil, isReplica)
 }
 
 func newWeb(t *testing.T, tweak ...func(*Options)) (*http.ServeMux, *Server) {
@@ -91,16 +93,24 @@ func newWeb(t *testing.T, tweak ...func(*Options)) (*http.ServeMux, *Server) {
 		t.Fatal(err)
 	}
 	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil), nil)
-	o := Options{
+	// One settings service behind both, as serve.go wires it: the DHCP tab
+	// reads the chosen interface through the API. The role is read through o,
+	// which a tweak may still be about to set, and per call, so a test that
+	// promotes mid-test is followed.
+	var o Options
+	set := newSettings(t, st, func() bool {
+		return o.Replication != nil && o.Replication().Role == roleReplica
+	})
+	o = Options{
 		Store:      st,
 		Registry:   reg,
-		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol),
+		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol).WithSettings(set),
 		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
 		Backoff:    auth.NewBackoff(),
 		ACL:        acl,
 		Cache:      cache,
 		Policy:     pol,
-		Settings:   newSettings(t, st),
+		Settings:   set,
 		SetupToken: "setup-me",
 	}
 	for _, f := range tweak {
@@ -354,6 +364,29 @@ func TestCSRFMiddlewareRedirectsAnonymous(t *testing.T) {
 	rec := postForm(t, h, "/services/new", url.Values{"name": {"x"}}, nil)
 	if rec.Code != http.StatusSeeOther {
 		t.Errorf("anonymous POST = %d, want a redirect to /login", rec.Code)
+	}
+}
+
+// The two POSTs above pin one route. This pins every one the router registers,
+// including any added later: a handler wired straight into the mux instead of
+// through requireCSRF changes network configuration on an unauthenticated POST.
+// Setup and login are the deliberate pre-session pair, named rather than
+// skipped by pattern.
+func TestEveryPostRouteRequiresSessionAndCSRF(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+	preSession := map[string]bool{PathSetup: true, PathLogin: true}
+	for _, path := range registeredPostRoutes(t, srv) {
+		if preSession[path] {
+			continue
+		}
+		if rec := postForm(t, h, path, url.Values{}, c); rec.Code != http.StatusForbidden {
+			t.Errorf("POST %s with a session but no CSRF token = %d, want 403", path, rec.Code)
+		}
+		if rec := postForm(t, h, path, url.Values{}, nil); rec.Code != http.StatusSeeOther {
+			t.Errorf("anonymous POST %s = %d, want a redirect to /login", path, rec.Code)
+		}
 	}
 }
 

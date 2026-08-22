@@ -20,6 +20,26 @@ impact, reproduction steps, and any suggested mitigation.
   clears the authenticated-data bit on anything it answers.
 - Discovery sources such as DHCP and Docker are configuration inputs and must
   be validated before their data is published.
+- With the built-in DHCP server enabled, KyDNS parses packets from any device
+  on the segment rather than reading a lease file. A malformed packet is
+  dropped and is never fatal. It is deliberately not counted: a tally of
+  unparseable broadcasts on a shared segment is not something an operator acts
+  on, and `GET /api/v1/stats` is where a drop counter would be surfaced if
+  that ever changes. No untrusted device can push the lease table past the
+  configured range — a dynamic address is only ever taken from inside it, and
+  validation caps the range at 65536 addresses. A reservation an administrator
+  makes may sit outside the range, though never outside the interface's
+  subnet, and only an administrator can make one. Hostnames arrive in option
+  12, which any device on the LAN chooses, so each one is cut to a single
+  lowercase DNS label of letters, digits, and hyphens, or dropped, and a lease
+  can never shadow a service, an alias, or a manual record. The ordinary
+  packet exchange is not logged, because MACs and hostnames identify people's
+  devices; only the exceptions are — a declined address, a reservation another
+  device already answers to, an address that answered a conflict probe, two
+  clients claiming one name, an exhausted range, a lease the database refused
+  to store or delete, and an unparseable row dropped when the table is
+  reloaded at boot — and those name the device
+  because there is nothing to act on otherwise.
 - Remote blacklist sources are untrusted input: fetched only over HTTPS with
   certificate verification, redirects followed only while they stay HTTPS, a
   32 MB response body ceiling, a ceiling on parsed entries per list, no code
@@ -111,14 +131,28 @@ add it with a confirmation.
   with `kydns admin reset-password`. They can already read every hash and token
   in that file, so this adds no exposure — but the file is the trust boundary.
 
-## Deferred: replication
+## Replication
 
-Linked-server replication is designed but not implemented. Before it ships it
-must encrypt and mutually authenticate peer connections, trust a peer only
-after explicit operator enrollment, make changes idempotent and safe to retry,
-and keep query history out of replication by default. The design permits
-concurrent writers with deterministic last-write-wins conflict resolution, so
-it must also surface failures and conflicts to the operator.
+Linked-server replication ships, and these are the properties it has to keep.
+Peer connections are TLS 1.3, and each side pins the other's certificate
+fingerprint rather than trusting a CA. A peer is enrolled only by an operator,
+with a one-time pairing code and a fingerprint the operator compares against
+the one the other node printed; a peer the operator declines is sent nothing
+at all. A replica pulls the whole configuration and applies it in one
+transaction, so a retried or resumed pull converges instead of compounding.
+API tokens, the admin account, per-node settings such as the built-in DHCP
+server's configuration and its leases, and DNS query history are never
+replicated.
+
+A group has exactly one primary, and it is the only node that takes
+administrative writes. A replica refuses every authenticated write in the web
+UI and in the admin API rather than accepting an edit the next pull would
+silently discard. The one exception is its own DHCP settings, which are
+node-local: a pull cannot discard them, so a replica may configure them and be
+prepared as a standby. A write on that route reaching any other setting is
+refused whole, and a replica still never serves DHCP until it is promoted.
+A replica that cannot reach its primary reports itself stale, and reports
+health it cannot verify as unknown rather than as the last value it saw.
 
 See [DESGINE.md](DESGINE.md) for the architecture and
 [LOGGING.md](LOGGING.md) for privacy-safe logging requirements.
