@@ -155,6 +155,108 @@ func TestServiceAddPostsProxyFields(t *testing.T) {
 	}
 }
 
+// The reservation has to be settable where the service is defined, or the
+// only way to get one is the web UI.
+func TestServiceAddPostsMAC(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	code := serviceCmd(c, []string{
+		"add", "kypost", "--address", "192.168.1.30", "--mac", "AA:BB:CC:DD:EE:FF",
+	}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	// Sent as typed; the server normalizes, so the CLI cannot disagree with it.
+	if got["mac"] != "AA:BB:CC:DD:EE:FF" {
+		t.Errorf("mac = %v, want the address as typed", got["mac"])
+	}
+}
+
+func TestServiceAddOmitsAnEmptyMAC(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	serviceCmd(c, []string{"add", "kypost", "--address", "192.168.1.30"}, &out, &errOut)
+	if _, ok := got["mac"]; ok {
+		t.Errorf("body carries mac = %v with no --mac given", got["mac"])
+	}
+}
+
+// Reserving an address for a service that already exists is the normal case:
+// the service was defined long before DHCP was turned on.
+func TestServiceUpdateSendsOnlyTheMAC(t *testing.T) {
+	var got map[string]any
+	var method, path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"id":7}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	if code := serviceCmd(c, []string{"update", "7", "--mac", "aa:bb:cc:dd:ee:ff"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if method != "PATCH" || path != "/api/v1/services/7" {
+		t.Fatalf("sent %s %s, want PATCH /api/v1/services/7", method, path)
+	}
+	if got["mac"] != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("mac = %v", got["mac"])
+	}
+	// Anything else in the body would be a field this command was never asked
+	// about, sent back over whatever the operator changed elsewhere.
+	if len(got) != 1 {
+		t.Errorf("body = %v, want the mac alone", got)
+	}
+}
+
+// An empty --mac is how a reservation is given up, so it has to be sent
+// rather than treated as "no flag".
+func TestServiceUpdateClearsTheMAC(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		w.Write([]byte(`{"id":7}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{BaseURL: srv.URL, Token: "t", HTTP: srv.Client()}
+	var out, errOut bytes.Buffer
+	if code := serviceCmd(c, []string{"update", "7", "--mac", ""}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if v, ok := got["mac"]; !ok || v != "" {
+		t.Errorf("body = %v, want an explicit empty mac", got)
+	}
+}
+
+func TestServiceUpdateNeedsAnIDAndAChange(t *testing.T) {
+	c := &Client{BaseURL: "http://127.0.0.1:1", HTTP: http.DefaultClient}
+	for _, args := range [][]string{{"update"}, {"update", "--mac", "aa:bb:cc:dd:ee:ff"}, {"update", "7"}} {
+		var out, errOut bytes.Buffer
+		if code := serviceCmd(c, args, &out, &errOut); code != 2 {
+			t.Errorf("service %v = %d, want a usage error", args, code)
+		}
+	}
+}
+
 func TestServiceAddRequiresNameAndAddress(t *testing.T) {
 	c := &Client{BaseURL: "http://127.0.0.1:1", HTTP: http.DefaultClient}
 	var out, errOut bytes.Buffer

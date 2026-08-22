@@ -301,7 +301,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithSettings(settingsSvc).
 		WithMetrics(dnsSrv.Metrics()).
 		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
-		WithDHCP(dhcpRun.Status).
+		WithDHCP(dhcpRun).
 		WithReplicaAdmin(&replicaAdmin{st: st, srv: repl.srv}).
 		// Wired on every node: promotion answers "already a primary" rather than
 		// an error, and a replica must never find this endpoint missing.

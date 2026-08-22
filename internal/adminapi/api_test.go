@@ -481,6 +481,81 @@ func TestServiceProxyFieldsRoundTripThroughTheAPI(t *testing.T) {
 	}
 }
 
+// A reservation is only useful if it survives a backup. The yaml tag is what
+// makes that true: import decodes with yaml.Unmarshal, and a field with no
+// yaml tag decodes from its lowercased Go name, which would blank the MAC on
+// every restore.
+func TestServiceMACRoundTripsThroughTheAPI(t *testing.T) {
+	h, tok := newAPI(t)
+
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.30"}],"mac":"AA:BB:CC:DD:EE:FF"}`)
+
+	rec := do(t, h, "GET", "/api/v1/services", tok, "")
+	if !strings.Contains(rec.Body.String(), `"mac":"aa:bb:cc:dd:ee:ff"`) {
+		t.Fatalf("services = %s, want the normalized MAC", rec.Body)
+	}
+
+	doc := do(t, h, "GET", "/api/v1/export?format=yaml", tok, "").Body.String()
+	if !strings.Contains(doc, "mac: aa:bb:cc:dd:ee:ff") {
+		t.Fatalf("the export document has no mac:\n%s", doc)
+	}
+
+	// Deleted and restored from the backup, which is the path an operator
+	// rebuilding this node actually takes.
+	if rec := do(t, h, "DELETE", "/api/v1/services/1", tok, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "POST", "/api/v1/import", tok, doc); rec.Code >= 300 {
+		t.Fatalf("import: %d %s", rec.Code, rec.Body)
+	}
+	rec = do(t, h, "GET", "/api/v1/services", tok, "")
+	if !strings.Contains(rec.Body.String(), `"mac":"aa:bb:cc:dd:ee:ff"`) {
+		t.Fatalf("the round trip lost the reservation: %s", rec.Body)
+	}
+}
+
+// PATCH rebuilds the service from a DTO, so a MAC missing from the read
+// direction would be erased by an edit to any other field: the reservation
+// would vanish the next time anyone touched the service.
+func TestPatchDoesNotEraseTheMAC(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.30"}],"mac":"aa:bb:cc:dd:ee:ff"}`)
+
+	if rec := do(t, h, "PATCH", "/api/v1/services/1", tok,
+		`{"check_url":"https://kypost.home.arpa/health"}`); rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+
+	var got serviceDTO
+	if err := json.Unmarshal(do(t, h, "GET", "/api/v1/services/1", tok, "").Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MAC != "aa:bb:cc:dd:ee:ff" {
+		t.Errorf("mac = %q after an unrelated edit, want it preserved", got.MAC)
+	}
+}
+
+// Clearing the reservation has to stay possible: an explicit empty MAC is
+// how a device that no longer needs a fixed address gets released.
+func TestPatchEmptyMACClears(t *testing.T) {
+	h, tok := newAPI(t)
+	do(t, h, "POST", "/api/v1/services", tok,
+		`{"name":"kypost","addresses":[{"address":"192.168.1.30"}],"mac":"aa:bb:cc:dd:ee:ff"}`)
+
+	if rec := do(t, h, "PATCH", "/api/v1/services/1", tok, `{"mac":""}`); rec.Code != http.StatusOK {
+		t.Fatalf("PATCH = %d: %s", rec.Code, rec.Body)
+	}
+	var got serviceDTO
+	if err := json.Unmarshal(do(t, h, "GET", "/api/v1/services/1", tok, "").Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.MAC != "" {
+		t.Errorf("mac = %q, want cleared", got.MAC)
+	}
+}
+
 // A replace-mode import must not bypass the same validation PutService
 // applies one at a time.
 // A rejected replace must leave pre-existing data alone, not wipe it and

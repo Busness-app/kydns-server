@@ -33,7 +33,7 @@ type API struct {
 	policy          *policy.Service
 	settings        *settings.Service
 	metrics         *dnsserver.Metrics
-	dhcpStatus      func() (bool, error)
+	dhcp            DHCPRunner
 	replicaStatus   func() ReplicaStatus
 	replicaAdmin    ReplicaAdmin
 	replicaJoiner   ReplicaJoiner
@@ -127,6 +127,10 @@ type serviceDTO struct {
 	CheckInsecure bool         `json:"check_insecure,omitempty" yaml:"check_insecure,omitempty"`
 	ProxyAddress  string       `json:"proxy_address,omitempty" yaml:"proxy_address,omitempty"`
 	RouteViaProxy bool         `json:"route_via_proxy,omitempty" yaml:"route_via_proxy,omitempty"`
+	// MAC is the DHCP reservation. The yaml tag is not decoration: this
+	// struct is the export document, and a field without one round-trips
+	// through its lowercased Go name and comes back empty.
+	MAC string `json:"mac,omitempty" yaml:"mac,omitempty"`
 }
 
 type recordDTO struct {
@@ -240,6 +244,7 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("GET /api/v1/leases", auth(a.listLeases))
 	mux.HandleFunc("POST /api/v1/leases/{ip}/promote", auth(a.promoteLease))
 	mux.HandleFunc("GET /api/v1/dhcp/status", auth(a.getDHCPStatus))
+	mux.HandleFunc("GET /api/v1/dhcp/suggest", auth(a.dhcpSuggest))
 	mux.HandleFunc("GET /api/v1/health", auth(a.listHealth))
 	mux.HandleFunc("GET /api/v1/stats", auth(a.stats))
 	mux.HandleFunc("POST /api/v1/cache/flush", auth(a.flushCache))
@@ -401,7 +406,7 @@ func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 func toServiceDTO(s store.Service) serviceDTO {
 	d := serviceDTO{
 		ID: s.ID, Name: s.Name, Aliases: s.Aliases, CheckURL: s.CheckURL, CheckInsecure: s.CheckInsecure,
-		ProxyAddress: s.ProxyAddress, RouteViaProxy: s.RouteViaProxy,
+		ProxyAddress: s.ProxyAddress, RouteViaProxy: s.RouteViaProxy, MAC: s.MAC,
 	}
 	for _, a := range s.Addresses {
 		d.Addresses = append(d.Addresses, addressDTO{Address: a.Address, View: a.View})
@@ -412,7 +417,7 @@ func toServiceDTO(s store.Service) serviceDTO {
 func fromServiceDTO(d serviceDTO) store.Service {
 	s := store.Service{
 		ID: d.ID, Name: d.Name, Aliases: d.Aliases, CheckURL: d.CheckURL, CheckInsecure: d.CheckInsecure,
-		ProxyAddress: d.ProxyAddress, RouteViaProxy: d.RouteViaProxy,
+		ProxyAddress: d.ProxyAddress, RouteViaProxy: d.RouteViaProxy, MAC: d.MAC,
 	}
 	for _, a := range d.Addresses {
 		s.Addresses = append(s.Addresses, store.Address{Address: a.Address, View: a.View})

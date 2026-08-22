@@ -3,19 +3,34 @@ package adminapi
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yoshiofthewire/kydns-server/internal/dhcpd"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
-// newAPIWithDHCP is newAPI plus a canned runner status, so a test can assert
-// what the endpoint renders without a listener. A nil status is the build with
-// no DHCP runner at all.
-func newAPIWithDHCP(t *testing.T, status func() (bool, error)) (http.Handler, string) {
+// fakeRunner is a canned runner, so a test can assert what the endpoint
+// renders without a listener. A test names only the fields it asserts on.
+type fakeRunner struct {
+	running  bool
+	err      error
+	foreign  []dhcpd.Foreign
+	problems []dhcpd.ReservationProblem
+}
+
+func (f fakeRunner) Status() (bool, error)                { return f.running, f.err }
+func (f fakeRunner) Foreign() []dhcpd.Foreign             { return f.foreign }
+func (f fakeRunner) Problems() []dhcpd.ReservationProblem { return f.problems }
+
+// newAPIWithDHCP is newAPI plus a canned runner. A nil runner is the build
+// with no DHCP at all.
+func newAPIWithDHCP(t *testing.T, run DHCPRunner) (http.Handler, string) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
 	if err != nil {
@@ -27,11 +42,7 @@ func newAPIWithDHCP(t *testing.T, status func() (bool, error)) (http.Handler, st
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := NewAPI(reg, nil, nil)
-	if status != nil {
-		api = api.WithDHCP(status)
-	}
-	return api.Handler(), tok
+	return NewAPI(reg, nil, nil).WithDHCP(run).Handler(), tok
 }
 
 // The CLI and the UI read these keys by name, so the wire document has to
@@ -138,8 +149,10 @@ func TestDHCPStatusWithoutARunner(t *testing.T) {
 		t.Fatalf("status %d, want 200 even with no runner: %s", rec.Code, rec.Body)
 	}
 	var got struct {
-		Running bool   `json:"running"`
-		Error   string `json:"error"`
+		Running  bool            `json:"running"`
+		Error    string          `json:"error"`
+		Foreign  json.RawMessage `json:"foreign"`
+		Problems json.RawMessage `json:"problems"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -150,10 +163,15 @@ func TestDHCPStatusWithoutARunner(t *testing.T) {
 	if got.Error != "" {
 		t.Errorf("error = %q, want none: nothing failed", got.Error)
 	}
+	// The UI ranges over both, so a null here is a broken tab rather than an
+	// empty table. This is the build most likely to emit one.
+	if string(got.Foreign) != "[]" || string(got.Problems) != "[]" {
+		t.Errorf("foreign=%s problems=%s, want [] and [] rather than null", got.Foreign, got.Problems)
+	}
 }
 
 func TestDHCPStatusRunning(t *testing.T) {
-	h, tok := newAPIWithDHCP(t, func() (bool, error) { return true, nil })
+	h, tok := newAPIWithDHCP(t, fakeRunner{running: true})
 
 	var got struct {
 		Running bool `json:"running"`
@@ -171,7 +189,7 @@ func TestDHCPStatusRunning(t *testing.T) {
 // has a reason an operator can act on.
 func TestDHCPStatusReportsWhyItIsNotRunning(t *testing.T) {
 	const reason = "another DHCP server is already answering on this network: 192.168.1.1"
-	h, tok := newAPIWithDHCP(t, func() (bool, error) { return false, errors.New(reason) })
+	h, tok := newAPIWithDHCP(t, fakeRunner{err: errors.New(reason)})
 
 	rec := do(t, h, "GET", "/api/v1/dhcp/status", tok, "")
 	if rec.Code != http.StatusOK {
@@ -215,4 +233,178 @@ func TestDHCPSettingsRejectedOnAReplica(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), primary) {
 		t.Errorf("the refusal does not name the primary: %s", rec.Body)
 	}
+}
+
+// The tab reads unresolved reservations and other DHCP servers from the same
+// request as running/error, so one poll answers everything it shows.
+func TestDHCPStatusReportsProblemsAndForeignServers(t *testing.T) {
+	h, tok := newAPIWithDHCP(t, fakeRunner{
+		running: true,
+		foreign: []dhcpd.Foreign{
+			{ServerID: netip.MustParseAddr("192.168.1.1"), Offered: netip.MustParseAddr("192.168.1.55")},
+			// An OFFER can carry no address at all.
+			{ServerID: netip.MustParseAddr("192.168.1.2")},
+		},
+		problems: []dhcpd.ReservationProblem{{
+			Service: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Reason: "kypost has no address inside the DHCP subnet",
+		}},
+	})
+
+	rec := do(t, h, "GET", "/api/v1/dhcp/status", tok, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Running bool `json:"running"`
+		Foreign []struct {
+			Server  string `json:"server"`
+			Offered string `json:"offered"`
+		} `json:"foreign"`
+		Problems []struct {
+			Service string `json:"service"`
+			MAC     string `json:"mac"`
+			Reason  string `json:"reason"`
+		} `json:"problems"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Running {
+		t.Errorf("running = false: %s", rec.Body)
+	}
+	if len(got.Foreign) != 2 || got.Foreign[0].Server != "192.168.1.1" || got.Foreign[0].Offered != "192.168.1.55" {
+		t.Fatalf("foreign = %+v, want the other server and what it offered", got.Foreign)
+	}
+	if got.Foreign[1].Offered != "" {
+		t.Errorf("offered = %q for an OFFER with no address, want blank", got.Foreign[1].Offered)
+	}
+	if len(got.Problems) != 1 || got.Problems[0].Service != "kypost" ||
+		got.Problems[0].MAC != "aa:bb:cc:dd:ee:ff" ||
+		!strings.Contains(got.Problems[0].Reason, "DHCP subnet") {
+		t.Fatalf("problems = %+v, want the unresolved reservation and why", got.Problems)
+	}
+}
+
+// An interface that cannot serve DHCP is not an error, it is the answer: the
+// tab renders the reason in place of the form.
+func TestDHCPStatusReportsWhyTheInterfaceCannotServeDHCP(t *testing.T) {
+	srv, _ := testAPIWithSettings(t)
+	// Loopback is never a qualifying DHCP interface, so this asserts the
+	// refusal path rather than depending on the host's interfaces.
+	if rec := srv.do(t, "PATCH", "/api/v1/settings", `{"dhcp_interface":"lo"}`); rec.Code != http.StatusOK {
+		t.Fatalf("setup patch: %d %s", rec.Code, rec.Body)
+	}
+
+	rec := srv.do(t, "GET", "/api/v1/dhcp/status", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Supported bool   `json:"supported"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Supported {
+		t.Error("supported = true for the loopback")
+	}
+	if !strings.Contains(got.Reason, "loopback") {
+		t.Errorf("reason = %q; the operator sees this verbatim", got.Reason)
+	}
+}
+
+func TestDHCPSuggestRefusesAnInterfaceThatCannotServeDHCP(t *testing.T) {
+	h, tok := newAPI(t)
+
+	rec := do(t, h, "GET", "/api/v1/dhcp/suggest?interface=lo", tok, "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for an interface that cannot serve DHCP: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "loopback") {
+		t.Fatalf("body %q does not say why; the wizard shows this verbatim", rec.Body)
+	}
+}
+
+func TestDHCPSuggestRejectsAnUnknownInterface(t *testing.T) {
+	h, tok := newAPI(t)
+
+	if rec := do(t, h, "GET", "/api/v1/dhcp/suggest?interface=definitely-not-real0", tok, ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if rec := do(t, h, "GET", "/api/v1/dhcp/suggest", tok, ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("no interface at all = %d, want 400: %s", rec.Code, rec.Body)
+	}
+}
+
+// Which interfaces exist and what they address names this network, so the
+// prefill sits behind the same bearer token as everything else.
+func TestDHCPSuggestRequiresAuth(t *testing.T) {
+	h, _ := newAPI(t)
+
+	if rec := do(t, h, "GET", "/api/v1/dhcp/suggest?interface=lo", "", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d, want 401", rec.Code)
+	}
+}
+
+// The wizard's whole prefill, against a real interface. Skipped where the
+// host has none that can serve DHCP, which is every bridge-mode container.
+func TestDHCPSuggestFillsInTheForm(t *testing.T) {
+	name := qualifyingInterface(t)
+	h, tok := newAPI(t)
+
+	rec := do(t, h, "GET", "/api/v1/dhcp/suggest?interface="+name, tok, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Interface    string `json:"interface"`
+		Subnet       string `json:"subnet"`
+		RangeStart   string `json:"range_start"`
+		RangeEnd     string `json:"range_end"`
+		LeaseSeconds int    `json:"lease_seconds"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Interface != name {
+		t.Errorf("interface = %q, want %q", got.Interface, name)
+	}
+	subnet, err := netip.ParsePrefix(got.Subnet)
+	if err != nil {
+		t.Fatalf("subnet %q: %v", got.Subnet, err)
+	}
+	start, err := netip.ParseAddr(got.RangeStart)
+	if err != nil {
+		t.Fatalf("range_start %q: %v", got.RangeStart, err)
+	}
+	end, err := netip.ParseAddr(got.RangeEnd)
+	if err != nil {
+		t.Fatalf("range_end %q: %v", got.RangeEnd, err)
+	}
+	// The operator confirms this form as-is, so a range outside the subnet or
+	// running backwards would be applied exactly as suggested.
+	if !subnet.Contains(start) || !subnet.Contains(end) || start.Compare(end) >= 0 {
+		t.Errorf("range %v-%v is not an ascending range inside %v", start, end, subnet)
+	}
+	if got.LeaseSeconds != 86400 {
+		t.Errorf("lease_seconds = %d, want a day", got.LeaseSeconds)
+	}
+}
+
+// qualifyingInterface finds an interface DHCP could actually run on, or skips.
+func qualifyingInterface(t *testing.T) string {
+	t.Helper()
+	ifs, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, i := range ifs {
+		if dhcpd.Qualifies(i.Name) == nil {
+			return i.Name
+		}
+	}
+	t.Skip("no interface on this host can serve DHCP")
+	return ""
 }

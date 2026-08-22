@@ -518,7 +518,7 @@ works from any machine that can reach the admin listener:
 | Command | Does |
 |---|---|
 | `kydns serve` | Run the DNS and admin servers. |
-| `kydns service add\|list\|rm` | Manage services, their addresses and aliases. |
+| `kydns service add\|list\|update\|rm` | Manage services, their addresses and aliases. `--mac` reserves the address for a device in the built-in DHCP server. |
 | `kydns record add\|list\|rm` | Manage manual A, AAAA and CNAME records. |
 | `kydns view add\|list\|rm` | Manage per-subnet views. |
 | `kydns token add\|list\|rm` | Manage API tokens. |

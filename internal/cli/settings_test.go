@@ -152,12 +152,18 @@ func TestSettingsSetDHCPKeys(t *testing.T) {
 		"dhcp_enabled=true", "dhcp_interface=eth0",
 		"dhcp_range_start=192.168.1.100", "dhcp_range_end=192.168.1.200",
 		"dhcp_gateway=192.168.1.1", "dhcp_lease_seconds=3600",
-		"dhcp_secondary_dns=1.1.1.1"}, &out, &errOut)
+		"dhcp_secondary_dns=1.1.1.1", "dhcp_allow_foreign=true"}, &out, &errOut)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
 	if got["dhcp_enabled"] != true {
 		t.Errorf("dhcp_enabled: %v (%T), want the bool true", got["dhcp_enabled"], got["dhcp_enabled"])
+	}
+	// The override is what lets DHCP start next to another server, so "true"
+	// as a string would be silently ignored rather than refused.
+	if got["dhcp_allow_foreign"] != true {
+		t.Errorf("dhcp_allow_foreign: %v (%T), want the bool true",
+			got["dhcp_allow_foreign"], got["dhcp_allow_foreign"])
 	}
 	if got["dhcp_lease_seconds"] != float64(3600) {
 		t.Errorf("dhcp_lease_seconds: %v (%T), want the number 3600",
@@ -179,6 +185,7 @@ func TestSettingsUsageListsDHCPKeys(t *testing.T) {
 	for _, k := range []string{
 		"dhcp_enabled", "dhcp_interface", "dhcp_range_start", "dhcp_range_end",
 		"dhcp_gateway", "dhcp_lease_seconds", "dhcp_secondary_dns",
+		"dhcp_allow_foreign",
 	} {
 		if !strings.Contains(settingsUsage, k) {
 			t.Errorf("settings --help does not list %q", k)

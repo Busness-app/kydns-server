@@ -142,7 +142,7 @@ func fail(stderr io.Writer, err error) int {
 
 func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: kydns service add|list|rm")
+		fmt.Fprintln(stderr, "usage: kydns service add|list|update|rm")
 		return 2
 	}
 	switch args[0] {
@@ -179,7 +179,7 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		return 0
 
 	case "add":
-		const addUsage = "usage: kydns service add <name> --address <ip> [--view v] [--alias a,b] [--check url] [--proxy ip] [--via-proxy]"
+		const addUsage = "usage: kydns service add <name> --address <ip> [--view v] [--alias a,b] [--check url] [--proxy ip] [--via-proxy] [--mac aa:bb:cc:dd:ee:ff]"
 		// The documented form puts the name before the flags, but flag.Parse
 		// stops at the first positional. Peel the name off first.
 		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
@@ -195,6 +195,7 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		check := fs.String("check", "", "health check URL")
 		proxy := fs.String("proxy", "", "send DNS for this service to this address instead")
 		viaProxy := fs.Bool("via-proxy", false, "answer with --proxy rather than the service's own address")
+		mac := fs.String("mac", "", "reserve this service's address for this MAC in the built-in DHCP server")
 		if err := fs.Parse(args[2:]); err != nil {
 			return 2
 		}
@@ -218,10 +219,43 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		if *viaProxy {
 			body["route_via_proxy"] = true
 		}
+		// Sent as typed: the server normalizes and validates a MAC, so the CLI
+		// has no second opinion to disagree with it from.
+		if *mac != "" {
+			body["mac"] = *mac
+		}
 		if err := c.Do("POST", "/api/v1/services", body, nil); err != nil {
 			return fail(stderr, err)
 		}
 		fmt.Fprintf(stdout, "added service %s\n", name)
+		return 0
+
+	case "update":
+		const updateUsage = "usage: kydns service update <id> --mac <aa:bb:cc:dd:ee:ff>   (an empty --mac gives the reservation up)"
+		if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+			fmt.Fprintln(stderr, updateUsage)
+			return 2
+		}
+		id := args[1]
+		fs := flag.NewFlagSet("service update", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		mac := fs.String("mac", "", "reserve this service's address for this MAC; empty gives the reservation up")
+		if err := fs.Parse(args[2:]); err != nil {
+			return 2
+		}
+		// PATCH merges, so a body holding only what was typed cannot clear a
+		// field this command was never asked about. --mac is the only flag,
+		// so any flag seen is that one, and an empty value is a real change.
+		asked := false
+		fs.Visit(func(*flag.Flag) { asked = true })
+		if !asked {
+			fmt.Fprintln(stderr, updateUsage)
+			return 2
+		}
+		if err := c.Do("PATCH", "/api/v1/services/"+id, map[string]any{"mac": *mac}, nil); err != nil {
+			return fail(stderr, err)
+		}
+		fmt.Fprintf(stdout, "updated service %s\n", id)
 		return 0
 
 	case "rm":
