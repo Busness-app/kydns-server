@@ -133,3 +133,62 @@ func TestTwoServicesSharingAMACReserveNeither(t *testing.T) {
 		}
 	}
 }
+
+// The registry enforces one MAC per service, not one service per address, so
+// two MACs at one address is a permitted state. Reserving for both hands two
+// devices the same address, and the second client's commit drops the first
+// one's lease while it is still using it.
+func TestTwoMACsAtOneAddressReserveNeither(t *testing.T) {
+	svcs := []store.Service{
+		{Name: "nas", MAC: "aa:bb:cc:dd:ee:ff", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "nas-old", MAC: "11:22:33:44:55:66", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "kypost", MAC: "22:33:44:55:66:77", Addresses: []store.Address{{Address: "192.168.1.21"}}},
+	}
+	got, problems := Reservations(svcs, testSubnet)
+	if len(problems) != 2 {
+		t.Fatalf("problems = %+v, want both claimants of .20 flagged", problems)
+	}
+	for _, p := range problems {
+		if !strings.Contains(p.Reason, "192.168.1.20") {
+			t.Errorf("problem %+v does not name the contested address", p)
+		}
+	}
+	// The uncontested service is unaffected: one bad pair must not disarm
+	// every other reservation.
+	if len(got) != 1 || got["22:33:44:55:66:77"] != netip.MustParseAddr("192.168.1.21") {
+		t.Fatalf("reservations = %+v, want only kypost's", got)
+	}
+}
+
+// The wire looks a client up by normalizeMAC. The registry normalizes on
+// write, but the replica path applies a snapshot without validating it, so a
+// legacy or hand-edited row arrives in whatever form it was stored in.
+func TestReservationsAreKeyedByTheNormalizedMAC(t *testing.T) {
+	svcs := []store.Service{{
+		Name: "legacy", MAC: "AA-BB-CC-DD-EE-FF",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}}
+	got, problems := Reservations(svcs, testSubnet)
+	if len(problems) != 0 {
+		t.Fatalf("problems = %+v, want none", problems)
+	}
+	if want := netip.MustParseAddr("192.168.1.20"); got["aa:bb:cc:dd:ee:ff"] != want {
+		t.Fatalf("reservations = %+v; the wire never looks up the stored spelling", got)
+	}
+}
+
+// Two spellings of one MAC are one device. Unnormalized, the duplicate rule
+// misses them and the legacy row is handed the other service's address.
+func TestTwoSpellingsOfOneMACReserveNeither(t *testing.T) {
+	svcs := []store.Service{
+		{Name: "legacy", MAC: "AA-BB-CC-DD-EE-FF", Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "current", MAC: "aa:bb:cc:dd:ee:ff", Addresses: []store.Address{{Address: "192.168.1.21"}}},
+	}
+	got, problems := Reservations(svcs, testSubnet)
+	if len(got) != 0 {
+		t.Fatalf("reservations = %+v, want none: one device, two rows", got)
+	}
+	if len(problems) != 2 {
+		t.Fatalf("problems = %+v, want both services flagged", problems)
+	}
+}

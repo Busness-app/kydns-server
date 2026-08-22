@@ -247,9 +247,10 @@ func TestApplySwapsTheLeaseSource(t *testing.T) {
 func TestApplyClearsTheLeaseSourceWhenDHCPCannotStart(t *testing.T) {
 	live, _ := newLiveComponents(t)
 	live.dhcp = &dhcpRunner{
-		poller: live.poller,
-		logger: slog.New(slog.DiscardHandler),
-		role:   func() Role { return RoleStandalone },
+		poller:   live.poller,
+		logger:   slog.New(slog.DiscardHandler),
+		role:     func() Role { return RoleStandalone },
+		services: func() ([]store.Service, error) { return nil, nil },
 	}
 
 	v := validSnapshot(t).Raw

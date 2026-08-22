@@ -16,6 +16,16 @@ type ReservationProblem struct {
 	Reason  string
 }
 
+// claim is one service's bid for a reservation. A bid cannot be judged until
+// every other bid has been read, and the problems still have to come out in
+// service order, so each one is resolved in place.
+type claim struct {
+	name string
+	mac  string
+	addr netip.Addr
+	why  string
+}
+
 // Reservations resolves services into MAC-to-address reservations.
 //
 // The reserved address is the service's unique address inside the DHCP
@@ -24,32 +34,23 @@ type ReservationProblem struct {
 // has exactly one LAN address, and that is the one DHCP can reserve. Zero or
 // more than one, and the reservation is inactive and reported - never
 // guessed at, because guessing here hands a device the wrong address.
+//
+// The pairing must be one-to-one in both directions. The registry enforces
+// that a MAC names one service; nothing enforces that an address does. Either
+// collision is inactive and reported rather than picked between.
 func Reservations(svcs []store.Service, subnet netip.Prefix) (map[string]netip.Addr, []ReservationProblem) {
-	// Counted first so both halves of a shared MAC are flagged, whichever
-	// order the rows come back in.
-	claims := map[string]int{}
+	claims := make([]claim, 0, len(svcs))
+	byMAC := map[string]int{}
 	for _, svc := range svcs {
-		if svc.MAC != "" {
-			claims[svc.MAC]++
-		}
-	}
-	out := map[string]netip.Addr{}
-	var problems []ReservationProblem
-	flag := func(svc store.Service, reason string) {
-		problems = append(problems, ReservationProblem{Service: svc.Name, MAC: svc.MAC, Reason: reason})
-	}
-	for _, svc := range svcs {
-		if svc.MAC == "" {
+		// Normalized at ingest: the wire looks a client up by normalizeMAC,
+		// and the replica path applies a snapshot without validating it, so a
+		// legacy or hand-edited spelling would otherwise dodge the duplicate
+		// rule and then never match the device it names.
+		mac := normalizeMAC(svc.MAC)
+		if mac == "" {
 			continue
 		}
-		if claims[svc.MAC] > 1 {
-			// Uniqueness is enforced on write, so this is a row that predates
-			// the rule or was edited by hand.
-			flag(svc, fmt.Sprintf(
-				"%d services claim the MAC %s; remove it from all but one to activate the reservation",
-				claims[svc.MAC], svc.MAC))
-			continue
-		}
+		c := claim{name: svc.Name, mac: mac}
 		seen := map[netip.Addr]bool{}
 		for _, a := range svc.Addresses {
 			addr, err := netip.ParseAddr(a.Address)
@@ -63,15 +64,51 @@ func Reservations(svcs []store.Service, subnet netip.Prefix) (map[string]netip.A
 		switch len(seen) {
 		case 1:
 			for addr := range seen {
-				out[svc.MAC] = addr
+				c.addr = addr
 			}
 		case 0:
-			flag(svc, fmt.Sprintf(
-				"no address inside the DHCP subnet %s; give it one to activate the reservation", subnet))
+			c.why = fmt.Sprintf(
+				"no address inside the DHCP subnet %s; give it one to activate the reservation", subnet)
 		default:
-			flag(svc, fmt.Sprintf(
-				"%d addresses inside the DHCP subnet %s; a reservation needs exactly one", len(seen), subnet))
+			c.why = fmt.Sprintf(
+				"%d addresses inside the DHCP subnet %s; a reservation needs exactly one", len(seen), subnet)
 		}
+		claims = append(claims, c)
+		byMAC[mac]++
+	}
+	// Addresses are counted only over the claims still standing: one the MAC
+	// rule already disabled reserves nothing, so it contests nothing.
+	byAddr := map[netip.Addr]int{}
+	for i := range claims {
+		c := &claims[i]
+		if byMAC[c.mac] > 1 {
+			// Uniqueness is enforced on write, so this is a row that predates
+			// the rule or was edited by hand. It outranks any address problem:
+			// the MAC is what has to be fixed first.
+			c.why = fmt.Sprintf(
+				"%d services claim the MAC %s; remove it from all but one to activate the reservation",
+				byMAC[c.mac], c.mac)
+			continue
+		}
+		if c.why == "" {
+			byAddr[c.addr]++
+		}
+	}
+	out := map[string]netip.Addr{}
+	var problems []ReservationProblem
+	for _, c := range claims {
+		if c.why == "" && byAddr[c.addr] > 1 {
+			// Reserving for both hands two devices one address: the second
+			// client's lease evicts the first while it is still using it.
+			c.why = fmt.Sprintf(
+				"%d services claim the address %s; give each its own to activate the reservation",
+				byAddr[c.addr], c.addr)
+		}
+		if c.why == "" {
+			out[c.mac] = c.addr
+			continue
+		}
+		problems = append(problems, ReservationProblem{Service: c.name, MAC: c.mac, Reason: c.why})
 	}
 	return out, problems
 }

@@ -96,9 +96,10 @@ func TestDHCPConfigEqualCoversEveryBuildInput(t *testing.T) {
 func newTestRunner(role Role) (*dhcpRunner, *discovery.Poller) {
 	p := discovery.NewPoller(nil, time.Hour, nil, slog.New(slog.DiscardHandler))
 	return &dhcpRunner{
-		poller: p,
-		logger: slog.New(slog.DiscardHandler),
-		role:   func() Role { return role },
+		poller:   p,
+		logger:   slog.New(slog.DiscardHandler),
+		role:     func() Role { return role },
+		services: func() ([]store.Service, error) { return nil, nil },
 	}, p
 }
 
@@ -185,9 +186,10 @@ func TestPromotionReconcilesDHCP(t *testing.T) {
 	roleHolder := NewRoleHolder(RoleReplica)
 	p := discovery.NewPoller(nil, time.Hour, nil, slog.New(slog.DiscardHandler))
 	d := &dhcpRunner{
-		poller: p,
-		logger: slog.New(slog.DiscardHandler),
-		role:   roleHolder.Current,
+		poller:   p,
+		logger:   slog.New(slog.DiscardHandler),
+		role:     roleHolder.Current,
+		services: func() ([]store.Service, error) { return nil, nil },
 	}
 	// No such interface, so the reconcile refuses at Qualifies before any
 	// socket is opened. That refusal is the observable proof it ran at all: a
@@ -735,7 +737,12 @@ func TestAStopDuringARefreshDoesNotRepublishTheProblems(t *testing.T) {
 	svcs, reads := d.services, 0
 	d.services = func() ([]store.Service, error) {
 		reads++
-		d.Reconcile(store.Settings{}) // dhcp turned off mid-read
+		if reads == 1 {
+			// Only on the outermost read: Reconcile reads the list too, to
+			// seed the listener it may build, and re-entering on that one
+			// would recurse forever without testing anything.
+			d.Reconcile(store.Settings{}) // dhcp turned off mid-read
+		}
 		return svcs()
 	}
 
@@ -747,9 +754,10 @@ func TestAStopDuringARefreshDoesNotRepublishTheProblems(t *testing.T) {
 	}
 	// Nothing is running, so there is nothing to reserve for and no reason to
 	// go back to the database.
+	settled := reads
 	d.RefreshReservations()
-	if reads != 1 {
-		t.Fatalf("the service list was read %d times, want 1: a stopped runner still queries", reads)
+	if reads != settled {
+		t.Fatalf("the service list was read again; a stopped runner still queries")
 	}
 }
 
@@ -768,4 +776,108 @@ func TestRefreshReservationsIsSafeAlongsideTheUIReads(t *testing.T) {
 		go func() { defer wg.Done(); d.Status() }()
 	}
 	wg.Wait()
+}
+
+// Two registry writes overlap: registry.onChange is not serialized, so a
+// refresh that started first can finish last. Without a sequence number the
+// older service list is published on top of the newer one and sticks there
+// until the next write.
+func TestAnOverlappingRefreshNeverPublishesTheOlderList(t *testing.T) {
+	d, alloc := reservedRunner(nil)
+	older := []store.Service{
+		{Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Addresses: []store.Address{{Address: "192.168.1.20"}}},
+		{Name: "offsite", MAC: "11:22:33:44:55:66",
+			Addresses: []store.Address{{Address: "10.9.0.20"}}},
+	}
+	newer := []store.Service{{Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.21"}}}}
+
+	var first sync.Once
+	entered, release := make(chan struct{}), make(chan struct{})
+	d.services = func() ([]store.Service, error) {
+		oldest := false
+		first.Do(func() { oldest = true })
+		if !oldest {
+			return newer, nil
+		}
+		close(entered)
+		<-release // the second refresh overtakes while this one is reading
+		return older, nil
+	}
+
+	done := make(chan struct{})
+	go func() { defer close(done); d.RefreshReservations() }()
+	<-entered
+	d.RefreshReservations() // runs start to finish with the newer list
+	close(release)
+	<-done
+
+	l, ok := alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.21") {
+		t.Fatalf("the client got %v (ok=%v); the service was moved to .21", l.IP, ok)
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Fatalf("Problems() = %+v, want none: offsite is gone from the newer list", p)
+	}
+}
+
+// The one line the feature hangs on: Reconcile records the allocator it just
+// built, and only after the listener binds. Recorded earlier, stopLocked wipes
+// it; recorded nowhere, every reservation is silently inactive and the suite
+// stays green. Start is injected because reaching that line otherwise takes
+// :67, which no test here may hold.
+func TestASuccessfulReconcileArmsTheNewAllocator(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	d.start = func(built) error { return nil }
+	d.services = func() ([]store.Service, error) {
+		// Spelled as a legacy row: normalizing is what makes the wire find it.
+		return []store.Service{{Name: "kypost", MAC: "AA-BB-CC-DD-EE-FF",
+			Addresses: []store.Address{{Address: "192.168.1.20"}}}}, nil
+	}
+	d.Reconcile(buildableSettings())
+	t.Cleanup(func() { d.Reconcile(store.Settings{}) })
+
+	running, err := d.Status()
+	if !running || err != nil {
+		t.Fatalf("Status() = %v, %v; want a running listener and no reason", running, err)
+	}
+	if d.alloc == nil || d.subnet != netip.MustParsePrefix("192.168.1.0/24") {
+		t.Fatalf("alloc=%v subnet=%v; the listener's allocator was not recorded", d.alloc, d.subnet)
+	}
+	l, ok := d.alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.20") {
+		t.Fatalf("the reserved client got %v (ok=%v), want its reservation", l.IP, ok)
+	}
+}
+
+// The socket answers the first DISCOVER the instant it is open. Reservations
+// that land afterwards leave a window where a stranger is handed a reserved
+// address - and after a power cut the whole segment DISCOVERs at once, which
+// is exactly when this reconcile runs.
+func TestTheAllocatorIsArmedBeforeTheListenerBinds(t *testing.T) {
+	d, _ := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	// Inside the pool, so an unarmed allocator would hand it straight out.
+	reserved := netip.MustParseAddr("192.168.1.100")
+	d.services = func() ([]store.Service, error) {
+		return []store.Service{{Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Addresses: []store.Address{{Address: reserved.String()}}}}, nil
+	}
+	var atBind netip.Addr
+	d.start = func(b built) error {
+		// The first DISCOVER on the socket this call is about to open.
+		l, _, _ := b.alloc.Offer("99:99:99:99:99:99", netip.Addr{}, time.Minute)
+		atBind = l.IP
+		return nil
+	}
+	d.Reconcile(buildableSettings())
+	t.Cleanup(func() { d.Reconcile(store.Settings{}) })
+
+	if atBind == reserved {
+		t.Fatalf("the first DISCOVER after the bind was offered %v, which is kypost's reservation", atBind)
+	}
 }

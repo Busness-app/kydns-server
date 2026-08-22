@@ -45,6 +45,10 @@ type dhcpRunner struct {
 	qualifies     func(string) error
 	inspect       func(string) (dhcpd.IfaceInfo, error)
 	detectForeign func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error)
+	// start binds the listener. Everything Reconcile does after a successful
+	// bind is unreachable without this, because no test may hold :67. It takes
+	// the whole built value so a test can see the state the socket opens on.
+	start func(built) error
 
 	mu      sync.Mutex
 	running *dhcpd.Server
@@ -62,6 +66,11 @@ type dhcpRunner struct {
 	// there is nothing to reserve for.
 	alloc  *dhcpd.Allocator
 	subnet netip.Prefix
+	// gen counts refreshes. Nothing serializes them - two registry writes
+	// overlap freely - so a refresh that started first can finish last, and
+	// publishing its list would leave the allocator on stale service data
+	// until the next write.
+	gen uint64
 	// problems is the last unresolved-reservation report, for the UI.
 	problems []dhcpd.ReservationProblem
 }
@@ -80,17 +89,23 @@ const (
 // Reconcile brings the listener in line with v. It is safe to call with
 // unchanged settings: an already-correct listener is left alone.
 //
-// The refresh is sequenced after the reconcile rather than folded into it:
-// reconcile holds d.mu for its whole body and refreshing reads the store, so
-// one call would either take d.mu twice or hold it across a database query.
-// A reconcile that left nothing running clears d.alloc, and the refresh then
-// returns without reading anything.
+// The service list is read here and the refresh sequenced after, because
+// reconcile holds d.mu for its whole body and reading the store under it
+// would block Status and every settings save for the length of a query. The
+// list read up front seeds a new listener before it binds; the refresh after
+// is what reports the problems and covers the paths that built nothing.
 func (d *dhcpRunner) Reconcile(v store.Settings) {
-	d.reconcile(v)
+	svcs, err := d.services()
+	if err != nil {
+		// Not fatal to the listener: DHCP without reservations still serves
+		// the LAN, and the refresh below retries and reports.
+		d.logger.Error("could not read services to seed DHCP reservations", "error", err)
+	}
+	d.reconcile(v, svcs)
 	d.RefreshReservations()
 }
 
-func (d *dhcpRunner) reconcile(v store.Settings) {
+func (d *dhcpRunner) reconcile(v store.Settings, svcs []store.Service) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -120,10 +135,21 @@ func (d *dhcpRunner) reconcile(v store.Settings) {
 		d.fail(v, err, "dhcp is enabled but cannot start")
 		return
 	}
+	// Armed before it binds. A listener answers the first DISCOVER the moment
+	// the socket is open, and an allocator with no reservations yet would hand
+	// a reserved address to whoever asked first - which after a power cut is
+	// the whole segment at once. Reservations is pure, so this is safe under
+	// d.mu; the problems it found are reported by the refresh that follows.
+	res, _ := dhcpd.Reservations(svcs, b.subnet)
+	b.alloc.SetReservations(res)
 	// The old listener holds :67 until it is closed, so it goes down only once
 	// its replacement is built and about to bind.
 	d.stopLocked()
-	if err := b.srv.Start(context.Background()); err != nil {
+	start := d.start
+	if start == nil {
+		start = startListener
+	}
+	if err := start(b); err != nil {
 		d.fail(v, err, "dhcp listener failed to bind")
 		return
 	}
@@ -171,6 +197,10 @@ func roleRefusal(v store.Settings, role Role) error {
 var errReplicaNoDHCP = errors.New(
 	"this node is a replica, so it does not serve DHCP: two DHCP servers on one " +
 		"network breaks it. The primary serves DHCP; a replica does after it is promoted")
+
+// startListener is the real bind. Named so the injected form has something to
+// default to; see dhcpRunner.start.
+func startListener(b built) error { return b.srv.Start(context.Background()) }
 
 // built is a listener and the two pieces Reconcile keeps once it binds: its
 // allocator, so reservations refresh without a rebuild, and the subnet they
@@ -318,12 +348,14 @@ func (d *dhcpRunner) stopLocked() {
 //
 // d.mu is taken twice, around the store read rather than across it: a
 // database query under it would block Status, Foreign and every settings save
-// for its duration. The listener may therefore go down mid-read, so the
-// report is published only if the allocator it was resolved for is still the
-// running one.
+// for its duration. Anything can therefore happen mid-read, so nothing is
+// published until the second section has checked that this refresh is still
+// the current one - the listener may have gone down, and a later refresh may
+// have already finished with a newer list.
 func (d *dhcpRunner) RefreshReservations() {
 	d.mu.Lock()
-	alloc, subnet := d.alloc, d.subnet
+	d.gen++
+	gen, alloc, subnet := d.gen, d.alloc, d.subnet
 	d.mu.Unlock()
 	if alloc == nil {
 		return // nothing is running, so there is nothing to reserve for
@@ -334,15 +366,18 @@ func (d *dhcpRunner) RefreshReservations() {
 		return
 	}
 	res, problems := dhcpd.Reservations(svcs, subnet)
-	alloc.SetReservations(res)
 
 	d.mu.Lock()
-	if d.alloc != alloc {
-		// The listener went down while we read, so this report describes a
-		// segment we no longer serve.
+	if d.alloc != alloc || d.gen != gen {
+		// The listener went down while we read, or a later refresh overtook
+		// this one: either way this describes a service list we have already
+		// moved past.
 		d.mu.Unlock()
 		return
 	}
+	// Under the lock with the publish it belongs to, so the allocator and the
+	// report can never end up describing different reads.
+	alloc.SetReservations(res)
 	d.problems = problems
 	d.mu.Unlock()
 	for _, p := range problems {
