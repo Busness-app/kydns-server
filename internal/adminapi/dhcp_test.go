@@ -393,7 +393,10 @@ func TestDHCPSuggestFillsInTheForm(t *testing.T) {
 	}
 }
 
-// qualifyingInterface finds an interface DHCP could actually run on, or skips.
+// qualifyingInterface finds an interface DHCP could actually run on, or
+// skips. Qualifies alone is not enough: it never checks subnet size, so a
+// /32 Tailscale or WireGuard TUN or a /30 point-to-point link passes it and
+// then fails /suggest, which rejects anything smaller than a /29.
 func qualifyingInterface(t *testing.T) string {
 	t.Helper()
 	ifs, err := net.Interfaces()
@@ -401,7 +404,14 @@ func qualifyingInterface(t *testing.T) string {
 		t.Fatal(err)
 	}
 	for _, i := range ifs {
-		if dhcpd.Qualifies(i.Name) == nil {
+		if dhcpd.Qualifies(i.Name) != nil {
+			continue
+		}
+		info, err := dhcpd.Inspect(i.Name)
+		if err != nil {
+			continue
+		}
+		if _, _, err := dhcpd.SuggestRange(info.Subnet); err == nil {
 			return i.Name
 		}
 	}

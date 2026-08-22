@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -244,6 +245,24 @@ func TestServiceUpdateClearsTheMAC(t *testing.T) {
 	}
 	if v, ok := got["mac"]; !ok || v != "" {
 		t.Errorf("body = %v, want an explicit empty mac", got)
+	}
+}
+
+// If service update ever grows a second flag, flagWasSet must still tell
+// the two apart — a name-blind check would arm the mac-clearing PATCH body
+// for a flag it has nothing to do with.
+func TestFlagWasSetMatchesByName(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.String("mac", "", "")
+	fs.String("address", "", "")
+	if err := fs.Parse([]string{"--address", "192.168.1.9"}); err != nil {
+		t.Fatal(err)
+	}
+	if flagWasSet(fs, "mac") {
+		t.Error("flagWasSet(mac) = true after only --address was given")
+	}
+	if !flagWasSet(fs, "address") {
+		t.Error("flagWasSet(address) = false after --address was given")
 	}
 }
 

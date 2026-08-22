@@ -127,9 +127,10 @@ type serviceDTO struct {
 	CheckInsecure bool         `json:"check_insecure,omitempty" yaml:"check_insecure,omitempty"`
 	ProxyAddress  string       `json:"proxy_address,omitempty" yaml:"proxy_address,omitempty"`
 	RouteViaProxy bool         `json:"route_via_proxy,omitempty" yaml:"route_via_proxy,omitempty"`
-	// MAC is the DHCP reservation. The yaml tag is not decoration: this
-	// struct is the export document, and a field without one round-trips
-	// through its lowercased Go name and comes back empty.
+	// MAC is the DHCP reservation. The yaml tag matches its lowercased Go
+	// name already, so it is not load-bearing for this field specifically —
+	// it stays for consistency with every sibling field, and as insurance
+	// if MAC is ever renamed to something whose lowercase differs from json.
 	MAC string `json:"mac,omitempty" yaml:"mac,omitempty"`
 }
 

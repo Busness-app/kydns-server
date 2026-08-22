@@ -140,6 +140,20 @@ func fail(stderr io.Writer, err error) int {
 	return 1
 }
 
+// flagWasSet reports whether the named flag was explicitly given, so a
+// PATCH body can include a field only when the operator actually typed it —
+// matched by name, not "was any flag seen", so a sibling flag can never
+// arm a field it didn't set.
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: kydns service add|list|update|rm")
@@ -244,10 +258,8 @@ func serviceCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		// PATCH merges, so a body holding only what was typed cannot clear a
-		// field this command was never asked about. --mac is the only flag,
-		// so any flag seen is that one, and an empty value is a real change.
-		asked := false
-		fs.Visit(func(*flag.Flag) { asked = true })
+		// field this command was never asked about.
+		asked := flagWasSet(fs, "mac")
 		if !asked {
 			fmt.Fprintln(stderr, updateUsage)
 			return 2

@@ -481,10 +481,8 @@ func TestServiceProxyFieldsRoundTripThroughTheAPI(t *testing.T) {
 	}
 }
 
-// A reservation is only useful if it survives a backup. The yaml tag is what
-// makes that true: import decodes with yaml.Unmarshal, and a field with no
-// yaml tag decodes from its lowercased Go name, which would blank the MAC on
-// every restore.
+// A reservation is only useful if it survives a backup: export, delete,
+// import, and the MAC must still be there.
 func TestServiceMACRoundTripsThroughTheAPI(t *testing.T) {
 	h, tok := newAPI(t)
 
