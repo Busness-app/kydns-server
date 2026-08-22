@@ -151,7 +151,7 @@ func (s *Server) renderDHCP(w http.ResponseWriter, r *http.Request, status int, 
 func (s *Server) getDHCP(w http.ResponseWriter, r *http.Request) {
 	v, ok := s.liveSettings()
 	if !ok {
-		s.renderDHCP(w, r, http.StatusOK, dhcpForm{}, errSettingsUnread.Error())
+		s.renderDHCP(w, r, http.StatusOK, dhcpFormOf(store.Settings{}), errSettingsUnread.Error())
 		return
 	}
 	s.renderDHCP(w, r, http.StatusOK, dhcpFormOf(v), "")

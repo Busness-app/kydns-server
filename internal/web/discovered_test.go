@@ -173,3 +173,68 @@ func TestServicesHealthUnknownWithoutChecker(t *testing.T) {
 		t.Error("services page does not report unknown health")
 	}
 }
+
+// A dnsmasq lease file that also holds DHCPv6 leases puts the IAID, not a MAC,
+// in the MAC column. Promote names an address; an identifier it cannot reserve
+// with must cost the name, not the promotion.
+func TestPromoteKeepsTheNameWhenTheLeaseCarriesNoMAC(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	srv.o.Leases = func() []dhcp.Lease {
+		return []dhcp.Lease{{Hostname: "printer", IP: "192.168.1.51", MAC: "163461164"}}
+	}
+	srv.o.DiscoveryOn = func() bool { return true }
+	rec := postForm(t, h, "/discovered/promote", url.Values{
+		"ip": {"192.168.1.51"}, "csrf_token": {csrf},
+	}, c)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("promote of a lease with a DHCPv6 IAID = %d: %s", rec.Code, rec.Body)
+	}
+	svcs, err := srv.o.Registry.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 1 || svcs[0].Name != "printer" {
+		t.Fatalf("Services() = %+v, want the printer promoted", svcs)
+	}
+	if svcs[0].MAC != "" {
+		t.Errorf("service MAC = %q, want none: %q is not a MAC", svcs[0].MAC, "163461164")
+	}
+}
+
+// One device with two hostnames holds two leases on one MAC. The second
+// promote gets a name without a reservation; only one service may claim a MAC.
+func TestPromoteOfASecondLeaseOnOneMACKeepsTheName(t *testing.T) {
+	h, srv, c, csrf := loggedIn(t)
+	srv.o.Leases = func() []dhcp.Lease {
+		return []dhcp.Lease{
+			{Hostname: "nas", IP: "192.168.1.60", MAC: "aa:bb:cc:dd:ee:11"},
+			{Hostname: "nas-mgmt", IP: "192.168.1.61", MAC: "aa:bb:cc:dd:ee:11"},
+		}
+	}
+	srv.o.DiscoveryOn = func() bool { return true }
+	for _, ip := range []string{"192.168.1.60", "192.168.1.61"} {
+		rec := postForm(t, h, "/discovered/promote", url.Values{
+			"ip": {ip}, "csrf_token": {csrf},
+		}, c)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("promote %s = %d: %s", ip, rec.Code, rec.Body)
+		}
+	}
+	svcs, err := srv.o.Registry.Services()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svcs) != 2 {
+		t.Fatalf("Services() = %+v, want both leases promoted", svcs)
+	}
+	macs := map[string]string{}
+	for _, svc := range svcs {
+		macs[svc.Name] = svc.MAC
+	}
+	if macs["nas"] != "aa:bb:cc:dd:ee:11" {
+		t.Errorf("first promote MAC = %q, want the lease's", macs["nas"])
+	}
+	if macs["nas-mgmt"] != "" {
+		t.Errorf("second promote MAC = %q, want none: the MAC is already reserved", macs["nas-mgmt"])
+	}
+}

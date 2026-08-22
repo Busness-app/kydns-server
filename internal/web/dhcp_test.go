@@ -2,6 +2,7 @@ package web
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -150,6 +151,16 @@ func TestDHCPPageShowsTheDualStackNote(t *testing.T) {
 	}
 }
 
+// The note describes what the running server's clients are doing, so a
+// dual-stack segment with nothing listening has nothing to warn about.
+func TestDHCPPageHidesTheDualStackNoteWhileNotRunning(t *testing.T) {
+	_, srv := newWeb(t)
+	body := renderDHCPState(t, srv, adminapi.DHCPStatus{Supported: true, DualStack: true}, "")
+	if strings.Contains(body, "IPv6") {
+		t.Errorf("dual-stack note shown while the server is not running:\n%s", body)
+	}
+}
+
 func TestDHCPPageHidesTheDualStackNoteOnIPv4Only(t *testing.T) {
 	_, srv := newWeb(t)
 	body := renderDHCPState(t, srv, adminapi.DHCPStatus{Running: true, Supported: true}, "")
@@ -188,6 +199,21 @@ func TestDHCPSuggestOnAnImpossibleInterfaceExplainsAndSavesNothing(t *testing.T)
 	}
 	if v.DHCPInterface != "" {
 		t.Errorf("the wizard saved %q; it must only propose", v.DHCPInterface)
+	}
+}
+
+// With the settings unreadable the form still has to offer a lease time the
+// field will accept, or the operator's first save is rejected on a value they
+// never typed.
+func TestDHCPPageOffersAUsableLeaseTimeWhenSettingsAreUnread(t *testing.T) {
+	h, srv, c, _ := loggedIn(t)
+	srv.o.Settings = nil
+	body := page(t, h, "/dhcp", c)
+	if strings.Contains(body, `name="lease_seconds" type="number" min="300" max="604800" value="0"`) {
+		t.Errorf("the lease time field offers 0, which min=300 rejects:\n%s", body)
+	}
+	if !strings.Contains(body, fmt.Sprintf(`value="%d"`, adminapi.SuggestedLeaseSeconds)) {
+		t.Errorf("the lease time field does not offer the suggested default:\n%s", body)
 	}
 }
 

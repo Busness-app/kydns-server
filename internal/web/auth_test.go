@@ -360,6 +360,29 @@ func TestCSRFMiddlewareRedirectsAnonymous(t *testing.T) {
 	}
 }
 
+// The two POSTs above pin one route. This pins every one the router registers,
+// including any added later: a handler wired straight into the mux instead of
+// through requireCSRF changes network configuration on an unauthenticated POST.
+// Setup and login are the deliberate pre-session pair, named rather than
+// skipped by pattern.
+func TestEveryPostRouteRequiresSessionAndCSRF(t *testing.T) {
+	h, srv := newWeb(t)
+	setupAndLogin(t, h)
+	c := loginCookie(t, h)
+	preSession := map[string]bool{PathSetup: true, PathLogin: true}
+	for _, path := range registeredPostRoutes(t, srv) {
+		if preSession[path] {
+			continue
+		}
+		if rec := postForm(t, h, path, url.Values{}, c); rec.Code != http.StatusForbidden {
+			t.Errorf("POST %s with a session but no CSRF token = %d, want 403", path, rec.Code)
+		}
+		if rec := postForm(t, h, path, url.Values{}, nil); rec.Code != http.StatusSeeOther {
+			t.Errorf("anonymous POST %s = %d, want a redirect to /login", path, rec.Code)
+		}
+	}
+}
+
 func fakeIDToken(sub, username, email, role string) string {
 	claims := map[string]any{
 		"sub":      sub,
