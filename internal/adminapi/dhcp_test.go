@@ -220,21 +220,6 @@ func TestDHCPStatusRequiresAuth(t *testing.T) {
 	}
 }
 
-// A replica refuses administrative writes with the address of the node to make
-// them on. DHCP settings are node-local, but they are still a settings write.
-func TestDHCPSettingsRejectedOnAReplica(t *testing.T) {
-	const primary = "10.0.0.2:8443"
-	h, tok := replicaOf(t, primary)
-
-	rec := do(t, h, "PATCH", "/api/v1/settings", tok, `{"dhcp_enabled":true}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status %d, want 409: a replica accepted a settings write", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), primary) {
-		t.Errorf("the refusal does not name the primary: %s", rec.Body)
-	}
-}
-
 // The tab reads unresolved reservations and other DHCP servers from the same
 // request as running/error, so one poll answers everything it shows.
 func TestDHCPStatusReportsProblemsAndForeignServers(t *testing.T) {

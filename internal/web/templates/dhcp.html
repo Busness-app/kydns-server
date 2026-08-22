@@ -57,14 +57,16 @@
   <form class="stack" method="post" action="/dhcp/settings">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <!-- First submit in the form, so Enter saves rather than running the wizard. -->
-    <button class="last" type="submit"{{template "ro" $}}>Save</button>
+    <!-- Not disabled on a replica: these settings are node-local, so a standby
+         is configured here and starts serving the moment it is promoted. -->
+    <button class="last" type="submit">Save</button>
     {{with .Form}}
     <label><input type="checkbox" name="enabled" value="1"{{if .Enabled}} checked{{end}}>
       Serve DHCP on this network</label>
 
     <label for="dhcp-interface">Interface</label>
     <input id="dhcp-interface" name="interface" type="text" value="{{.Interface}}" placeholder="eth0">
-    <button class="ghost" type="submit" formaction="/dhcp/suggest"{{template "ro" $}}>Fill in from this interface</button>
+    <button class="ghost" type="submit" formaction="/dhcp/suggest">Fill in from this interface</button>
 
     <label for="dhcp-range-start">Range start</label>
     <input id="dhcp-range-start" name="range_start" type="text" value="{{.RangeStart}}">

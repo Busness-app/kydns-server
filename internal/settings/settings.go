@@ -3,6 +3,7 @@ package settings
 import (
 	"errors"
 	"net/netip"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,7 +114,19 @@ type Writer interface {
 	// PutSettingsRenamingZone writes the settings and moves every manual record
 	// from the old private zone into the new one, in one transaction.
 	PutSettingsRenamingZone(v store.Settings, from, to string) (int, error)
+
+	// PutDHCPSettings writes the eight node-local dhcp_* columns and nothing
+	// else. It is the replica write path; see setDHCPOnly.
+	PutDHCPSettings(store.Settings) error
 }
+
+// ErrReadOnlyReplica is a settings write a replica may not make. The DHCP
+// settings are node-local, so a replica configures its own and the next pull
+// preserves them; every other setting belongs to the primary and the next pull
+// would discard it.
+var ErrReadOnlyReplica = errors.New(
+	"this node is a read-only replica: only the DHCP settings can be changed here, " +
+		"and every other setting must be changed on its primary")
 
 // Service is the single write path for settings: validate, persist, rebuild,
 // apply. onApply is injected so this package never imports the runtime.
@@ -122,17 +135,28 @@ type Service struct {
 	h       *Holder
 	onApply func(*Snapshot)
 
+	// isReplica reports whether this node is a replica, read per write so
+	// promotion widens what is writable without a restart. It is here rather
+	// than in the transports because it is the one chokepoint both of them go
+	// through: a transport that forgets to ask would be a hole.
+	isReplica func() bool
+
 	// writeMu makes validate-persist-rebuild-apply atomic against a second
 	// concurrent Set, so two saves cannot interleave into a state neither asked
 	// for.
 	writeMu sync.Mutex
 }
 
-func NewService(w Writer, h *Holder, onApply func(*Snapshot)) *Service {
+// NewService wires the write path. isReplica is nil on a node that cannot be
+// one, which writes freely.
+func NewService(w Writer, h *Holder, onApply func(*Snapshot), isReplica func() bool) *Service {
 	if onApply == nil {
 		onApply = func(*Snapshot) {}
 	}
-	return &Service{w: w, h: h, onApply: onApply}
+	if isReplica == nil {
+		isReplica = func() bool { return false }
+	}
+	return &Service{w: w, h: h, onApply: onApply, isReplica: isReplica}
 }
 
 func (s *Service) Holder() *Holder { return s.h }
@@ -178,6 +202,9 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	if cur := s.h.Current(); cur != nil {
 		prev = cur.Raw
 	}
+	if s.isReplica() {
+		return s.setDHCPOnly(v, prev, confirmPublic)
+	}
 	if err := ValidateWrite(v, prev, confirmPublic); err != nil {
 		return err
 	}
@@ -204,4 +231,54 @@ func (s *Service) Set(v store.Settings, confirmPublic string) error {
 	s.h.publish(snap)
 	s.onApply(snap)
 	return nil
+}
+
+// setDHCPOnly is the replica write path, called with writeMu held. A replica
+// may change the eight node-local DHCP fields and nothing else: everything
+// else is the primary's, and the next pull would discard it. A write that
+// reaches past them is refused whole rather than trimmed, so a caller is never
+// told a change landed when half of it did not.
+//
+// The write is narrow rather than a whole-row PutSettings on purpose. v was
+// composed from a read the caller made earlier, and on a replica the pull loop
+// runs continuously rather than when someone is typing: a pull landing in that
+// window makes v's non-DHCP half stale, and writing it whole would put the
+// primary's just-applied configuration back to what this node held a moment
+// before, with nothing to surface it. One UPDATE over the dhcp_* columns is
+// correct either way round — ours commits first and ApplySnapshot re-reads and
+// preserves it, or theirs commits first and we leave it alone.
+func (s *Service) setDHCPOnly(v, prev store.Settings, confirmPublic string) error {
+	if !dhcpOnlyChange(prev, v) {
+		return ErrReadOnlyReplica
+	}
+	// Validated whole: the DHCP rules read the rest of the row.
+	if err := ValidateWrite(v, prev, confirmPublic); err != nil {
+		return err
+	}
+	if err := s.w.PutDHCPSettings(v); err != nil {
+		return err
+	}
+	// Re-read rather than publish a snapshot built from v: v's non-DHCP half is
+	// the caller's, and the pull this write was kept narrow for may have moved
+	// it since.
+	if err := s.h.Rebuild(); err != nil {
+		return err
+	}
+	s.onApply(s.h.Current())
+	return nil
+}
+
+// dhcpOnlyChange reports whether v changes nothing outside the eight DHCP
+// fields. Both sides are blanked there and compared whole, so a settings field
+// added later is covered without anyone remembering this function exists.
+func dhcpOnlyChange(prev, v store.Settings) bool {
+	return reflect.DeepEqual(withoutDHCP(prev), withoutDHCP(v))
+}
+
+func withoutDHCP(v store.Settings) store.Settings {
+	v.DHCPEnabled, v.DHCPInterface = false, ""
+	v.DHCPRangeStart, v.DHCPRangeEnd = "", ""
+	v.DHCPGateway, v.DHCPLeaseSeconds = "", 0
+	v.DHCPSecondaryDNS, v.DHCPAllowForeign = "", false
+	return v
 }

@@ -47,7 +47,9 @@ func testConfig() *config.Config {
 }
 
 // newSettings wires a settings service over st, seeded with testSettings.
-func newSettings(t *testing.T, st *store.Store) *settings.Service {
+// isReplica is the same answer the write gate gives, so the service refuses
+// what the gate would have refused.
+func newSettings(t *testing.T, st *store.Store, isReplica func() bool) *settings.Service {
 	t.Helper()
 	if err := st.PutSettings(testSettings()); err != nil {
 		t.Fatal(err)
@@ -59,7 +61,7 @@ func newSettings(t *testing.T, st *store.Store) *settings.Service {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	return settings.NewService(st, h, nil)
+	return settings.NewService(st, h, nil, isReplica)
 }
 
 func newWeb(t *testing.T, tweak ...func(*Options)) (*http.ServeMux, *Server) {
@@ -92,9 +94,14 @@ func newWeb(t *testing.T, tweak ...func(*Options)) (*http.ServeMux, *Server) {
 	}
 	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil), nil)
 	// One settings service behind both, as serve.go wires it: the DHCP tab
-	// reads the chosen interface through the API.
-	set := newSettings(t, st)
-	o := Options{
+	// reads the chosen interface through the API. The role is read through o,
+	// which a tweak may still be about to set, and per call, so a test that
+	// promotes mid-test is followed.
+	var o Options
+	set := newSettings(t, st, func() bool {
+		return o.Replication != nil && o.Replication().Role == roleReplica
+	})
+	o = Options{
 		Store:      st,
 		Registry:   reg,
 		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol).WithSettings(set),

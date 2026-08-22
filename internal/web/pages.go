@@ -34,8 +34,8 @@ func (s *Server) pageRoutes(mux registrar) {
 	mux.HandleFunc("POST /discovered/promote", s.requireCSRF(s.postPromote))
 
 	mux.HandleFunc("GET /dhcp", s.requireSession(s.getDHCP))
-	mux.HandleFunc("POST /dhcp/settings", s.requireCSRF(s.postDHCPSettings))
-	mux.HandleFunc("POST /dhcp/suggest", s.requireCSRF(s.postDHCPSuggest))
+	mux.HandleFunc("POST "+PathDHCPSettings, s.requireCSRF(s.postDHCPSettings))
+	mux.HandleFunc("POST "+PathDHCPSuggest, s.requireCSRF(s.postDHCPSuggest))
 	mux.HandleFunc("POST /dhcp/reserve", s.requireCSRF(s.postDHCPReserve))
 
 	mux.HandleFunc("GET /blacklists", s.requireSession(s.getBlacklists))

@@ -1,10 +1,18 @@
 package adminapi
 
 import (
+	"encoding/json"
+	"maps"
 	"net/http"
+	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 // recordingMux records the patterns Routes registers. http.ServeMux cannot be
@@ -77,20 +85,23 @@ func TestEveryMutatingRouteIsRefusedOnAReplica(t *testing.T) {
 	}
 }
 
-// The exemption set is pinned: a fourth path must be a deliberate edit here.
-func TestWriteExemptIsExactlyThreePaths(t *testing.T) {
+// The exemption set is pinned: a fifth path must be a deliberate edit here.
+//
+// PathSettings was added deliberately, by ruling P22. The DHCP settings are
+// node-local - ApplySnapshot re-reads all eight dhcp_* columns out of the local
+// row, so a pull cannot discard them - and refusing them left an operator
+// unable to prepare a standby, which they discovered during a failover. The
+// gate now decides only that the request may be answered; settings.Service
+// decides what it may change, and refuses anything past those eight fields.
+func TestWriteExemptIsExactlyFourPaths(t *testing.T) {
 	want := map[string]bool{
 		PathReplicaPairPeek: true,
 		PathReplicaJoin:     true,
 		PathReplicaPromote:  true,
+		PathSettings:        true,
 	}
-	if len(writeExempt) != len(want) {
-		t.Fatalf("writeExempt has %d paths, want %d: %v", len(writeExempt), len(want), writeExempt)
-	}
-	for p := range want {
-		if !writeExempt[p] {
-			t.Errorf("%s is not exempt", p)
-		}
+	if !maps.Equal(writeExempt, want) {
+		t.Fatalf("writeExempt = %v, want %v", writeExempt, want)
 	}
 }
 
@@ -216,5 +227,152 @@ func TestGateReadsTheRolePerRequest(t *testing.T) {
 	role = "primary"
 	if rec := do(t, h, "POST", "/api/v1/views", tok, body); rec.Code != http.StatusCreated {
 		t.Fatalf("POST after promotion = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// replicaSettingsAPI is a replica with a real settings service behind it, wired
+// the way serve.go does: the service reads the same role the gate does.
+func replicaSettingsAPI(t *testing.T, role *string) (*testSrv, *settings.Service) {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if err := s.PutSettings(validStoredSettings()); err != nil {
+		t.Fatal(err)
+	}
+	reg := registry.New(s, "home.arpa.", func() error { return nil })
+	tok, err := reg.CreateToken("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := settings.NewHolder(func() (store.Settings, error) {
+		v, _, err := s.Settings()
+		return v, err
+	})
+	if err := h.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	svc := settings.NewService(s, h, nil, func() bool { return *role == roleReplica })
+	api := NewAPI(reg, nil, nil).WithSettings(svc).
+		WithReplication(func() ReplicaStatus {
+			return ReplicaStatus{Role: *role, PrimaryAddr: "10.0.0.2:8443"}
+		})
+	return &testSrv{h: api.Handler(), tok: tok}, svc
+}
+
+// dhcpPatch is a valid, DHCP-only partial update.
+const dhcpPatch = `{"dhcp_enabled":true,"dhcp_interface":"eth0",` +
+	`"dhcp_range_start":"192.168.1.100","dhcp_range_end":"192.168.1.200",` +
+	`"dhcp_gateway":"192.168.1.1","dhcp_lease_seconds":3600}`
+
+// What a replica may change through the API. The gate lets PATCH
+// /api/v1/settings through so an operator can prepare a standby; the settings
+// service is what holds the write to the eight node-local DHCP fields.
+func TestAReplicaMayPatchTheDHCPSettings(t *testing.T) {
+	role := roleReplica
+	srv, svc := replicaSettingsAPI(t, &role)
+
+	rec := srv.do(t, "PATCH", PathSettings, dhcpPatch)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a replica could not configure DHCP: %d %s", rec.Code, rec.Body)
+	}
+	cur, err := svc.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cur.DHCPEnabled || cur.DHCPInterface != "eth0" || cur.DHCPLeaseSeconds != 3600 {
+		t.Fatalf("the patch did not land: %+v", cur)
+	}
+}
+
+// The defect this task must not introduce. A partial update naming one DHCP key
+// and one unrelated key is refused whole: neither half may land, or the
+// exemption is not scoped at all.
+func TestAReplicaCannotSmuggleANonDHCPKeyIntoADHCPPatch(t *testing.T) {
+	role := roleReplica
+	srv, svc := replicaSettingsAPI(t, &role)
+	before, err := svc.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := srv.do(t, "PATCH", PathSettings, `{"dhcp_enabled":true,"ttl":120}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("a mixed patch on a replica = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	var body errBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Code != "read_only_replica" {
+		t.Errorf("code = %q, want read_only_replica: %s", body.Error.Code, rec.Body)
+	}
+
+	after, err := svc.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.TTL != before.TTL {
+		t.Errorf("ttl = %d, want %d: a replica changed a replicated setting", after.TTL, before.TTL)
+	}
+	if after.DHCPEnabled {
+		t.Error("the DHCP half of a refused mixed patch was applied")
+	}
+}
+
+// A patch that names no DHCP key at all is the plain case, and is refused for
+// the same reason.
+func TestAReplicaCannotPatchANonDHCPSetting(t *testing.T) {
+	role := roleReplica
+	srv, svc := replicaSettingsAPI(t, &role)
+	for _, body := range []string{
+		`{"ttl":120}`,
+		`{"allow_query":["0.0.0.0/0"],"confirm_public":"0.0.0.0/0"}`,
+		`{"private_domain":"lan.example"}`,
+		`{"upstreams":["udp://9.9.9.9:53"]}`,
+	} {
+		if rec := srv.do(t, "PATCH", PathSettings, body); rec.Code != http.StatusConflict {
+			t.Errorf("PATCH %s on a replica = %d, want 409: %s", body, rec.Code, rec.Body)
+		}
+	}
+	cur, err := svc.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cur, validStoredSettings()) {
+		t.Errorf("the stored settings moved: %+v", cur)
+	}
+}
+
+// Promotion widens the same endpoint on the next request, not the next restart.
+func TestPromotionRestoresTheFullSettingsPatch(t *testing.T) {
+	role := roleReplica
+	srv, svc := replicaSettingsAPI(t, &role)
+	if rec := srv.do(t, "PATCH", PathSettings, `{"ttl":120}`); rec.Code != http.StatusConflict {
+		t.Fatalf("as a replica: %d %s", rec.Code, rec.Body)
+	}
+	role = "primary"
+	if rec := srv.do(t, "PATCH", PathSettings, `{"ttl":120}`); rec.Code != http.StatusOK {
+		t.Fatalf("after promotion: %d %s", rec.Code, rec.Body)
+	}
+	if cur, _ := svc.Get(); cur.TTL != 120 {
+		t.Errorf("ttl = %d, want 120", cur.TTL)
+	}
+}
+
+// The exemption moves this path outside the gate, and the gate is where the
+// 401 for an anonymous caller used to be decided first. The token check on the
+// handler is what still stops one.
+func TestTheExemptSettingsPatchStillNeedsAToken(t *testing.T) {
+	role := roleReplica
+	srv, svc := replicaSettingsAPI(t, &role)
+	rec := do(t, srv.h, "PATCH", PathSettings, "", dhcpPatch)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous PATCH on a replica = %d, want 401: %s", rec.Code, rec.Body)
+	}
+	if cur, _ := svc.Get(); cur.DHCPEnabled {
+		t.Error("an anonymous patch configured DHCP")
 	}
 }

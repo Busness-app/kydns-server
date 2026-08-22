@@ -112,13 +112,15 @@ one reservation the web UI cannot make for you.
 From the CLI, `kydns dhcp status` says whether the listener is running and why
 not if it is not, and `kydns dhcp leases` prints the table.
 
-**A standby replica cannot be set up in advance.** The `dhcp_*` settings are
-node-local and never replicate, and a replica refuses every administrative
-write — through the UI, `PATCH /api/v1/settings`, and `kydns settings set`
-alike. So a replica you have never promoted has DHCP off and no supported way
-to change that. Promote it first, then configure DHCP; promotion needs no
-restart for it. It also comes up with an empty lease table and re-allocates
-from scratch, which is what the ARP probe before each address new to it is for.
+**A standby replica can be configured in advance.** The `dhcp_*` settings are
+node-local and never replicate, so a replica may set them — through the DHCP
+tab, `PATCH /api/v1/settings`, or `kydns settings set` — even though every
+other setting on a replica is still refused with the address of its primary. A
+write that names a DHCP key and any other key is refused whole rather than
+applied in part. The listener still does not start: a replica never serves
+DHCP, whatever its settings say, and promotion starts it with no restart. A
+promoted node comes up with an empty lease table and re-allocates from scratch,
+which is what the ARP probe before each address new to it is for.
 
 ### Blacklist filtering
 
@@ -425,6 +427,8 @@ startup. From then on it polls every five seconds, and a change on the primary
 is answered by the replica a few seconds later. Writes on the replica are
 refused with the address of the primary to make them on: in the API, in the
 CLI, and in the UI, whose editing controls are disabled with the same reason.
+Its own DHCP settings are the exception, because they are node-local and no
+pull can discard them; see the DHCP section above.
 
 The Replication screen in the web UI does all of this too: minting an invite,
 pairing a replica with the primary its config names, listing replicas with

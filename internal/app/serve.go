@@ -244,7 +244,11 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		zoneHolder: holder, registry: reg, logger: logger, prevUpstreams: boot.Upstreams,
 		dhcp: dhcpRun,
 	}
-	settingsSvc := settings.NewService(st, settingsHolder, live.Apply)
+	// The role is read per write, not captured: a replica may configure its own
+	// node-local DHCP settings and nothing else, and promotion must widen that
+	// without a restart.
+	settingsSvc := settings.NewService(st, settingsHolder, live.Apply,
+		func() bool { return roleHolder.Current() == RoleReplica })
 
 	errs := make(chan error, 3)
 	repl, err := startReplication(ctx, cfg, role, st,

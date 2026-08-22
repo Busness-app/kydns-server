@@ -55,6 +55,36 @@ func (s *Store) PutSettings(v Settings) error {
 	return putSettings(s.db, v)
 }
 
+// PutDHCPSettings writes the eight node-local dhcp_* columns and leaves every
+// other one exactly as it is. It exists for the replica write path: a whole-row
+// write there would put back whatever the background pull applied between the
+// caller's read and this write. One statement, so it is correct against
+// ApplySnapshot either way round — this commits first and ApplySnapshot re-reads
+// and preserves these columns, or ApplySnapshot commits first and this leaves
+// its work alone.
+func (s *Store) PutDHCPSettings(v Settings) error {
+	res, err := s.db.Exec(`
+UPDATE settings SET dhcp_enabled = ?, dhcp_interface = ?, dhcp_range_start = ?,
+  dhcp_range_end = ?, dhcp_gateway = ?, dhcp_lease_seconds = ?,
+  dhcp_secondary_dns = ?, dhcp_allow_foreign = ?
+WHERE id = 1`,
+		v.DHCPEnabled, v.DHCPInterface, v.DHCPRangeStart, v.DHCPRangeEnd,
+		v.DHCPGateway, v.DHCPLeaseSeconds, v.DHCPSecondaryDNS, v.DHCPAllowForeign)
+	if err != nil {
+		return err
+	}
+	// A missing row would make this a silent no-op, and the caller would be
+	// told the save landed.
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return errors.New("there are no settings to update yet")
+	}
+	return nil
+}
+
 // execer is the shared slice of *sql.DB and *sql.Tx, so the settings write can
 // stand alone or join a larger transaction.
 type execer interface {

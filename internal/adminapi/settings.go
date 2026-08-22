@@ -142,9 +142,16 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request) {
 // returns, so a client highlights the input without special-casing settings.
 func writeSettingsErr(w http.ResponseWriter, err error) {
 	var fe settings.FieldError
-	if errors.As(err, &fe) {
+	switch {
+	case errors.As(err, &fe):
 		writeErr(w, http.StatusBadRequest, "invalid", fe.Field, fe.Msg)
-		return
+	case errors.Is(err, settings.ErrReadOnlyReplica):
+		// The same code and status the write gate answers with. This endpoint
+		// is exempt from that gate so a replica can configure its own DHCP; a
+		// patch reaching past those fields is the refusal the gate would have
+		// made, and a client must not have to tell the two apart.
+		writeErr(w, http.StatusConflict, "read_only_replica", "", err.Error())
+	default:
+		writeRegistryErr(w, err)
 	}
-	writeRegistryErr(w, err)
 }

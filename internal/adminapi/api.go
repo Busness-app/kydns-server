@@ -173,22 +173,32 @@ func (a *API) Handler() http.Handler {
 	return a.WriteGate(mux)
 }
 
-// The three writes a replica must still accept. Promote is the operator's
-// deliberate escape from being a replica; the two pairing calls are how a
-// node becomes one. Everything else a replica accepts would be silently
-// overwritten by the primary on the next pull.
+// The writes a replica must still accept. Promote is the operator's deliberate
+// escape from being a replica; the two pairing calls are how a node becomes
+// one. Everything else a replica accepts would be silently overwritten by the
+// primary on the next pull.
 const (
 	PathReplicaPairPeek = "/api/v1/replica/pair/peek"
 	PathReplicaJoin     = "/api/v1/replica/join"
 	PathReplicaPromote  = "/api/v1/replica/promote"
+	PathSettings        = "/api/v1/settings"
 )
 
 // writeExempt is the whole exemption list, shared with route registration so
 // renaming a route cannot silently un-exempt it.
+//
+// PathSettings is exempt because the DHCP settings are node-local: no cv_
+// trigger names a dhcp_ column and ApplySnapshot re-reads all eight out of the
+// local row, so a pull cannot discard them, and refusing them left an operator
+// unable to prepare a standby. What that reaches is not the settings row but
+// settings.Service, which on a replica refuses any write touching a field
+// outside the eight - a partial update naming one DHCP key and one other is
+// refused whole, with ErrReadOnlyReplica.
 var writeExempt = map[string]bool{
 	PathReplicaPairPeek: true,
 	PathReplicaJoin:     true,
 	PathReplicaPromote:  true,
+	PathSettings:        true,
 }
 
 // authenticated is the one bearer-token check, shared so the write gate and
@@ -262,8 +272,8 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("DELETE /api/v1/blacklists/rules/{kind}/{id}", auth(a.deleteBlacklistRule))
 	mux.HandleFunc("GET /api/v1/blacklists/test", auth(a.testBlacklist))
 
-	mux.HandleFunc("GET /api/v1/settings", auth(a.getSettings))
-	mux.HandleFunc("PATCH /api/v1/settings", auth(a.patchSettings))
+	mux.HandleFunc("GET "+PathSettings, auth(a.getSettings))
+	mux.HandleFunc("PATCH "+PathSettings, auth(a.patchSettings))
 
 	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
 

@@ -147,7 +147,10 @@ replicated.
 A group has exactly one primary, and it is the only node that takes
 administrative writes. A replica refuses every authenticated write in the web
 UI and in the admin API rather than accepting an edit the next pull would
-silently discard. A replica that cannot reach its primary reports itself
+silently discard. The one exception is its own DHCP settings, which are
+node-local: a pull cannot discard them, so a replica may configure them and be
+prepared as a standby. A write on that route reaching any other setting is
+refused whole, and a replica still never serves DHCP until it is promoted. A replica that cannot reach its primary reports itself
 stale, and reports health it cannot verify as unknown rather than as the last
 value it saw.
 

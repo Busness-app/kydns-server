@@ -71,7 +71,7 @@ func testAPIWithSettings(t *testing.T) (*testSrv, *settings.Service) {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	svc := settings.NewService(s, h, nil)
+	svc := settings.NewService(s, h, nil, nil)
 
 	api := NewAPI(reg, nil, nil).WithSettings(svc)
 	return &testSrv{h: api.Handler(), tok: tok}, svc
@@ -416,7 +416,7 @@ func TestPatchSettingsFansOutToTheLiveACL(t *testing.T) {
 	acl := dnsserver.NewACL(h.Current().AllowQuery)
 	svc := settings.NewService(s, h, func(snap *settings.Snapshot) {
 		acl.Replace(snap.AllowQuery)
-	})
+	}, nil)
 
 	srv := &testSrv{h: NewAPI(reg, nil, nil).WithSettings(svc).Handler(), tok: tok}
 

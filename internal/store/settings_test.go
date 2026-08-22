@@ -253,3 +253,133 @@ func TestPutSettingsRenamingZoneMovesRecords(t *testing.T) {
 		t.Errorf("private_domain = %q, want the new domain", v.PrivateDomain)
 	}
 }
+
+// The replica write path. It exists so a DHCP save cannot revert what the
+// background pull applied in between, which means it must move the eight
+// columns and nothing else.
+func TestPutDHCPSettingsTouchesOnlyTheDHCPColumns(t *testing.T) {
+	s := open(t)
+	before := baseSettings()
+	if err := s.PutSettings(before); err != nil {
+		t.Fatal(err)
+	}
+
+	// Everything the caller might be carrying a stale copy of, changed.
+	v := before
+	v.PrivateDomain = "should.not.land"
+	v.Upstreams = []string{"udp://9.9.9.9:53"}
+	v.AllowQuery = []string{"0.0.0.0/0"}
+	v.ReverseZones = []string{"10.0.0.0/8"}
+	v.TTL, v.CacheEntries, v.HealthWorkers = 1, 1, 1
+	v.LogQueries, v.AllowTailscale = !before.LogQueries, !before.AllowTailscale
+	v.DHCPLeaseFile = "/should/not/land"
+	v.DHCPEnabled, v.DHCPInterface = true, "eth0"
+	v.DHCPRangeStart, v.DHCPRangeEnd = "192.168.1.100", "192.168.1.200"
+	v.DHCPGateway, v.DHCPLeaseSeconds = "192.168.1.1", 3600
+	v.DHCPSecondaryDNS, v.DHCPAllowForeign = "192.168.1.2", true
+	if err := s.PutDHCPSettings(v); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := s.Settings()
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	// The eight landed.
+	if !got.DHCPEnabled || got.DHCPInterface != "eth0" || got.DHCPRangeStart != "192.168.1.100" ||
+		got.DHCPRangeEnd != "192.168.1.200" || got.DHCPGateway != "192.168.1.1" ||
+		got.DHCPLeaseSeconds != 3600 || got.DHCPSecondaryDNS != "192.168.1.2" || !got.DHCPAllowForeign {
+		t.Fatalf("the DHCP settings did not land: %+v", got)
+	}
+	// Nothing else did. Compared whole, so a column added later is covered.
+	want := before
+	want.DHCPEnabled, want.DHCPInterface = got.DHCPEnabled, got.DHCPInterface
+	want.DHCPRangeStart, want.DHCPRangeEnd = got.DHCPRangeStart, got.DHCPRangeEnd
+	want.DHCPGateway, want.DHCPLeaseSeconds = got.DHCPGateway, got.DHCPLeaseSeconds
+	want.DHCPSecondaryDNS, want.DHCPAllowForeign = got.DHCPSecondaryDNS, got.DHCPAllowForeign
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("a column outside the eight moved:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// Ruling P22a, at the layer that decides it. The pull and a replica's DHCP save
+// are not ordered against each other, so both orderings have to be correct.
+func TestADHCPSaveAndAPullSurviveEitherOrder(t *testing.T) {
+	dhcp := func(v Settings) Settings {
+		v.DHCPEnabled, v.DHCPInterface = true, "eth0"
+		v.DHCPRangeStart, v.DHCPRangeEnd = "192.168.1.100", "192.168.1.200"
+		v.DHCPGateway, v.DHCPLeaseSeconds = "192.168.1.1", 3600
+		return v
+	}
+	pulled := baseSettings()
+	pulled.Upstreams = []string{"udp://9.9.9.9:53"}
+	pulled.TTL = 900
+
+	for _, saveFirst := range []bool{true, false} {
+		s := open(t)
+		if err := s.PutSettings(baseSettings()); err != nil {
+			t.Fatal(err)
+		}
+		save := func() {
+			if err := s.PutDHCPSettings(dhcp(baseSettings())); err != nil {
+				t.Fatal(err)
+			}
+		}
+		pull := func() {
+			if err := s.ApplySnapshot(SnapshotInput{Settings: pulled}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if saveFirst {
+			save()
+			pull()
+		} else {
+			pull()
+			save()
+		}
+		got, _, err := s.Settings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got.DHCPEnabled || got.DHCPInterface != "eth0" {
+			t.Errorf("saveFirst=%v: the DHCP save was lost: %+v", saveFirst, got)
+		}
+		if got.TTL != 900 || len(got.Upstreams) != 1 || got.Upstreams[0] != "udp://9.9.9.9:53" {
+			t.Errorf("saveFirst=%v: the pulled configuration was reverted: %+v", saveFirst, got)
+		}
+	}
+}
+
+// A silent no-op would tell the operator a save landed when the row it was
+// meant for does not exist.
+func TestPutDHCPSettingsWithNoRowSaysSo(t *testing.T) {
+	s := open(t)
+	if err := s.PutDHCPSettings(baseSettings()); err == nil {
+		t.Fatal("writing the DHCP settings with no settings row reported success")
+	}
+}
+
+// The DHCP settings are node-local, so writing them is not a configuration
+// change any peer should hear about.
+func TestPutDHCPSettingsDoesNotBumpConfigVersion(t *testing.T) {
+	s := open(t)
+	if err := s.PutSettings(baseSettings()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := baseSettings()
+	v.DHCPEnabled, v.DHCPInterface = true, "eth0"
+	if err := s.PutDHCPSettings(v); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.ConfigVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Errorf("config_version %d -> %d: a node-local write was replicated", before, after)
+	}
+}
