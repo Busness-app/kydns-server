@@ -192,3 +192,38 @@ func TestTwoSpellingsOfOneMACReserveNeither(t *testing.T) {
 		t.Fatalf("problems = %+v, want both services flagged", problems)
 	}
 }
+
+// subnet.Contains accepts both ends of the subnet and the allocator protects
+// only the host and the gateway, so a service given one of them would have it
+// reserved and handed to a real device.
+func TestReservationsRefuseTheNetworkAndBroadcastAddresses(t *testing.T) {
+	for _, addr := range []string{"192.168.1.0", "192.168.1.255"} {
+		got, problems := Reservations([]store.Service{{
+			Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Addresses: []store.Address{{Address: addr}},
+		}}, testSubnet)
+		if len(got) != 0 {
+			t.Fatalf("%s was reserved as %+v", addr, got)
+		}
+		if len(problems) != 1 || !strings.Contains(problems[0].Reason, addr) {
+			t.Fatalf("problems = %+v, want one naming %s", problems, addr)
+		}
+	}
+}
+
+// The rule is the subnet's own two ends, not the last octet: inside a /23,
+// x.x.0.255 and x.x.1.0 are ordinary usable addresses.
+func TestReservationsAllowTheOctetEndsInsideAWiderSubnet(t *testing.T) {
+	for _, addr := range []string{"192.168.0.255", "192.168.1.0"} {
+		got, problems := Reservations([]store.Service{{
+			Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+			Addresses: []store.Address{{Address: addr}},
+		}}, netip.MustParsePrefix("192.168.0.0/23"))
+		if len(problems) != 0 {
+			t.Fatalf("problems = %+v, want none: %s is usable inside a /23", problems, addr)
+		}
+		if got["aa:bb:cc:dd:ee:ff"] != netip.MustParseAddr(addr) {
+			t.Fatalf("reservation = %v, want %s", got["aa:bb:cc:dd:ee:ff"], addr)
+		}
+	}
+}

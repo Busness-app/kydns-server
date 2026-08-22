@@ -56,6 +56,8 @@
   <h3>Settings</h3>
   <form class="stack" method="post" action="/dhcp/settings">
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    <!-- First submit in the form, so Enter saves rather than running the wizard. -->
+    <button class="last" type="submit"{{template "ro" $}}>Save</button>
     {{with .Form}}
     <label><input type="checkbox" name="enabled" value="1"{{if .Enabled}} checked{{end}}>
       Serve DHCP on this network</label>
@@ -78,7 +80,6 @@
     <label><input type="checkbox" name="allow_foreign" value="1"{{if .AllowForeign}} checked{{end}}>
       Start even if another DHCP server answers — only if you run two deliberately</label>
     {{end}}
-    <button type="submit"{{template "ro" $}}>Save</button>
   </form>
 </div>
 

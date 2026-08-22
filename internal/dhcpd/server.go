@@ -73,7 +73,15 @@ type Server struct {
 // which DISCOVER is ours, and every OFFER that comes back is another server's
 // by construction.
 func (s *Server) ProbeForeign(ctx context.Context, wait time.Duration) ([]Foreign, error) {
-	return detectForeign(ctx, wait, probeConn(ctx, s.opts.Iface.Name), s.ignoreXID)
+	return s.probeForeignWith(ctx, wait, probeConn(ctx, s.opts.Iface.Name))
+}
+
+// probeForeignWith is ProbeForeign with the socket handed in, so a test drives
+// the real composition rather than reassembling it. Passing nil for ignore
+// here is the defect this split exists to pin: our own listener would answer,
+// win collectForeign's dedupe by ServerID, and hide a co-resident server.
+func (s *Server) probeForeignWith(ctx context.Context, wait time.Duration, dial func() (net.PacketConn, error)) ([]Foreign, error) {
+	return detectForeign(ctx, wait, dial, s.ignoreXID)
 }
 
 // ignoreXID drops one transaction until the returned func is called. It is
@@ -441,10 +449,9 @@ func toIPs(as []netip.Addr) []net.IP {
 }
 
 // normalizeMAC is the one form a MAC is stored and compared in. It parses so
-// that a reservation typed with dashes, without zero-padding, or with no
-// separators at all still compares equal to what ClientHWAddr.String()
-// produces; a MAC that does not parse falls back to a trimmed, lowercased
-// copy rather than being dropped.
+// that a reservation typed with dashes or with no separators at all still
+// compares equal to what ClientHWAddr.String() produces; a MAC that does not
+// parse falls back to a trimmed, lowercased copy rather than being dropped.
 func normalizeMAC(s string) string {
 	s = strings.TrimSpace(s)
 	if hw, err := net.ParseMAC(s); err == nil {

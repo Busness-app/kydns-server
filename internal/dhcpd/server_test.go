@@ -508,6 +508,7 @@ func TestNormalizeMAC(t *testing.T) {
 		{"AA:BB:CC:DD:EE:FF", "aa:bb:cc:dd:ee:ff"},
 		{"aa-bb-cc-dd-ee-ff", "aa:bb:cc:dd:ee:ff"},
 		{"aabb.ccdd.eeff", "aa:bb:cc:dd:ee:ff"},
+		{"AABBCCDDEEFF", "aa:bb:cc:dd:ee:ff"}, // no separators; the comment claims this
 		{"  aa:bb:cc:dd:ee:ff  ", "aa:bb:cc:dd:ee:ff"},
 		{"a:b:c:d:e:f", "a:b:c:d:e:f"}, // does not parse; falls back lowercased
 		{"not-a-mac", "not-a-mac"},

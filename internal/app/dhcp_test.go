@@ -778,7 +778,7 @@ func TestTheAllocGuardCatchesAStopThatGenAloneWouldMiss(t *testing.T) {
 		// The locked reconcile, not the public Reconcile: it never calls
 		// RefreshReservations, so gen stays exactly where this refresh
 		// captured it.
-		d.reconcile(store.Settings{}, nil)
+		d.reconcile(store.Settings{}, RoleStandalone, nil, nil)
 		return svcs()
 	}
 
@@ -921,5 +921,120 @@ func TestTheAllocatorIsArmedBeforeTheListenerBinds(t *testing.T) {
 
 	if atBind == reserved {
 		t.Fatalf("the first DISCOVER after the bind was offered %v, which is kypost's reservation", atBind)
+	}
+}
+
+// The seed read is what arms a listener before it binds. Continuing with an
+// empty list would bind an allocator that hands a reserved address to whoever
+// DISCOVERs first, report running with no error, and show nothing on the tab -
+// and nothing retries until the next save. Refusing is what every other
+// unmeetable precondition in build does.
+func TestASeedReadErrorRefusesToStart(t *testing.T) {
+	d, p := newBuildableRunner(func(context.Context, string, time.Duration) ([]dhcpd.Foreign, error) {
+		return nil, nil
+	})
+	var bound bool
+	d.start = func(built) error { bound = true; return nil }
+	d.services = func() ([]store.Service, error) {
+		return nil, errors.New("service 7: not found")
+	}
+
+	d.Reconcile(buildableSettings())
+
+	if bound {
+		t.Fatal("the listener bound with no reservations after the service list could not be read")
+	}
+	running, err := d.Status()
+	if running || err == nil {
+		t.Fatalf("Status() = %v, %v; want refused with a reason", running, err)
+	}
+	if !strings.Contains(err.Error(), "not found") || !strings.Contains(err.Error(), "service list") {
+		t.Errorf("the refusal does not say what could not be read: %v", err)
+	}
+	if p.Enabled() {
+		t.Error("a refused build published a lease source")
+	}
+}
+
+// The same read failing while a listener is already serving must not take it
+// down: its allocator is already armed, and a store hiccup is not a reason to
+// stop answering the LAN.
+func TestASeedReadErrorLeavesTheRunningListenerAlone(t *testing.T) {
+	d, _ := reservedRunner(nil)
+	d.services = func() ([]store.Service, error) {
+		return nil, errors.New("service 7: not found")
+	}
+	armed := d.alloc
+	// reservedRunner leaves start nil, which is the real bind: pinned here so
+	// a regression fails the test rather than reaching for :67.
+	d.start = func(built) error {
+		t.Error("a build refused for want of the service list replaced the running listener")
+		return nil
+	}
+
+	// A changed config, so this is the rebuild path rather than the early
+	// return: that is the path that could have stopped it.
+	v := d.current
+	v.DHCPRangeEnd = "192.168.1.150"
+	d.Reconcile(v)
+
+	if running, _ := d.Status(); !running {
+		t.Fatal("a failed service read stopped a listener that was serving the LAN")
+	}
+	if d.alloc != armed {
+		t.Error("the running listener's allocator was replaced by a build that refused")
+	}
+}
+
+// A node with DHCP off must not pay for a service query on every settings
+// save, and the role is read once so a promotion landing mid-Reconcile cannot
+// let the skip seed a starting listener with nothing.
+func TestReconcileDoesNotReadTheServicesWhenDHCPIsOff(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	d.services = func() ([]store.Service, error) {
+		t.Fatal("the service list was read on a node with DHCP off")
+		return nil, nil
+	}
+	d.Reconcile(store.Settings{})
+}
+
+// The refresh read is the other half: it must never publish on an error, or
+// the allocator loses the reservations it is already serving.
+func TestARefreshReadErrorLeavesTheArmedReservationsAlone(t *testing.T) {
+	d, alloc := reservedRunner([]store.Service{{
+		Name: "kypost", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "192.168.1.20"}},
+	}})
+	d.RefreshReservations()
+	d.services = func() ([]store.Service, error) { return nil, errors.New("database is locked") }
+	d.RefreshReservations()
+
+	l, ok := alloc.Allocate("aa:bb:cc:dd:ee:ff", "kypost", netip.Addr{}, time.Hour)
+	if !ok || l.IP != netip.MustParseAddr("192.168.1.20") {
+		t.Fatalf("the reserved client got %v (ok=%v) after a failed refresh, want its reservation", l.IP, ok)
+	}
+}
+
+// The override is not a build input, so granting it while running takes the
+// unchanged-config early return. If that return does not record it, d.current
+// still says false and the later revocation - the one an operator makes after
+// finding a server they do not trust - says nothing at all.
+func TestGrantingTheOverrideWhileRunningIsStillRecorded(t *testing.T) {
+	d, _ := newTestRunner(RoleStandalone)
+	var log bytes.Buffer
+	d.logger = slog.New(slog.NewTextHandler(&log, nil))
+	off := buildableSettings()
+	d.running = dhcpd.New(dhcpd.Options{})
+	d.current = off
+	d.poller.SetSource(d.running)
+
+	on := off
+	on.DHCPAllowForeign = true
+	d.Reconcile(on) // granted while running
+
+	log.Reset()
+	d.Reconcile(off) // and revoked again
+	if !strings.Contains(log.String(), "override") {
+		t.Errorf("revoking an override granted while running logged nothing: %q", log.String())
 	}
 }

@@ -95,23 +95,26 @@ const (
 // list read up front seeds a new listener before it binds; the refresh after
 // is what reports the problems and covers the paths that built nothing.
 func (d *dhcpRunner) Reconcile(v store.Settings) {
-	svcs, err := d.services()
-	if err != nil {
-		// Not fatal to the listener: DHCP without reservations still serves
-		// the LAN, and the refresh below retries and reports.
-		d.logger.Error("could not read services to seed DHCP reservations", "error", err)
+	// The role is read once and passed down, so the skip here and reconcile's
+	// own check can never disagree: a promotion landing between them would
+	// otherwise seed a starting listener with an empty list.
+	role := d.role()
+	var svcs []store.Service
+	var svcErr error
+	if dhcpWanted(v, role) {
+		svcs, svcErr = d.services()
 	}
-	d.reconcile(v, svcs)
+	d.reconcile(v, role, svcs, svcErr)
 	d.RefreshReservations()
 }
 
-func (d *dhcpRunner) reconcile(v store.Settings, svcs []store.Service) {
+func (d *dhcpRunner) reconcile(v store.Settings, role Role, svcs []store.Service, svcErr error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if !dhcpWanted(v, d.role()) {
+	if !dhcpWanted(v, role) {
 		d.stopLocked()
-		d.current, d.lastError = v, roleRefusal(v, d.role())
+		d.current, d.lastError = v, roleRefusal(v, role)
 		return
 	}
 	if d.running != nil && dhcpConfigEqual(d.current, v) {
@@ -120,11 +123,24 @@ func (d *dhcpRunner) reconcile(v store.Settings, svcs []store.Service) {
 			// under a working network. Say so, though — an operator revoking
 			// this has just found a server they do not trust.
 			d.logger.Info("dhcp foreign-server override revoked; the running listener is unaffected until the next restart or reconfigure")
-			d.current.DHCPAllowForeign = false // so the transition logs once
 		}
+		// Tracked even though the build ignores it, so the transition logs
+		// once: granting it while running and then revoking it must still say
+		// so, and without this the grant never reaches d.current.
+		d.current.DHCPAllowForeign = v.DHCPAllowForeign
 		// The listener already runs exactly this, so any earlier refusal is
 		// spent: leaving it would report "running yes" beside a stale reason.
 		d.lastError = nil
+		return
+	}
+	if svcErr != nil {
+		// Refusing, not starting empty: an allocator armed with no
+		// reservations hands a reserved address to whoever asks first, and
+		// nothing here retries until the next save. Like every other refusal
+		// in build it leaves a listener already serving the LAN alone.
+		d.fail(v, fmt.Errorf(
+			"could not read the service list to seed DHCP reservations, so refusing to start: %w", svcErr),
+			"dhcp is enabled but cannot start")
 		return
 	}
 	// Build before stop: a build that refuses must leave the listener that is

@@ -263,8 +263,8 @@ func (c *segmentConn) Close() error                { return nil }
 
 func (c *segmentConn) probe(t *testing.T) []Foreign {
 	t.Helper()
-	got, err := detectForeign(context.Background(), time.Second,
-		func() (net.PacketConn, error) { return c, nil }, c.srv.ignoreXID)
+	got, err := c.srv.probeForeignWith(context.Background(), time.Second,
+		func() (net.PacketConn, error) { return c, nil })
 	if err != nil {
 		t.Fatalf("probe: %v", err)
 	}

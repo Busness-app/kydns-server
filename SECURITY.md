@@ -35,9 +35,10 @@ impact, reproduction steps, and any suggested mitigation.
   can never shadow a service, an alias, or a manual record. The ordinary
   packet exchange is not logged, because MACs and hostnames identify people's
   devices; only the exceptions are — a declined address, a reservation another
-  device already answers to, two clients claiming one name, an exhausted
-  range, a lease the database refused to store or delete, and an unparseable
-  row dropped when the table is reloaded at boot — and those name the device
+  device already answers to, an address that answered a conflict probe, two
+  clients claiming one name, an exhausted range, a lease the database refused
+  to store or delete, and an unparseable row dropped when the table is
+  reloaded at boot — and those name the device
   because there is nothing to act on otherwise.
 - Remote blacklist sources are untrusted input: fetched only over HTTPS with
   certificate verification, redirects followed only while they stay HTTPS, a

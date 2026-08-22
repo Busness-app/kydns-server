@@ -2,6 +2,7 @@ package dhcpd
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -66,6 +67,11 @@ func Reservations(svcs []store.Service, subnet netip.Prefix) (map[string]netip.A
 			for addr := range seen {
 				c.addr = addr
 			}
+			if c.addr == subnet.Masked().Addr() || c.addr == broadcastOf(subnet) {
+				c.why = fmt.Sprintf(
+					"%s is the network or broadcast address of %s, which no device may be given; give the service another address",
+					c.addr, subnet)
+			}
 		case 0:
 			c.why = fmt.Sprintf(
 				"no address inside the DHCP subnet %s; give it one to activate the reservation", subnet)
@@ -111,4 +117,19 @@ func Reservations(svcs []store.Service, subnet netip.Prefix) (map[string]netip.A
 		problems = append(problems, ReservationProblem{Service: c.name, MAC: c.mac, Reason: c.why})
 	}
 	return out, problems
+}
+
+// broadcastOf is the last address of an IPv4 subnet. Neither it nor the
+// network address may be handed to a device, but subnet.Contains accepts both
+// and the allocator's protected set covers only the host and the gateway - so
+// without this a service given one would have it reserved and handed out.
+func broadcastOf(p netip.Prefix) netip.Addr {
+	if !p.Addr().Is4() {
+		return netip.Addr{}
+	}
+	b := p.Masked().Addr().As4()
+	for i, m := range net.CIDRMask(p.Bits(), 32) {
+		b[i] |= ^m
+	}
+	return netip.AddrFrom4(b)
 }
