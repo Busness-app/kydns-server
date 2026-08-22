@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
 	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -429,9 +430,22 @@ func TestTheDHCPSaveRefusalMatchesTheAPI(t *testing.T) {
 	if code != http.StatusConflict {
 		t.Errorf("a read-only refusal on the DHCP form = %d, want the 409 the API answers with", code)
 	}
-	if !strings.Contains(msg, "make this change on "+testPrimaryAddr) {
+	// Against adminapi's own clause, not a copy of its wording: a copy here
+	// would let the two transports drift apart while both tests stayed green.
+	if !strings.HasSuffix(msg, adminapi.ManagedOn(testPrimaryAddr)) {
+		t.Errorf("the refusal does not end the way the API's does: %q", msg)
+	}
+	if !strings.Contains(msg, testPrimaryAddr) {
 		t.Errorf("the refusal does not name the primary: %q", msg)
 	}
+
+	// An unpaired replica knows no address. The settings error already ends
+	// "on its primary", so there is nothing to append and nothing to repeat.
+	status.PrimaryAddr = ""
+	if _, msg := srv.dhcpSaveRefusal(settings.ErrReadOnlyReplica); strings.Contains(msg, "make this change on") {
+		t.Errorf("the refusal says where twice when it knows no address: %q", msg)
+	}
+	status.PrimaryAddr = testPrimaryAddr
 
 	// A validation failure is the operator's own input and stays a 400.
 	code, _ = srv.dhcpSaveRefusal(errSettingsUnread)

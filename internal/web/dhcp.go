@@ -210,7 +210,7 @@ func (s *Server) dhcpSaveRefusal(err error) (int, string) {
 	}
 	msg := err.Error()
 	if st, isReplica := s.replica(); isReplica {
-		msg += "; make this change on " + st.managedBy()
+		msg += adminapi.ManagedOn(st.PrimaryAddr)
 	}
 	return http.StatusConflict, msg
 }

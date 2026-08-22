@@ -340,14 +340,27 @@ func (s ReplicaStatus) managedBy() string {
 // gate, so an operator reads the same instruction either way.
 func makeThisChangeOn(where string) string { return "make this change on " + where }
 
-// primaryAddr names this node's primary, for a handler refusing a write the
-// gate let past. It reads the status per call, the way the gate does, so
-// promotion is followed without a restart.
+// ManagedOn is that sentence as a clause to append to a refusal decided past
+// the gate, and empty when no address is known: those refusals already end
+// "on its primary", so the placeholder would only say it twice. Exported
+// because the web transport appends the same clause, and a copy of the wording
+// there could drift from this one unnoticed.
+func ManagedOn(primaryAddr string) string {
+	if primaryAddr == "" {
+		return ""
+	}
+	return "; " + makeThisChangeOn(primaryAddr)
+}
+
+// primaryAddr is this node's primary's address, for a handler refusing a write
+// the gate let past, and empty when there is none or it is not yet known. It
+// reads the status per call, the way the gate does, so promotion is followed
+// without a restart.
 func (a *API) primaryAddr() string {
 	if a.replicaStatus == nil {
-		return "its primary"
+		return ""
 	}
-	return a.replicaStatus().managedBy()
+	return a.replicaStatus().PrimaryAddr
 }
 
 func (a *API) getReplicaStatus(w http.ResponseWriter, _ *http.Request) {

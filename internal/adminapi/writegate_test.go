@@ -381,6 +381,26 @@ func TestTheRefusedSettingsPatchNamesThePrimary(t *testing.T) {
 	if !strings.Contains(body.Error.Message, "make this change on "+testPrimaryAddr) {
 		t.Errorf("the refusal does not match the gate's wording: %q", body.Error.Message)
 	}
+	if strings.Count(body.Error.Message, "make this change on") != 1 {
+		t.Errorf("the refusal says where more than once: %q", body.Error.Message)
+	}
+}
+
+// An unpaired replica knows no address to send the operator to. The settings
+// refusal already ends "on its primary", so appending the placeholder would
+// only say it twice: the clause is empty instead. The gate keeps the
+// placeholder, because its sentence is the whole message and stands alone.
+func TestTheRefusalSaysWhereOnceWhenItKnowsNoAddress(t *testing.T) {
+	if got := ManagedOn(""); got != "" {
+		t.Errorf("ManagedOn with no address = %q, want an empty clause", got)
+	}
+	want := "; make this change on " + testPrimaryAddr
+	if got := ManagedOn(testPrimaryAddr); got != want {
+		t.Errorf("ManagedOn = %q, want %q", got, want)
+	}
+	if got := (ReplicaStatus{}).managedBy(); got != "its primary" {
+		t.Errorf("the gate's fallback = %q, want its primary", got)
+	}
 }
 
 // Promotion widens the same endpoint on the next request, not the next restart.

@@ -151,9 +151,9 @@ func (a *API) writeSettingsErr(w http.ResponseWriter, err error) {
 		// configure its own DHCP; a patch reaching past those fields is the
 		// refusal the gate would have made, and a client must not have to tell
 		// the two apart. The settings package cannot know the address, so the
-		// transport is what names it.
+		// transport is what names it, and says nothing when it has none.
 		writeErr(w, http.StatusConflict, "read_only_replica", "",
-			err.Error()+"; "+makeThisChangeOn(a.primaryAddr()))
+			err.Error()+ManagedOn(a.primaryAddr()))
 	default:
 		writeRegistryErr(w, err)
 	}
