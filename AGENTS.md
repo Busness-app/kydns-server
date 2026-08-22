@@ -40,7 +40,7 @@ Non-trivial logic must include one runnable check (unit test or minimal self-che
 Keep these aligned:
 
 - `README.md` — product scope and user-facing capabilities.
-- `DESGINE.md` — architecture. Replication is designed but deferred.
+- `DESGINE.md` — architecture. Replication ships (`internal/replica`).
 - `LOGGING.md` — logging and privacy requirements.
 - `SECURITY.md` — security policy and trust boundaries.
 - `CONTRIBUTING.md` — contribution and verification workflow.

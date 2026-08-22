@@ -44,7 +44,8 @@ Each KyDNS installation contains eight logical parts, one Go package each:
 8. **DHCP server** (`internal/dhcpd`) — an optional DHCPv4 server on one
    interface. It implements the same lease-source interface as lease-file
    discovery, so the addresses it hands out reach DNS by the path that
-   already existed. Node-local and primary-only: a replica never serves it.
+   already existed. Node-local, and never on a replica: a primary or a
+   standalone node may serve it, a replica never does.
 
 The DNS server reads from the local registry, so local name resolution does not
 depend on any network beyond the host.
@@ -272,7 +273,8 @@ Shipped in v1:
 - one local DNS process with an ACL, cache, and encrypted forwarder;
 - one service/record registry with per-subnet views;
 - blacklist filtering;
-- DHCP lease discovery and health checks;
+- a built-in DHCP server, and DHCP lease discovery from one you already run;
+- health checks;
 - authenticated administration over a web UI, a JSON API, and a CLI;
 - structured privacy-safe logs.
 

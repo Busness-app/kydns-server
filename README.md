@@ -631,6 +631,14 @@ joins the same network they are on.
 Compose joins the network. It never creates or deletes it — a network handing
 out addresses on your physical LAN outlives any one stack.
 
+**The built-in DHCP server does not work on this install path.** It has to
+hear client broadcasts, which is why it is supported only on a native install
+or in Docker with `network_mode: host` — not on a LAN-attached container
+network. The startup check refuses a bridge-mode container but not this one,
+so enabling DHCP here gives you a listener that reports itself running and may
+never hear a client. Leave DHCP to the router on this path, or install
+natively.
+
 ```sh
 cp .env.example .env                    # set KYDNS_IP, and KYDNS_NETWORK if not br0
 cp kydns.example.yaml kydns.yaml

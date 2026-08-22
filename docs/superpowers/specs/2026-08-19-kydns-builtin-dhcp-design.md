@@ -224,12 +224,16 @@ A DHCPDECLINE quarantines an address the same way, but only from the client
 that actually holds it, and only for an address inside the dynamic range: a
 decline is an unauthenticated broadcast, so honouring one from anybody would
 let a forged packet delete any lease on the segment and fill the quarantine
-map. That excludes a **promised** reserved address. An OFFER promises a
-reservation without committing a lease for it, so `Allocator.Decline` refuses
-the decline and nothing is quarantined — which changes nothing anyway, because
-rule 1 hands out a reservation without consulting the quarantine list. The
-server logs that the reserved address is already in use instead, which is the
-part the operator has to act on.
+map. That excludes a **promised** reserved address. When the client already
+holds a different lease, an OFFER promises the reservation without committing
+a lease for it, so `Allocator.Decline` refuses the decline and nothing is
+quarantined — which changes nothing anyway, because rule 1 hands out a
+reservation without consulting the quarantine list. The server logs that the
+reserved address is already in use instead, which is the part the operator has
+to act on. That branch is the only one that promises: an OFFER to a client
+holding no other lease commits, so a decline from that client is honoured —
+the lease is dropped, and the address is quarantined as well when it falls
+inside the dynamic range.
 
 The quarantine list is in memory. Losing it on restart is fine: the probe
 runs again.
@@ -340,9 +344,11 @@ For `SECURITY.md`: KyDNS moves from reading DHCP leases as untrusted
 configuration input to parsing packets from any device on the segment.
 
 - Malformed packets are dropped, never fatal. They are deliberately **not**
-  counted: there is no metrics surface for a DHCP counter to land in, and
-  inventing one for a single number is not worth it. If a metrics surface
-  ever arrives, a drop counter is the first thing to put on it.
+  counted: a tally of unparseable broadcasts on a shared segment is not
+  something an operator acts on, and the property that matters — a bad packet
+  cannot take the server down — does not depend on counting them.
+  `GET /api/v1/stats` already aggregates the other operational counters, and
+  is where a drop counter would go if that judgement ever changes.
 - The lease table is bounded by the range size by construction.
 - Packet contents are not logged at default verbosity; MACs and hostnames
   are identifying.

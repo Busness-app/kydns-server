@@ -211,17 +211,17 @@ kept for the first key that needs it again.
 ## API and CLI
 
 - `GET /api/v1/settings` — the effective settings as JSON.
-- `PUT /api/v1/settings` — a **partial** document. Fields are pointers;
+- `PATCH /api/v1/settings` — a **partial** document. Fields are pointers;
   absent keys are unchanged.
 
-Partial PUT makes `kydns settings set ttl=120` a single request rather
+A partial PATCH makes `kydns settings set ttl=120` a single request rather
 than a read-modify-write that could clobber a concurrent edit from the
 UI. The web form posts every field, so it is unaffected.
 
 CLI: `kydns settings get` prints effective values; `kydns settings set
-key=value ...` sends one partial PUT.
+key=value ...` sends one partial PATCH.
 
-Settings join the export document in `snapshotDoc`, so a backup is
+Settings join the export document, `transfer`, so a backup is
 complete, and are accepted on import.
 
 ## Web UI
@@ -258,7 +258,7 @@ tells the operator to edit the config file. It becomes a pointer to the
   serving.
 - Seeding: a fresh database seeds from YAML; a second start with a
   changed YAML does not overwrite the stored values.
-- `internal/adminapi`: partial PUT leaves absent fields alone; a public
+- `internal/adminapi`: a partial PATCH leaves absent fields alone; a public
   prefix without confirmation is rejected; export and re-import
   round-trips settings.
 - `internal/config/example_test.go` is updated for the reduced file and
