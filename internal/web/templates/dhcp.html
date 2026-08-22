@@ -1,0 +1,118 @@
+{{define "page"}}
+
+<div class="card">
+  <h3>Status</h3>
+  {{if .Running}}
+    <p>The DHCP server is <span class="badge accent">running</span>. Devices on
+       this network get their address, gateway, and DNS server from KyDNS.</p>
+  {{else}}
+    <p>The DHCP server is <span class="badge">not running</span>.</p>
+  {{end}}
+  {{if .StartError}}
+    <p class="error">DHCP is switched on but the listener did not start:
+       {{.StartError}}</p>
+  {{end}}
+  {{if .Reason}}
+    <p class="error">DHCP cannot run here. {{.Reason}}</p>
+  {{else if not .Supported}}
+    <p class="muted">No interface is chosen yet. Choose an interface below and
+       press "Fill in from this interface" to see a proposed range.</p>
+  {{end}}
+</div>
+
+{{if .Foreign}}
+<div class="card">
+  <p class="error">Another DHCP server is answering on this network. Two servers
+     on one segment hand out conflicting addresses.</p>
+  <ul>
+    {{range .Foreign}}<li>{{.Server}} — offering {{.Offered}}</li>{{end}}
+  </ul>
+</div>
+{{end}}
+
+{{if .Problems}}
+<div class="card">
+  <p class="error">Some reservations are inactive. A reservation needs exactly
+     one service address inside the DHCP subnet.</p>
+  <ul>
+    {{range .Problems}}<li>{{.Service}} ({{.MAC}}) — {{.Reason}}</li>{{end}}
+  </ul>
+</div>
+{{end}}
+
+{{if and .Running .DualStack}}
+<div class="card">
+  <p><strong>This network also runs IPv6.</strong> Your router is probably
+     advertising itself as a DNS server over IPv6, and clients often prefer
+     that, so some queries bypass KyDNS and filtering looks intermittent.
+     Turn off the IPv6 DNS advertisement (RDNSS) on your router, keeping IPv6
+     addressing, to stop that.</p>
+  <p class="muted">Nothing is broken; DHCP is IPv4 only, so this is the one
+     thing it cannot do for you.</p>
+</div>
+{{end}}
+
+<div class="card">
+  <h3>Settings</h3>
+  <form class="stack" method="post" action="/dhcp/settings">
+    <input type="hidden" name="csrf_token" value="{{.CSRF}}">
+    {{with .Form}}
+    <label><input type="checkbox" name="enabled" value="1"{{if .Enabled}} checked{{end}}>
+      Serve DHCP on this network</label>
+
+    <label for="dhcp-interface">Interface</label>
+    <input id="dhcp-interface" name="interface" type="text" value="{{.Interface}}" placeholder="eth0">
+    <button class="ghost" type="submit" formaction="/dhcp/suggest"{{template "ro" $}}>Fill in from this interface</button>
+
+    <label for="dhcp-range-start">Range start</label>
+    <input id="dhcp-range-start" name="range_start" type="text" value="{{.RangeStart}}">
+    <label for="dhcp-range-end">Range end</label>
+    <input id="dhcp-range-end" name="range_end" type="text" value="{{.RangeEnd}}">
+    <label for="dhcp-gateway">Gateway</label>
+    <input id="dhcp-gateway" name="gateway" type="text" value="{{.Gateway}}">
+    <label for="dhcp-lease-seconds">Lease seconds</label>
+    <input id="dhcp-lease-seconds" name="lease_seconds" type="number" min="300" max="604800" value="{{.LeaseSeconds}}">
+    <label for="dhcp-secondary-dns">Second DNS server (optional)</label>
+    <input id="dhcp-secondary-dns" name="secondary_dns" type="text" value="{{.SecondaryDNS}}">
+
+    <label><input type="checkbox" name="allow_foreign" value="1"{{if .AllowForeign}} checked{{end}}>
+      Start even if another DHCP server answers — only if you run two deliberately</label>
+    {{end}}
+    <button type="submit"{{template "ro" $}}>Save</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Leases</h3>
+  {{if not .Running}}
+    <p class="muted">The DHCP server is not running, so there are no leases.</p>
+  {{else}}
+  <table class="grid">
+    <tr><th>Name</th><th>Address</th><th>MAC</th><th>Expires</th><th></th></tr>
+    {{range .Leases}}
+    <tr>
+      <td>{{.Hostname}}</td><td>{{.IP}}</td><td class="muted">{{.MAC}}</td>
+      <td>{{.Expires}}</td>
+      <td>
+        {{if .Reserved}}<span class="badge accent">reserved</span>
+        {{else}}
+        <form method="post" action="/dhcp/reserve">
+          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+          <input type="hidden" name="ip" value="{{.IP}}">
+          <button type="submit"{{template "ro" $}}>Reserve</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5" class="muted">No leases yet. Devices appear here as they
+        ask for an address.</td></tr>
+    {{end}}
+  </table>
+  <p class="muted">Reserving a lease saves it as a service, so the device keeps
+     this address and answers to its name. The table refreshes when you reload;
+     it is not polled, because reading it inspects the interface.</p>
+  {{end}}
+</div>
+
+{{end}}

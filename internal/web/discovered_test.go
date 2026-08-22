@@ -103,7 +103,7 @@ func TestLeaseShadowedByManualRecord(t *testing.T) {
 func TestPromoteLeaseCreatesService(t *testing.T) {
 	h, srv, c, csrf := loggedIn(t)
 	srv.o.Leases = func() []dhcp.Lease {
-		return []dhcp.Lease{{Hostname: "laptop", IP: "192.168.1.50"}}
+		return []dhcp.Lease{{Hostname: "laptop", IP: "192.168.1.50", MAC: "aa:bb:cc:dd:ee:01"}}
 	}
 	srv.o.DiscoveryOn = func() bool { return true }
 	rec := postForm(t, h, "/discovered/promote", url.Values{
@@ -121,6 +121,11 @@ func TestPromoteLeaseCreatesService(t *testing.T) {
 	}
 	if svcs[0].Addresses[0].Address != "192.168.1.50" {
 		t.Errorf("promoted address = %q", svcs[0].Addresses[0].Address)
+	}
+	// The MAC travels with the address, so a promoted device keeps it once the
+	// built-in DHCP server is the one handing addresses out.
+	if svcs[0].MAC != "aa:bb:cc:dd:ee:01" {
+		t.Errorf("promoted MAC = %q, want the lease's", svcs[0].MAC)
 	}
 }
 

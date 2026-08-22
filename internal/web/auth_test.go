@@ -91,16 +91,19 @@ func newWeb(t *testing.T, tweak ...func(*Options)) (*http.ServeMux, *Server) {
 		t.Fatal(err)
 	}
 	pol := policy.NewService(st, ph, policy.NewRefresher(st, policy.NewFetcher(2*time.Second), ph, nil), nil)
+	// One settings service behind both, as serve.go wires it: the DHCP tab
+	// reads the chosen interface through the API.
+	set := newSettings(t, st)
 	o := Options{
 		Store:      st,
 		Registry:   reg,
-		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol),
+		API:        adminapi.NewAPI(reg, acl, cache).WithPolicy(pol).WithSettings(set),
 		Sessions:   auth.NewSessions(time.Hour, 12*time.Hour),
 		Backoff:    auth.NewBackoff(),
 		ACL:        acl,
 		Cache:      cache,
 		Policy:     pol,
-		Settings:   newSettings(t, st),
+		Settings:   set,
 		SetupToken: "setup-me",
 	}
 	for _, f := range tweak {

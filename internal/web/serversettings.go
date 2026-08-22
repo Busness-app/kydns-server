@@ -1,7 +1,6 @@
 package web
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -120,8 +119,7 @@ func (s *Server) postServerSettings(w http.ResponseWriter, r *http.Request) {
 	// save is refused rather than written with seven zeroes.
 	cur, ok := s.liveSettings()
 	if !ok {
-		s.serverSettingsError(w, r, v,
-			errors.New("the current settings could not be read, so this save was not applied; try again"))
+		s.serverSettingsError(w, r, v, errSettingsUnread)
 		return
 	}
 	v.DHCPEnabled, v.DHCPInterface = cur.DHCPEnabled, cur.DHCPInterface

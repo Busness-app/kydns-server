@@ -1,6 +1,7 @@
 package adminapi
 
 import (
+	"errors"
 	"net/http"
 	"net/netip"
 
@@ -52,7 +53,10 @@ type DHCPProblem struct {
 	Reason  string `json:"reason"`
 }
 
-func (a *API) getDHCPStatus(w http.ResponseWriter, _ *http.Request) {
+// DHCPStatus reads the built-in server's state. Exported for the DHCP tab, so
+// the screen and the JSON endpoint are one computation: two of them would let
+// the two surfaces disagree about whether DHCP is running.
+func (a *API) DHCPStatus() DHCPStatus {
 	// Both slices are initialized, not nil: the UI ranges over them, and a
 	// JSON null there is an error rather than an empty table.
 	out := DHCPStatus{Foreign: []DHCPForeign{}, Problems: []DHCPProblem{}}
@@ -85,7 +89,11 @@ func (a *API) getDHCPStatus(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
+}
+
+func (a *API) getDHCPStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, a.DHCPStatus())
 }
 
 // DHCPSuggestion is the setup wizard's prefill. Every field is a proposal the
@@ -100,41 +108,49 @@ type DHCPSuggestion struct {
 	DualStack    bool   `json:"dual_stack"`
 }
 
-// suggestedLeaseSeconds is not arbitrary: clients renew at half the lease, so
-// an outage has roughly twelve hours before anything loses its address.
-const suggestedLeaseSeconds = 86400
+// SuggestedLeaseSeconds is not arbitrary: clients renew at half the lease, so
+// an outage has roughly twelve hours before anything loses its address. It is
+// also what the tab's form offers before anything has been saved.
+const SuggestedLeaseSeconds = 86400
 
-func (a *API) dhcpSuggest(w http.ResponseWriter, r *http.Request) {
-	name := r.URL.Query().Get("interface")
+// DHCPSuggest proposes a configuration for one interface. Exported for the
+// tab's wizard button: Qualifies passing does not mean a range can be cut out
+// of the subnet, and only this path holds both answers.
+func DHCPSuggest(name string) (DHCPSuggestion, error) {
 	if name == "" {
-		writeErr(w, http.StatusBadRequest, "invalid", "interface", "interface is required")
-		return
+		return DHCPSuggestion{}, errors.New("interface is required")
 	}
 	// Qualifies first: its message names the deployment problem, which is
 	// what the wizard shows in place of the form.
 	if err := dhcpd.Qualifies(name); err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
-		return
+		return DHCPSuggestion{}, err
 	}
 	info, err := dhcpd.Inspect(name)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
-		return
+		return DHCPSuggestion{}, err
 	}
 	start, end, err := dhcpd.SuggestRange(info.Subnet)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
-		return
+		return DHCPSuggestion{}, err
 	}
-	writeJSON(w, http.StatusOK, DHCPSuggestion{
+	return DHCPSuggestion{
 		Interface:    name,
 		Subnet:       info.Subnet.String(),
 		RangeStart:   start.String(),
 		RangeEnd:     end.String(),
 		Gateway:      addrText(info.Gateway),
-		LeaseSeconds: suggestedLeaseSeconds,
+		LeaseSeconds: SuggestedLeaseSeconds,
 		DualStack:    info.HasGlobalIPv6,
-	})
+	}, nil
+}
+
+func (a *API) dhcpSuggest(w http.ResponseWriter, r *http.Request) {
+	sug, err := DHCPSuggest(r.URL.Query().Get("interface"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid", "interface", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sug)
 }
 
 // addrText renders an address for the UI. A zero Addr stringifies as

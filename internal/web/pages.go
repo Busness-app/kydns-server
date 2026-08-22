@@ -7,6 +7,7 @@ func init() {
 	registerPage("settings.html")
 	registerPage("discovered.html")
 	registerPage("blacklists.html")
+	registerPage("dhcp.html")
 	registerPage("replication.html")
 }
 
@@ -31,6 +32,11 @@ func (s *Server) pageRoutes(mux registrar) {
 
 	mux.HandleFunc("GET /discovered", s.requireSession(s.getDiscovered))
 	mux.HandleFunc("POST /discovered/promote", s.requireCSRF(s.postPromote))
+
+	mux.HandleFunc("GET /dhcp", s.requireSession(s.getDHCP))
+	mux.HandleFunc("POST /dhcp/settings", s.requireCSRF(s.postDHCPSettings))
+	mux.HandleFunc("POST /dhcp/suggest", s.requireCSRF(s.postDHCPSuggest))
+	mux.HandleFunc("POST /dhcp/reserve", s.requireCSRF(s.postDHCPReserve))
 
 	mux.HandleFunc("GET /blacklists", s.requireSession(s.getBlacklists))
 	mux.HandleFunc("POST /blacklists/toggle", s.requireCSRF(s.postBlacklistToggle))
