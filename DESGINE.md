@@ -23,7 +23,7 @@ second node is something an operator adds deliberately.
 
 ## System shape
 
-Each KyDNS installation contains seven logical parts, one Go package each:
+Each KyDNS installation contains eight logical parts, one Go package each:
 
 1. **DNS server** (`internal/dnsserver`, `internal/upstream`) — the query ACL,
    the authoritative answer path, the cache, and the DoT/DoH forwarder.
@@ -41,6 +41,10 @@ Each KyDNS installation contains seven logical parts, one Go package each:
 7. **Replication agent** (`internal/replica`) — the node identity, the pairing
    exchange, the pinned TLS transport, and the loop that pulls configuration
    snapshots from a linked primary.
+8. **DHCP server** (`internal/dhcpd`) — an optional DHCPv4 server on one
+   interface. It implements the same lease-source interface as lease-file
+   discovery, so the addresses it hands out reach DNS by the path that
+   already existed. Node-local and primary-only: a replica never serves it.
 
 The DNS server reads from the local registry, so local name resolution does not
 depend on any network beyond the host.
@@ -81,14 +85,16 @@ truth for the server's current view and contains:
 - the admin password hash and API tokens;
 - blacklist list definitions and refresh metadata (URL, format, interval, last
   status), one-off allow/deny rules, and the last known-good normalized
-  snapshot of each list's entries.
+  snapshot of each list's entries;
+- the leases the built-in DHCP server has handed out.
 
 Reverse records are derived from service addresses and the configured reverse
 zones rather than stored.
 
 The store also holds the server's own settings — the private domain, reverse
-zones, upstreams, the query ACL, TTL and cache bounds, the logging opt-ins, and
-the discovery and health intervals. The config file owns exactly three keys
+zones, upstreams, the query ACL, TTL and cache bounds, the logging opt-ins, the
+built-in DHCP server's configuration, and the discovery and health intervals.
+The config file owns exactly three keys
 (`data_dir`, `dns.listen`, `admin.listen`), because the process needs them
 before it has a database or a listening UI. Every other key the file carries
 seeds the database on the first run and is ignored from then on: the database
@@ -100,8 +106,14 @@ behaves.
 
 Discovery results and health-check status are runtime state, not stored data.
 They are held in memory, re-derived from the lease source and health probes
-after a restart, and kept out of backups. A discovered lease is persisted only
+after a restart, and kept out of exports. A discovered lease is persisted only
 when an operator promotes it to a service.
+
+The built-in server's own leases are the one exception, and for a reason that
+does not generalize: this node issued them, so nothing else can re-derive them,
+and handing an address out twice after a restart is the failure that matters.
+They are written as they are granted, reloaded on boot with the expired rows
+pruned in the same step, and never replicated or exported.
 
 Exports use YAML or JSON and carry the settings block alongside the registry,
 so a restored backup brings back the server's configuration too. Exports must
@@ -149,8 +161,9 @@ would keep answering with the configuration it had before the pull.
 Not replicated: API tokens
 and the admin account, which stay node-local so a compromised replica does
 not surrender the group's credentials; blacklist list bodies, which each node
-downloads itself; per-node settings such as the DHCP lease file and query
-logging; and DNS query history, ever.
+downloads itself; per-node settings such as the DHCP lease file, the built-in
+DHCP server's own configuration, and query logging; the leases that server has
+handed out; and DNS query history, ever.
 
 Health status replicates as operational metadata, outside the configuration
 version, and is what a replica renders for its own services: a replica sits on
@@ -215,12 +228,13 @@ before anything is published, and a query is answered from either the old
 snapshot or the new one, never a half-applied mixture.
 
 A settings change is validated, persisted, and applied in that order, all or
-nothing, from whichever surface asked for it. Almost every setting takes effect
-on the next query. One cannot change in a running process — the DHCP lease
-file, which the discovery poller is opened against. It is still stored, and the
-UI names the running value and the saved one until the operator restarts. There
-is no dirty flag: the banner is the boot values compared against the stored
-ones, so it cannot drift and it clears itself on restart.
+nothing, from whichever surface asked for it. Every setting the database owns
+takes effect without a restart, including the DHCP lease file — the discovery
+poller's source is swappable, so it is repointed in place — and the built-in
+DHCP server's own keys, which reconcile its listener. The restart banner is
+therefore comparing an empty set: it is the boot values against the stored
+ones, so it cannot drift, and it is kept for the first key that needs it
+again.
 
 The private domain is applied live. The zone is an atomic on both the
 authoritative answerer and the registry that validates new names, and each
@@ -243,7 +257,9 @@ Query logs remain local and configurable.
 ## Availability and recovery
 
 The server answers from its last committed local state. On restart it loads
-that state, re-reads the lease source, and re-probes health targets.
+that state, re-reads the lease source, and re-probes health targets. Leases the
+built-in DHCP server issued are persisted and reloaded, with expired ones
+pruned, so a restart cannot re-issue an address that is still in use.
 
 A backup is the `data_dir` directory plus the config file. `kydns export`
 writes the registry as YAML or JSON for the same purpose, which is what makes

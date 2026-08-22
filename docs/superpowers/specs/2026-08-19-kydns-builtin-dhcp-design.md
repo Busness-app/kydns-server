@@ -212,9 +212,24 @@ fall inside the range.
 ### Conflict probing
 
 Before offering an address that is new to us — not a renewal, not a
-reservation — an ARP lookup and an ICMP echo with a shared 100 ms budget. A
-reply quarantines that address for 10 minutes and allocation moves on. A
-DHCPDECLINE from a client quarantines it the same way.
+reservation — an ARP lookup on a 100 ms budget. A reply quarantines that
+address for 10 minutes and allocation moves on.
+
+*Amended in implementation.* The ICMP echo this originally paired with the ARP
+lookup is not built: it would need `CAP_NET_RAW`, which this service does not
+have and will not be granted, so there is one socket mechanism here and not
+two (`internal/dhcpd/probe.go`).
+
+A DHCPDECLINE quarantines an address the same way, but only from the client
+that actually holds it, and only for an address inside the dynamic range: a
+decline is an unauthenticated broadcast, so honouring one from anybody would
+let a forged packet delete any lease on the segment and fill the quarantine
+map. That excludes a **promised** reserved address. An OFFER promises a
+reservation without committing a lease for it, so `Allocator.Decline` refuses
+the decline and nothing is quarantined — which changes nothing anyway, because
+rule 1 hands out a reservation without consulting the quarantine list. The
+server logs that the reserved address is already in use instead, which is the
+part the operator has to act on.
 
 The quarantine list is in memory. Losing it on restart is fine: the probe
 runs again.

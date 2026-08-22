@@ -20,6 +20,20 @@ impact, reproduction steps, and any suggested mitigation.
   clears the authenticated-data bit on anything it answers.
 - Discovery sources such as DHCP and Docker are configuration inputs and must
   be validated before their data is published.
+- With the built-in DHCP server enabled, KyDNS parses packets from any device
+  on the segment rather than reading a lease file. A malformed packet is
+  dropped and is never fatal. It is deliberately not counted: there is no
+  metrics surface for a single number to land on, and one would be invented
+  for this alone. The lease table cannot outgrow the configured range — a
+  dynamic address is only ever taken from inside it, and validation caps the
+  range at 65536 addresses. Hostnames arrive in option 12, which any device on
+  the LAN chooses, so each one is cut to a single lowercase DNS label of
+  letters, digits, and hyphens, or dropped, and a lease can never shadow a
+  service, an alias, or a manual record. The ordinary packet exchange is not
+  logged, because MACs and hostnames identify people's devices; only the
+  exceptions are — a declined address, two clients claiming one name, an
+  exhausted range — and those name the device because there is nothing to act
+  on otherwise.
 - Remote blacklist sources are untrusted input: fetched only over HTTPS with
   certificate verification, redirects followed only while they stay HTTPS, a
   32 MB response body ceiling, a ceiling on parsed entries per list, no code

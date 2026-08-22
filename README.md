@@ -34,7 +34,14 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
   service doesn't cover.
 - A configurable private domain, `home.arpa` by default.
 - Per-subnet views: one name can answer differently on the LAN and over a VPN.
-- DHCP lease discovery from dnsmasq, with promote-to-service.
+- A built-in DHCP server, off by default: one interface, one range,
+  reservations that are services, and a setup wizard that fills the form in
+  from the interface you pick. It advertises KyDNS as the DNS server, which
+  is the point — plenty of routers will not let you change that. It refuses
+  to start if another DHCP server is already answering, and it needs a
+  native install or Docker with `network_mode: host`, because DHCP has to
+  hear broadcasts. DHCP lease discovery from a dnsmasq lease file still
+  works for anyone who already runs their own.
 - Health checks over HTTP, HTTPS, and TCP, with status in the web interface.
 - Upstream forwarding over DNS-over-TLS and DNS-over-HTTPS, with a cache,
   sequential failover, and single-flight.
@@ -54,6 +61,64 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
   filtering toggle. Filtering is enabled by default and never overrides local
   records.
 - YAML and JSON import/export for backup and Git-based configuration.
+
+### The built-in DHCP server
+
+It is off until you turn it on, under **DHCP** in the web UI. Type the
+interface, press "Fill in from this interface", and the range, the gateway and
+a 24-hour lease time are proposed from what that interface actually has — the
+upper half of its subnet, the host's default route. Nothing is saved until you
+press Save. A range wider than 65536 addresses is refused on save, because the
+lease table is sized by it; a range outside that interface's subnet is caught a
+step later, when the listener refuses to start and the tab says why.
+
+The DNS server it hands out is KyDNS itself. A second one is an optional field,
+for a resolver to fall back on if this box is down.
+
+It and `dhcp_lease_file` are mutually exclusive — a save that has both on is
+refused, naming the one to clear.
+
+**It refuses to start if it hears another DHCP server.** Before binding it
+sends its own DISCOVER and listens two seconds for an answer, and a reply
+refuses the start naming that server and the address it offered. A probe that
+could not run refuses too: "we could not check" is not "all clear". One
+checkbox gets past both, for the operator who deliberately runs two scopes; it
+is off by default, and the tab names what was detected. Once running, the same
+probe repeats every fifteen minutes and raises a banner, but never takes the
+listener down — pulling DHCP out from under a working network is worse than
+the conflict it would be reacting to.
+
+**Reservations are services.** Give a service a MAC and the device holding that
+MAC always gets that service's address:
+
+```sh
+kydns service add printer --address 192.168.1.40 --mac aa:bb:cc:dd:ee:ff
+kydns service update 7 --mac aa:bb:cc:dd:ee:ff
+kydns service update 7 --mac ""                     # give the reservation up
+```
+
+The address reserved is the service's one address inside the DHCP subnet, so a
+service that also answers on a VPN keeps its per-view addresses. No address in
+that subnet, or two, and the reservation is inactive and says so on the DHCP
+tab rather than being guessed at. A MAC belongs to one service.
+
+The lease table's **Reserve** button does the same thing in one click, but it
+*creates* a service — it never updates one. A lease whose hostname already
+names a service is refused with `name already exists`. Set the MAC on that
+service instead, with `kydns service update` above or a `PATCH` to
+`/api/v1/services/{id}`: the Services screen has no MAC field, so that is the
+one reservation the web UI cannot make for you.
+
+From the CLI, `kydns dhcp status` says whether the listener is running and why
+not if it is not, and `kydns dhcp leases` prints the table.
+
+**A standby replica cannot be set up in advance.** The `dhcp_*` settings are
+node-local and never replicate, and a replica refuses every administrative
+write — through the UI, `PATCH /api/v1/settings`, and `kydns settings set`
+alike. So a replica you have never promoted has DHCP off and no supported way
+to change that. Promote it first, then configure DHCP; promotion needs no
+restart for it. It also comes up with an empty lease table and re-allocates
+from scratch, which is what the ARP probe before each address new to it is for.
 
 ### Blacklist filtering
 
@@ -85,6 +150,11 @@ malware guarantee.
   encrypted channel; it does not verify signatures itself. An `AD` bit from
   KyDNS means "the resolver we talked to privately said it validated," not
   "KyDNS checked the chain."
+- **IPv6 DNS advertisement.** On a dual-stack network your router advertises
+  itself as a DNS server over IPv6, and clients often prefer it — so some
+  queries bypass KyDNS even with its DHCP server running. Turning off the
+  router's IPv6 DNS advertisement fixes it. Doing it properly means KyDNS
+  sending router advertisements itself, which it does not.
 - Docker Compose discovery, and lease formats other than dnsmasq.
 - Local TLS certificate issuance for private service names.
 
@@ -122,8 +192,9 @@ read-only, so you can see what the running server actually has.
 
 Every other setting — the private domain, reverse zones, upstreams,
 `allow_query`, Tailscale, TTLs, the cache bounds, the two logging opt-ins,
-lease discovery, and the health-check intervals — lives in the database.
-`kydns.example.yaml` still lists them, but only as **first-run seed values**:
+lease discovery, the built-in DHCP server, and the health-check intervals —
+lives in the database. `kydns.example.yaml` still lists them, but only as
+**first-run seed values**:
 they populate a fresh database and are ignored on every start after that.
 Editing them in the file later does nothing.
 
@@ -149,8 +220,10 @@ different settings do not clobber each other. Settings are part of
 Everything applies the moment it is saved, with no restart and no dropped
 queries: upstreams (which also flushes the cache), the private domain, reverse
 zones, `allow_query`, `allow_tailscale`, the TTL, all four cache settings, both
-log flags, the three health settings, the discovery interval, and
-`dhcp_lease_file` — the discovery poller is repointed at the new file in place.
+log flags, the three health settings, the discovery interval,
+`dhcp_lease_file` — the discovery poller is repointed at the new file in place —
+and every `dhcp_*` key, which reconciles the built-in server's listener: it
+starts, stops, or rebinds to match what you saved.
 
 ### Renaming the private domain
 
@@ -522,6 +595,7 @@ works from any machine that can reach the admin listener:
 | `kydns record add\|list\|rm` | Manage manual A, AAAA and CNAME records. |
 | `kydns view add\|list\|rm` | Manage per-subnet views. |
 | `kydns token add\|list\|rm` | Manage API tokens. |
+| `kydns dhcp status\|leases` | Whether the built-in DHCP server is running, and the leases it has handed out. Read-only. |
 | `kydns settings get` | Print the settings the server is running. |
 | `kydns settings set k=v ...` | Change them. `--confirm-public <cidr>` for a public `allow_query` range. |
 | `kydns replica invite\|list\|remove` | Manage the replicas this node serves. `invite` prints a pairing code and this node's fingerprint; confirm the fingerprint on the replica before entering the code. |

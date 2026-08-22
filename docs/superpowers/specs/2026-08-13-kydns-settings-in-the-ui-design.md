@@ -42,6 +42,18 @@ Applied live on save:
 server landed: the poller's source became swappable, which is what both
 features needed.
 
+That server's own keys joined the same table at the same time —
+`dhcp_enabled`, `dhcp_interface`, `dhcp_range_start`, `dhcp_range_end`,
+`dhcp_gateway`, `dhcp_lease_seconds`, `dhcp_secondary_dns`,
+`dhcp_allow_foreign` — and apply live too: `apply` reconciles the listener,
+which starts, stops, or rebinds it. They are node-local, like
+`dhcp_lease_file`, `discovery.interval`, and the two log flags:
+`store.ApplySnapshot` reads every one of them back out of the row it is
+replacing, so a pull from a primary can never carry them. The practical
+consequence is that a replica has no supported way to configure DHCP at all —
+the API, the CLI, and the web forms all refuse writes on a replica — so a
+standby is configured after promotion, not before.
+
 `private_domain` is applied live too: `Apply` renames the zone everywhere,
 including every manual record, behind a two-step confirmation. Nothing
 requires a restart today, which is why the restart banner has no keys left
