@@ -145,11 +145,7 @@ func (d *dhcpRunner) reconcile(v store.Settings, svcs []store.Service) {
 	// The old listener holds :67 until it is closed, so it goes down only once
 	// its replacement is built and about to bind.
 	d.stopLocked()
-	start := d.start
-	if start == nil {
-		start = startListener
-	}
-	if err := start(b); err != nil {
+	if err := d.effectiveStart()(b); err != nil {
 		d.fail(v, err, "dhcp listener failed to bind")
 		return
 	}
@@ -201,6 +197,16 @@ var errReplicaNoDHCP = errors.New(
 // startListener is the real bind. Named so the injected form has something to
 // default to; see dhcpRunner.start.
 func startListener(b built) error { return b.srv.Start(context.Background()) }
+
+// effectiveStart resolves d.start, defaulting to the real bind. A separate
+// method so the default can be asserted by function identity without calling
+// it - calling it binds :67, which no test here may do.
+func (d *dhcpRunner) effectiveStart() func(built) error {
+	if d.start != nil {
+		return d.start
+	}
+	return startListener
+}
 
 // built is a listener and the two pieces Reconcile keeps once it binds: its
 // allocator, so reservations refresh without a rebuild, and the subnet they

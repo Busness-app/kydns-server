@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/netip"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -761,6 +762,34 @@ func TestAStopDuringARefreshDoesNotRepublishTheProblems(t *testing.T) {
 	}
 }
 
+// The staleness re-check has two halves for two different reasons the running
+// listener can move under a refresh. This isolates the alloc half: reconcile
+// (the locked half of Reconcile) clears d.alloc on a stop but never touches
+// gen - only the public Reconcile's trailing RefreshReservations bumps that -
+// so a stop landing mid-read must be caught by alloc alone, with gen equal
+// throughout.
+func TestTheAllocGuardCatchesAStopThatGenAloneWouldMiss(t *testing.T) {
+	d, _ := reservedRunner([]store.Service{{
+		Name: "offsite", MAC: "aa:bb:cc:dd:ee:ff",
+		Addresses: []store.Address{{Address: "10.9.0.20"}},
+	}})
+	svcs := d.services
+	d.services = func() ([]store.Service, error) {
+		// The locked reconcile, not the public Reconcile: it never calls
+		// RefreshReservations, so gen stays exactly where this refresh
+		// captured it.
+		d.reconcile(store.Settings{}, nil)
+		return svcs()
+	}
+
+	if !ranWithin(func() { d.RefreshReservations() }) {
+		t.Fatal("the refresh never returned")
+	}
+	if p := d.Problems(); len(p) != 0 {
+		t.Fatalf("Problems() = %+v after the listener stopped, want none", p)
+	}
+}
+
 // A registry write refreshes while the UI reads. -race is the point of this
 // one; it passes trivially without it.
 func TestRefreshReservationsIsSafeAlongsideTheUIReads(t *testing.T) {
@@ -819,6 +848,19 @@ func TestAnOverlappingRefreshNeverPublishesTheOlderList(t *testing.T) {
 	}
 	if p := d.Problems(); len(p) != 0 {
 		t.Fatalf("Problems() = %+v, want none: offsite is gone from the newer list", p)
+	}
+}
+
+// serve.go never sets d.start; a real node relies entirely on the nil default
+// resolving to the real bind. Calling it would open :67, which no test here
+// may do, so this checks function identity instead - the same technique
+// proves the default without ever dialing a socket.
+func TestANilStartHookDefaultsToTheRealListener(t *testing.T) {
+	d := &dhcpRunner{}
+	got := reflect.ValueOf(d.effectiveStart()).Pointer()
+	want := reflect.ValueOf(startListener).Pointer()
+	if got != want {
+		t.Fatal("a nil start hook did not default to startListener; every DHCP-enabled node would panic at boot")
 	}
 }
 
