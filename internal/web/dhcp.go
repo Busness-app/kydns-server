@@ -8,6 +8,7 @@ import (
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/registry"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
 	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
@@ -191,10 +192,27 @@ func (s *Server) postDHCPSettings(w http.ResponseWriter, r *http.Request) {
 	// No confirmation: this form cannot widen allow_query, so there is no
 	// exposure for the operator to authorize.
 	if err := s.o.Settings.Set(form.apply(cur), ""); err != nil {
-		s.renderDHCP(w, r, http.StatusBadRequest, form, err.Error())
+		status, reason := s.dhcpSaveRefusal(err)
+		s.renderDHCP(w, r, status, form, reason)
 		return
 	}
 	http.Redirect(w, r, "/dhcp", http.StatusSeeOther)
+}
+
+// dhcpSaveRefusal is how a refused save is shown. A replica may save this form,
+// so the only way it is refused as read-only is a pull landing between the read
+// above and the write, which moved the non-DHCP half the form carried: the same
+// 409 the API answers that with, and the address of the box the rest of the
+// settings belong on, which nothing else on this tab shows.
+func (s *Server) dhcpSaveRefusal(err error) (int, string) {
+	if !errors.Is(err, settings.ErrReadOnlyReplica) {
+		return http.StatusBadRequest, err.Error()
+	}
+	msg := err.Error()
+	if st, isReplica := s.replica(); isReplica {
+		msg += "; make this change on " + st.managedBy()
+	}
+	return http.StatusConflict, msg
 }
 
 // postDHCPReserve pins the address a device already has, through the same

@@ -147,14 +147,16 @@ type Service struct {
 	writeMu sync.Mutex
 }
 
-// NewService wires the write path. isReplica is nil on a node that cannot be
-// one, which writes freely.
+// NewService wires the write path. A nil isReplica reads as "replica", because
+// this is the chokepoint the whole replica exemption rests on: a caller that
+// forgets the argument gets a loud refusal on the first non-DHCP write rather
+// than a silent hole. A node that can never be a replica says so explicitly.
 func NewService(w Writer, h *Holder, onApply func(*Snapshot), isReplica func() bool) *Service {
 	if onApply == nil {
 		onApply = func(*Snapshot) {}
 	}
 	if isReplica == nil {
-		isReplica = func() bool { return false }
+		isReplica = func() bool { return true }
 	}
 	return &Service{w: w, h: h, onApply: onApply, isReplica: isReplica}
 }

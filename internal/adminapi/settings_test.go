@@ -46,6 +46,11 @@ func validStoredSettings() store.Settings {
 	}
 }
 
+// notAReplica is what a node that cannot be one passes. Stated rather than
+// left nil: NewService reads a nil isReplica as "replica", so the whole-row
+// write path is only reached by a caller that has said it may take one.
+func notAReplica() bool { return false }
+
 // testAPIWithSettings builds an API with a real store, a settings.Service over
 // it, and a bearer token, matching the shape of newAPI in api_test.go.
 func testAPIWithSettings(t *testing.T) (*testSrv, *settings.Service) {
@@ -71,7 +76,7 @@ func testAPIWithSettings(t *testing.T) (*testSrv, *settings.Service) {
 	if err := h.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	svc := settings.NewService(s, h, nil, nil)
+	svc := settings.NewService(s, h, nil, notAReplica)
 
 	api := NewAPI(reg, nil, nil).WithSettings(svc)
 	return &testSrv{h: api.Handler(), tok: tok}, svc
@@ -416,7 +421,7 @@ func TestPatchSettingsFansOutToTheLiveACL(t *testing.T) {
 	acl := dnsserver.NewACL(h.Current().AllowQuery)
 	svc := settings.NewService(s, h, func(snap *settings.Snapshot) {
 		acl.Replace(snap.AllowQuery)
-	}, nil)
+	}, notAReplica)
 
 	srv := &testSrv{h: NewAPI(reg, nil, nil).WithSettings(svc).Handler(), tok: tok}
 

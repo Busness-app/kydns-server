@@ -2,6 +2,7 @@ package settings
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/yoshiofthewire/kydns-server/internal/store"
@@ -27,6 +28,28 @@ func newReplicaService(t *testing.T) (*fakeWriter, *Service, *bool) {
 	}
 	replica := true
 	return w, NewService(w, h, nil, func() bool { return replica }), &replica
+}
+
+// The default has to point the safe way. This is the one chokepoint the whole
+// DHCP exemption rests on, and a call site that forgets the argument is a
+// silent hole if nil reads as "primary" — so it reads as "replica", and the
+// forgetful caller gets a refusal on its first non-DHCP write instead.
+func TestAServiceWiredWithNoRoleRefusesANonDHCPWrite(t *testing.T) {
+	w := &fakeWriter{cur: valid()}
+	h := NewHolder(func() (store.Settings, error) { return w.cur, nil })
+	if err := h.Rebuild(); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+	svc := NewService(w, h, nil, nil)
+
+	v := valid()
+	v.TTL = 120
+	if err := svc.Set(v, ""); !errors.Is(err, ErrReadOnlyReplica) {
+		t.Fatalf("a service wired with no role took a ttl write: %v", err)
+	}
+	if w.writes != 0 {
+		t.Errorf("a service wired with no role wrote %d times", w.writes)
+	}
 }
 
 // The whole point of the exemption: an operator can prepare a standby.
@@ -158,12 +181,20 @@ func TestTheReplicaWriteTouchesOnlyTheDHCPColumns(t *testing.T) {
 		t.Errorf("writes=%d narrow=%d, want the narrow path only", w.writes, w.narrowWrites)
 	}
 	after := w.cur
-	after.DHCPEnabled, after.DHCPInterface = before.DHCPEnabled, before.DHCPInterface
-	after.DHCPRangeStart, after.DHCPRangeEnd = before.DHCPRangeStart, before.DHCPRangeEnd
-	after.DHCPGateway, after.DHCPLeaseSeconds = before.DHCPGateway, before.DHCPLeaseSeconds
-	after.DHCPSecondaryDNS, after.DHCPAllowForeign = before.DHCPSecondaryDNS, before.DHCPAllowForeign
-	if !dhcpOnlyChange(before, after) {
-		t.Errorf("the narrow write moved something else:\nbefore %+v\nafter  %+v", before, after)
+	if !after.DHCPEnabled || after.DHCPInterface != "eth0" {
+		t.Fatalf("the DHCP half did not land, so there is nothing to bound: %+v", after)
+	}
+	// Compared whole against the row before the write, with the eight taken
+	// from what landed, so a settings field added later is covered. Not through
+	// dhcpOnlyChange: that is the function the write path decides with, and a
+	// mutant that bypasses it would agree with itself here.
+	want := before
+	want.DHCPEnabled, want.DHCPInterface = after.DHCPEnabled, after.DHCPInterface
+	want.DHCPRangeStart, want.DHCPRangeEnd = after.DHCPRangeStart, after.DHCPRangeEnd
+	want.DHCPGateway, want.DHCPLeaseSeconds = after.DHCPGateway, after.DHCPLeaseSeconds
+	want.DHCPSecondaryDNS, want.DHCPAllowForeign = after.DHCPSecondaryDNS, after.DHCPAllowForeign
+	if !reflect.DeepEqual(after, want) {
+		t.Errorf("the narrow write moved something else:\nafter %+v\nwant  %+v", after, want)
 	}
 }
 

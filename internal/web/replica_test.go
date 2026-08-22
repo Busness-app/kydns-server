@@ -10,21 +10,26 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
+	"github.com/yoshiofthewire/kydns-server/internal/settings"
+	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 const testPrimaryAddr = "10.0.0.9:8443"
 
 // replicaWeb wires a logged-in server behind the web write gate. The returned
 // status is read per request, so a test can flip the role mid-test the way
-// promotion does.
-func replicaWeb(t *testing.T) (http.Handler, *http.ServeMux, *Server, *ReplicaStatus, *http.Cookie, string) {
+// promotion does. Extra tweaks are applied after the role, so a test can seed
+// the state a screen needs before it renders the controls under test.
+func replicaWeb(t *testing.T, tweak ...func(*Options)) (http.Handler, *http.ServeMux, *Server, *ReplicaStatus, *http.Cookie, string) {
 	t.Helper()
 	status := &ReplicaStatus{
 		Role: "replica", PrimaryAddr: testPrimaryAddr, LastSyncUnix: time.Now().Unix(),
 	}
-	mux, srv := newWeb(t, func(o *Options) {
+	mux, srv := newWeb(t, append([]func(*Options){func(o *Options) {
 		o.Replication = func() ReplicaStatus { return *status }
-	})
+	}}, tweak...)...)
 	h := srv.WriteGate(mux)
 	setupAndLogin(t, h)
 	c := loginCookie(t, h)
@@ -339,40 +344,106 @@ func TestReplicaMaySaveTheDHCPForm(t *testing.T) {
 	}
 }
 
+// buttonTag is the opening tag of the button labelled label, which sits just
+// before it. Fatal rather than empty when the label is missing: a selector that
+// silently matches nothing is how an assertion stops being one.
+func buttonTag(t *testing.T, body, label string) string {
+	t.Helper()
+	i := strings.Index(body, label)
+	if i < 0 {
+		t.Fatalf("the %s button is missing from the page:\n%s", label, body)
+	}
+	open := strings.LastIndex(body[:i], "<button")
+	if open < 0 {
+		t.Fatalf("no opening tag before %s; the selector has gone stale", label)
+	}
+	return body[open:i]
+}
+
 // A form whose controls are disabled is a form an operator cannot use, so the
-// exemption would be unreachable through the only UI that offers it.
+// exemption would be unreachable through the only UI that offers it. Reserve is
+// the control beside it that must stay disabled: it saves a service, which is
+// replicated.
+//
+// The lease is seeded because the Reserve button lives in the lease-row loop.
+// Without one the row never renders and this test asserted nothing about it.
 func TestTheDHCPFormIsEditableOnAReplicaButReserveIsNot(t *testing.T) {
-	h, _, _, _, c, _ := replicaWeb(t)
+	h, _, _, _, c, _ := replicaWeb(t, withDHCP(fakeDHCP{running: true}), func(o *Options) {
+		o.Leases = func() []dhcp.Lease {
+			return []dhcp.Lease{{
+				Hostname: "laptop", IP: "192.168.1.50", MAC: "aa:bb:cc:dd:ee:01",
+				Expires: time.Now().Add(time.Hour),
+			}}
+		}
+	})
 	body := get(t, h, "/dhcp", c).Body.String()
 	for _, label := range []string{">Save<", ">Fill in from this interface<"} {
-		i := strings.Index(body, label)
-		if i < 0 {
-			t.Fatalf("the %s button is missing from the DHCP tab:\n%s", label, body)
-		}
-		// The disabled attribute would sit in the opening tag just before it.
-		if open := strings.LastIndex(body[:i], "<button"); strings.Contains(body[open:i], "disabled") {
-			t.Errorf("the %s button is disabled on a replica: %s", label, body[open:i])
+		if tag := buttonTag(t, body, label); strings.Contains(tag, "disabled") {
+			t.Errorf("the %s button is disabled on a replica: %s", label, tag)
 		}
 	}
+	tag := buttonTag(t, body, ">Reserve<")
+	if !strings.Contains(tag, "disabled") {
+		t.Errorf("the Reserve button is editable on a replica: %s", tag)
+	}
+	if !strings.Contains(tag, "Managed by "+testPrimaryAddr) {
+		t.Errorf("the disabled Reserve button does not say who manages it: %s", tag)
+	}
+}
+
+// storedSettings is the persisted row, read past the in-memory holder: a write
+// that reached the database and still looked refused would leave the holder
+// untouched, and a test reading the holder would call that "wrote nothing".
+func storedSettings(t *testing.T, srv *Server) store.Settings {
+	t.Helper()
+	v, ok, err := srv.o.Store.Settings()
+	if err != nil || !ok {
+		t.Fatalf("reading the stored settings: %v (ok=%v)", err, ok)
+	}
+	return v
 }
 
 // Suggest fills the form in and saves nothing, which is why it is exempt.
 func TestSuggestOnAReplicaAnswersAndWritesNothing(t *testing.T) {
 	h, _, srv, _, c, csrf := replicaWeb(t)
-	before, err := srv.o.Settings.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
+	before := storedSettings(t, srv)
 	rec := postForm(t, h, PathDHCPSuggest, dhcpFormValues(csrf), c)
 	if rec.Code == http.StatusConflict {
 		t.Fatalf("POST %s on a replica = 409: the wizard is refused beside a Save that is not", PathDHCPSuggest)
 	}
-	after, err := srv.o.Settings.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(before, after) {
+	if after := storedSettings(t, srv); !reflect.DeepEqual(before, after) {
 		t.Errorf("the suggest button wrote:\nbefore %+v\nafter  %+v", before, after)
+	}
+}
+
+// The two transports answer the same refusal the same way. A replica may save
+// this form, so the only way it is refused as read-only is a pull landing
+// between the form read and the write — an operator who did nothing wrong, and
+// who needs the address of the box the rest of the settings live on. The race
+// itself cannot be staged from a test: liveSettings and Set read the same
+// holder inside one request, with nothing in between to inject into.
+func TestTheDHCPSaveRefusalMatchesTheAPI(t *testing.T) {
+	_, _, srv, status, _, _ := replicaWeb(t)
+
+	code, msg := srv.dhcpSaveRefusal(settings.ErrReadOnlyReplica)
+	if code != http.StatusConflict {
+		t.Errorf("a read-only refusal on the DHCP form = %d, want the 409 the API answers with", code)
+	}
+	if !strings.Contains(msg, "make this change on "+testPrimaryAddr) {
+		t.Errorf("the refusal does not name the primary: %q", msg)
+	}
+
+	// A validation failure is the operator's own input and stays a 400.
+	code, _ = srv.dhcpSaveRefusal(errSettingsUnread)
+	if code != http.StatusBadRequest {
+		t.Errorf("a plain rejection = %d, want 400", code)
+	}
+
+	// Promotion ends the refusal, so nothing here is pinned to being a replica.
+	status.Role = "primary"
+	status.PrimaryAddr = ""
+	if _, msg := srv.dhcpSaveRefusal(settings.ErrReadOnlyReplica); strings.Contains(msg, testPrimaryAddr) {
+		t.Errorf("a promoted node still names a primary: %q", msg)
 	}
 }
 

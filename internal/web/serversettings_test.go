@@ -435,7 +435,7 @@ func TestPostServerSettingsRefusesWhenTheCurrentValuesCannotBeRead(t *testing.T)
 	srv.o.Settings = settings.NewService(st, settings.NewHolder(func() (store.Settings, error) {
 		v, _, err := st.Settings()
 		return v, err
-	}), nil, nil)
+	}), nil, func() bool { return false })
 
 	rec := postForm(t, h, "/settings/server", validForm(csrf), c)
 	if rec.Code == http.StatusSeeOther {

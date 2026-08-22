@@ -133,6 +133,11 @@ func (f *fakeWriter) PutSettingsRenamingZone(v store.Settings, from, to string) 
 	return 0, nil
 }
 
+// notAReplica is what a node that cannot be one passes. Stated rather than
+// left nil: NewService reads a nil isReplica as "replica", so the whole-row
+// write path is only reached by a caller that has said it may take one.
+func notAReplica() bool { return false }
+
 func newTestService(t *testing.T) (*fakeWriter, *Service, *[]*Snapshot) {
 	t.Helper()
 	w := &fakeWriter{cur: valid()}
@@ -141,7 +146,7 @@ func newTestService(t *testing.T) (*fakeWriter, *Service, *[]*Snapshot) {
 		t.Fatalf("initial rebuild: %v", err)
 	}
 	var applied []*Snapshot
-	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) }, nil)
+	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) }, notAReplica)
 	return w, svc, &applied
 }
 
@@ -292,7 +297,7 @@ func TestServiceSetDoesNotReadSourceAfterAWriteSucceeds(t *testing.T) {
 	h.publish(&Snapshot{Raw: valid()})
 
 	var applied []*Snapshot
-	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) }, nil)
+	svc := NewService(w, h, func(s *Snapshot) { applied = append(applied, s) }, notAReplica)
 
 	v := valid()
 	v.TTL = 120

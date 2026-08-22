@@ -230,9 +230,15 @@ func TestGateReadsTheRolePerRequest(t *testing.T) {
 	}
 }
 
+// testPrimaryAddr is the address a refusal on a replica has to name.
+const testPrimaryAddr = "10.0.0.2:8443"
+
 // replicaSettingsAPI is a replica with a real settings service behind it, wired
-// the way serve.go does: the service reads the same role the gate does.
-func replicaSettingsAPI(t *testing.T, role *string) (*testSrv, *settings.Service) {
+// the way serve.go does: the service reads the same role the gate does. The
+// store is returned so a test can read what was persisted rather than what the
+// in-memory holder says: a write that reached the database and still reported
+// an error would otherwise pass.
+func replicaSettingsAPI(t *testing.T, role *string) (*testSrv, *settings.Service, *store.Store) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "kydns.db"))
 	if err != nil {
@@ -257,9 +263,19 @@ func replicaSettingsAPI(t *testing.T, role *string) (*testSrv, *settings.Service
 	svc := settings.NewService(s, h, nil, func() bool { return *role == roleReplica })
 	api := NewAPI(reg, nil, nil).WithSettings(svc).
 		WithReplication(func() ReplicaStatus {
-			return ReplicaStatus{Role: *role, PrimaryAddr: "10.0.0.2:8443"}
+			return ReplicaStatus{Role: *role, PrimaryAddr: testPrimaryAddr}
 		})
-	return &testSrv{h: api.Handler(), tok: tok}, svc
+	return &testSrv{h: api.Handler(), tok: tok}, svc, s
+}
+
+// storedSettings is the persisted row, read past the holder.
+func storedSettings(t *testing.T, s *store.Store) store.Settings {
+	t.Helper()
+	v, ok, err := s.Settings()
+	if err != nil || !ok {
+		t.Fatalf("reading the stored settings: %v (ok=%v)", err, ok)
+	}
+	return v
 }
 
 // dhcpPatch is a valid, DHCP-only partial update.
@@ -272,7 +288,7 @@ const dhcpPatch = `{"dhcp_enabled":true,"dhcp_interface":"eth0",` +
 // service is what holds the write to the eight node-local DHCP fields.
 func TestAReplicaMayPatchTheDHCPSettings(t *testing.T) {
 	role := roleReplica
-	srv, svc := replicaSettingsAPI(t, &role)
+	srv, svc, _ := replicaSettingsAPI(t, &role)
 
 	rec := srv.do(t, "PATCH", PathSettings, dhcpPatch)
 	if rec.Code != http.StatusOK {
@@ -292,11 +308,11 @@ func TestAReplicaMayPatchTheDHCPSettings(t *testing.T) {
 // exemption is not scoped at all.
 func TestAReplicaCannotSmuggleANonDHCPKeyIntoADHCPPatch(t *testing.T) {
 	role := roleReplica
-	srv, svc := replicaSettingsAPI(t, &role)
-	before, err := svc.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
+	srv, _, st := replicaSettingsAPI(t, &role)
+	// Read through the database, not the in-memory holder: a write that reached
+	// the row and still reported an error would leave the holder untouched, and
+	// this test would call that a refusal.
+	before := storedSettings(t, st)
 
 	rec := srv.do(t, "PATCH", PathSettings, `{"dhcp_enabled":true,"ttl":120}`)
 	if rec.Code != http.StatusConflict {
@@ -310,15 +326,8 @@ func TestAReplicaCannotSmuggleANonDHCPKeyIntoADHCPPatch(t *testing.T) {
 		t.Errorf("code = %q, want read_only_replica: %s", body.Error.Code, rec.Body)
 	}
 
-	after, err := svc.Get()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.TTL != before.TTL {
-		t.Errorf("ttl = %d, want %d: a replica changed a replicated setting", after.TTL, before.TTL)
-	}
-	if after.DHCPEnabled {
-		t.Error("the DHCP half of a refused mixed patch was applied")
+	if after := storedSettings(t, st); !reflect.DeepEqual(after, before) {
+		t.Errorf("a refused mixed patch still wrote:\nbefore %+v\nafter  %+v", before, after)
 	}
 }
 
@@ -326,7 +335,7 @@ func TestAReplicaCannotSmuggleANonDHCPKeyIntoADHCPPatch(t *testing.T) {
 // the same reason.
 func TestAReplicaCannotPatchANonDHCPSetting(t *testing.T) {
 	role := roleReplica
-	srv, svc := replicaSettingsAPI(t, &role)
+	srv, _, st := replicaSettingsAPI(t, &role)
 	for _, body := range []string{
 		`{"ttl":120}`,
 		`{"allow_query":["0.0.0.0/0"],"confirm_public":"0.0.0.0/0"}`,
@@ -337,19 +346,47 @@ func TestAReplicaCannotPatchANonDHCPSetting(t *testing.T) {
 			t.Errorf("PATCH %s on a replica = %d, want 409: %s", body, rec.Code, rec.Body)
 		}
 	}
-	cur, err := svc.Get()
-	if err != nil {
+	if cur := storedSettings(t, st); !reflect.DeepEqual(cur, validStoredSettings()) {
+		t.Errorf("the stored settings moved: %+v", cur)
+	}
+}
+
+// The refusal has to name the box to make the change on. Every other mutating
+// route gets that from the write gate, and this one is exempt from the gate, so
+// the handler owes the operator the same sentence. A failover is exactly when
+// someone reaches for `kydns settings set` against a standby, and a refusal
+// with no address leaves them nowhere to go.
+//
+// TestEveryMutatingRouteIsRefusedOnAReplica cannot cover this: it skips the
+// exempt paths, and PathSettings is now one of them.
+func TestTheRefusedSettingsPatchNamesThePrimary(t *testing.T) {
+	role := roleReplica
+	srv, _, _ := replicaSettingsAPI(t, &role)
+
+	rec := srv.do(t, "PATCH", PathSettings, `{"ttl":120}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("PATCH ttl on a replica = %d, want 409: %s", rec.Code, rec.Body)
+	}
+	var body errBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(cur, validStoredSettings()) {
-		t.Errorf("the stored settings moved: %+v", cur)
+	if body.Error.Code != "read_only_replica" {
+		t.Fatalf("code = %q, want read_only_replica: %s", body.Error.Code, rec.Body)
+	}
+	if !strings.Contains(body.Error.Message, testPrimaryAddr) {
+		t.Errorf("the refusal does not name the primary: %q", body.Error.Message)
+	}
+	// The gate's own sentence, verbatim, so the two refusals read alike.
+	if !strings.Contains(body.Error.Message, "make this change on "+testPrimaryAddr) {
+		t.Errorf("the refusal does not match the gate's wording: %q", body.Error.Message)
 	}
 }
 
 // Promotion widens the same endpoint on the next request, not the next restart.
 func TestPromotionRestoresTheFullSettingsPatch(t *testing.T) {
 	role := roleReplica
-	srv, svc := replicaSettingsAPI(t, &role)
+	srv, svc, _ := replicaSettingsAPI(t, &role)
 	if rec := srv.do(t, "PATCH", PathSettings, `{"ttl":120}`); rec.Code != http.StatusConflict {
 		t.Fatalf("as a replica: %d %s", rec.Code, rec.Body)
 	}
@@ -367,7 +404,7 @@ func TestPromotionRestoresTheFullSettingsPatch(t *testing.T) {
 // handler is what still stops one.
 func TestTheExemptSettingsPatchStillNeedsAToken(t *testing.T) {
 	role := roleReplica
-	srv, svc := replicaSettingsAPI(t, &role)
+	srv, svc, _ := replicaSettingsAPI(t, &role)
 	rec := do(t, srv.h, "PATCH", PathSettings, "", dhcpPatch)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous PATCH on a replica = %d, want 401: %s", rec.Code, rec.Body)

@@ -321,13 +321,33 @@ func (a *API) WriteGate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		where := st.PrimaryAddr
-		if where == "" {
-			where = "its primary"
-		}
 		writeErr(w, http.StatusConflict, "read_only_replica", "",
-			"this node is a read-only replica; make this change on "+where)
+			"this node is a read-only replica; "+makeThisChangeOn(st.managedBy()))
 	})
+}
+
+// managedBy names the box to make the change on.
+func (s ReplicaStatus) managedBy() string {
+	if s.PrimaryAddr == "" {
+		return "its primary"
+	}
+	return s.PrimaryAddr
+}
+
+// makeThisChangeOn is the one sentence a refused write ends with, wherever the
+// refusal was decided. The gate says it for every non-exempt route; the
+// settings handler says it for the route the DHCP exemption moved outside the
+// gate, so an operator reads the same instruction either way.
+func makeThisChangeOn(where string) string { return "make this change on " + where }
+
+// primaryAddr names this node's primary, for a handler refusing a write the
+// gate let past. It reads the status per call, the way the gate does, so
+// promotion is followed without a restart.
+func (a *API) primaryAddr() string {
+	if a.replicaStatus == nil {
+		return "its primary"
+	}
+	return a.replicaStatus().managedBy()
 }
 
 func (a *API) getReplicaStatus(w http.ResponseWriter, _ *http.Request) {
@@ -756,7 +776,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 	// only checks; nothing is written or applied until applySettingsDoc below.
 	if doc.Settings != nil && a.settings != nil {
 		if err := a.settings.CheckWrite(fromSettingsDTO(*doc.Settings), ""); err != nil {
-			writeSettingsErr(w, err)
+			a.writeSettingsErr(w, err)
 			return
 		}
 	}
@@ -783,7 +803,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := a.applySettingsDoc(doc.Settings); err != nil {
-			writeSettingsErr(w, err)
+			a.writeSettingsErr(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"mode": "replace"})
@@ -813,7 +833,7 @@ func (a *API) importDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.applySettingsDoc(doc.Settings); err != nil {
-		writeSettingsErr(w, err)
+		a.writeSettingsErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"mode": "merge"})

@@ -127,7 +127,7 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.settings.Set(fromSettingsDTO(d), d.ConfirmPublic); err != nil {
-		writeSettingsErr(w, err)
+		a.writeSettingsErr(w, err)
 		return
 	}
 	out, err := a.settings.Get()
@@ -140,17 +140,20 @@ func (a *API) patchSettings(w http.ResponseWriter, r *http.Request) {
 
 // writeSettingsErr turns a FieldError into the same shape every other endpoint
 // returns, so a client highlights the input without special-casing settings.
-func writeSettingsErr(w http.ResponseWriter, err error) {
+func (a *API) writeSettingsErr(w http.ResponseWriter, err error) {
 	var fe settings.FieldError
 	switch {
 	case errors.As(err, &fe):
 		writeErr(w, http.StatusBadRequest, "invalid", fe.Field, fe.Msg)
 	case errors.Is(err, settings.ErrReadOnlyReplica):
-		// The same code and status the write gate answers with. This endpoint
-		// is exempt from that gate so a replica can configure its own DHCP; a
-		// patch reaching past those fields is the refusal the gate would have
-		// made, and a client must not have to tell the two apart.
-		writeErr(w, http.StatusConflict, "read_only_replica", "", err.Error())
+		// The same code, status and closing sentence the write gate answers
+		// with. This endpoint is exempt from that gate so a replica can
+		// configure its own DHCP; a patch reaching past those fields is the
+		// refusal the gate would have made, and a client must not have to tell
+		// the two apart. The settings package cannot know the address, so the
+		// transport is what names it.
+		writeErr(w, http.StatusConflict, "read_only_replica", "",
+			err.Error()+"; "+makeThisChangeOn(a.primaryAddr()))
 	default:
 		writeRegistryErr(w, err)
 	}
