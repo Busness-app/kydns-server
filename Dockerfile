@@ -6,7 +6,7 @@
 # It pins itself to the *builder's* platform and cross-compiles with GOARCH.
 # Go does that natively; letting buildx emulate an arm64 toolchain under QEMU
 # instead would build the same binary an order of magnitude slower.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 WORKDIR /src
 
