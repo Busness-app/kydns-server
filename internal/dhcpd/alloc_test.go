@@ -146,7 +146,7 @@ func TestQuarantinedAddressIsSkippedThenReleased(t *testing.T) {
 	}
 
 	*now = now.Add(quarantineFor + time.Second)
-	a.Release("aa:aa:aa:aa:aa:aa")
+	a.Release("aa:aa:aa:aa:aa:aa", l.IP)
 	l2, _ := a.Allocate("bb:bb:bb:bb:bb:bb", "two", netip.Addr{}, 24*time.Hour)
 	if want := netip.MustParseAddr("192.168.1.10"); l2.IP != want {
 		t.Fatalf("address = %v, want %v once the quarantine has expired", l2.IP, want)

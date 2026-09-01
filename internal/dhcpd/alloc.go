@@ -187,14 +187,19 @@ func (a *Allocator) allocate(mac, hostname string, requested netip.Addr, ttl tim
 	return Lease{}, false, false
 }
 
-// Release drops a client's lease, as a DHCPRELEASE does.
-func (a *Allocator) Release(mac string) {
+// Release drops the lease only when both client and address identify the
+// active binding. DHCP packets are unauthenticated, so either field alone is
+// too weak to let a RELEASE mutate state.
+func (a *Allocator) Release(mac string, ip netip.Addr) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if l, ok := a.byMAC[mac]; ok {
-		delete(a.byIP, l.IP)
-		delete(a.byMAC, mac)
+	l, ok := a.byMAC[mac]
+	if !ok || l.IP != ip {
+		return false
 	}
+	delete(a.byIP, l.IP)
+	delete(a.byMAC, mac)
+	return true
 }
 
 // Decline quarantines an address a client rejected as already in use, and

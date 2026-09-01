@@ -252,7 +252,12 @@ func (s *Server) handle(conn net.PacketConn, peer net.Addr, m *dhcpv4.DHCPv4) {
 	case dhcpv4.MessageTypeRequest:
 		s.ack(conn, peer, m, mac)
 	case dhcpv4.MessageTypeRelease:
-		s.opts.Alloc.Release(mac)
+		ip, ipOK := netip.AddrFromSlice(m.ClientIPAddr)
+		server, serverOK := netip.AddrFromSlice(m.ServerIdentifier())
+		if !ipOK || ip.IsUnspecified() || !serverOK || server.Unmap() != s.opts.Iface.Addr ||
+			!s.opts.Alloc.Release(mac, ip.Unmap()) {
+			return
+		}
 		if err := s.opts.Store.DeleteDHCPLease(mac); err != nil {
 			s.opts.Logger.Warn("could not delete a released lease", "mac", mac, "error", err)
 		}
@@ -357,7 +362,7 @@ func (s *Server) allocate(mac string, m *dhcpv4.DHCPv4, commit bool) (Lease, boo
 		if fresh && s.opts.Prober.InUse(l.IP) {
 			s.opts.Logger.Warn("an address in the pool answered a probe; quarantining it", "ip", l.IP)
 			s.opts.Alloc.Quarantine(l.IP)
-			s.opts.Alloc.Release(mac)
+			s.opts.Alloc.Release(mac, l.IP)
 			l, _, ok = s.opts.Alloc.Offer(mac, netip.Addr{}, offerHold)
 			return l, ok
 		}

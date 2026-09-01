@@ -151,6 +151,7 @@ func (s *Server) postLogout(w http.ResponseWriter, r *http.Request) {
 const (
 	cookieSSOState    = "kydns_sso_state"
 	cookieSSOVerifier = "kydns_sso_verifier"
+	cookieSSONonce    = "kydns_sso_nonce"
 	cookieSSOLink     = "kydns_sso_link"
 )
 
@@ -174,10 +175,16 @@ func (s *Server) getSSOLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to generate state", http.StatusInternalServerError)
 		return
 	}
+	nonce, err := auth.GenerateState()
+	if err != nil {
+		http.Error(w, "failed to generate nonce", http.StatusInternalServerError)
+		return
+	}
 
 	isLink := r.URL.Query().Get("link") == "true"
 	s.setSSOCookie(w, r, cookieSSOState, state, 300)
 	s.setSSOCookie(w, r, cookieSSOVerifier, verifier, 300)
+	s.setSSOCookie(w, r, cookieSSONonce, nonce, 300)
 	if isLink {
 		s.setSSOCookie(w, r, cookieSSOLink, "1", 300)
 	} else {
@@ -186,7 +193,7 @@ func (s *Server) getSSOLogin(w http.ResponseWriter, r *http.Request) {
 
 	client := auth.NewSSOClient(sso.IssuerURL, sso.ClientID, sso.ClientSecret)
 	redirectURI := s.ssoRedirectURI(r)
-	authURL := client.AuthURL(redirectURI, state, challenge)
+	authURL := client.AuthURL(redirectURI, state, nonce, challenge)
 	http.Redirect(w, r, authURL, http.StatusSeeOther)
 }
 
@@ -221,6 +228,18 @@ func (s *Server) getSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	verifier := verifierCookie.Value
+	nonceCookie, err := r.Cookie(cookieSSONonce)
+	if err != nil || nonceCookie.Value == "" {
+		s.clearSSOCookies(w, r)
+		w.WriteHeader(http.StatusBadRequest)
+		sso, _ := s.o.Store.SSOSettings()
+		s.renderBare(w, "login.html", map[string]any{
+			"Title": "Sign in", "SSOEnabled": sso.Enabled,
+			"Error": "Authentication session expired. Please try again.",
+		})
+		return
+	}
+	nonce := nonceCookie.Value
 
 	var isLink bool
 	if linkCookie, err := r.Cookie(cookieSSOLink); err == nil && linkCookie.Value == "1" {
@@ -237,7 +256,7 @@ func (s *Server) getSSOCallback(w http.ResponseWriter, r *http.Request) {
 	client := auth.NewSSOClient(sso.IssuerURL, sso.ClientID, sso.ClientSecret)
 	redirectURI := s.ssoRedirectURI(r)
 
-	claims, err := client.ExchangeCode(r.Context(), redirectURI, code, verifier)
+	claims, err := client.ExchangeCode(r.Context(), redirectURI, code, verifier, nonce)
 	if err != nil {
 		s.o.Logger.Warn("sso code exchange failed", "error", err, "source", sourceKey(r))
 		w.WriteHeader(http.StatusUnauthorized)
@@ -352,5 +371,6 @@ func (s *Server) clearSSOCookie(w http.ResponseWriter, r *http.Request, name str
 func (s *Server) clearSSOCookies(w http.ResponseWriter, r *http.Request) {
 	s.clearSSOCookie(w, r, cookieSSOState)
 	s.clearSSOCookie(w, r, cookieSSOVerifier)
+	s.clearSSOCookie(w, r, cookieSSONonce)
 	s.clearSSOCookie(w, r, cookieSSOLink)
 }

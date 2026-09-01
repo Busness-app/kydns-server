@@ -84,7 +84,7 @@ Code, one concern per package:
   Its leases are the one discovery result that is persisted, so a restart
   cannot re-issue an address that is still in use.
 - `internal/adminapi`, `internal/web`, `internal/auth` — JSON API, server-side
-  rendered UI, sessions and password hashing.
+  rendered UI, sessions, password hashing, and verified OIDC login.
 - `internal/cli` — the API client behind the non-`serve` commands.
 
 The build must stay cgo-free: the image is distroless, so the pure-Go SQLite

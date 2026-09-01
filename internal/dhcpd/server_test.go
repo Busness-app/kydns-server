@@ -277,6 +277,8 @@ func TestReleaseFreesTheAddress(t *testing.T) {
 
 	rel := discover("aa:aa:aa:aa:aa:aa", "laptop")
 	rel.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeRelease))
+	rel.ClientIPAddr = net.ParseIP("192.168.1.10")
+	rel.UpdateOption(dhcpv4.OptServerIdentifier(net.ParseIP("192.168.1.5")))
 	c := &captureConn{}
 	s.handle(c, &net.UDPAddr{IP: net.IPv4zero}, rel)
 
@@ -286,6 +288,32 @@ func TestReleaseFreesTheAddress(t *testing.T) {
 	got, _ := ms.DHCPLeases()
 	if len(got) != 0 {
 		t.Fatalf("leases after RELEASE = %+v, want none", got)
+	}
+}
+
+func TestReleaseMustMatchTheLeaseAndServer(t *testing.T) {
+	for name, mutate := range map[string]func(*dhcpv4.DHCPv4){
+		"missing client address": func(m *dhcpv4.DHCPv4) { m.ClientIPAddr = nil },
+		"wrong client address":   func(m *dhcpv4.DHCPv4) { m.ClientIPAddr = net.ParseIP("192.168.1.11") },
+		"missing server":         func(m *dhcpv4.DHCPv4) { m.DeleteOption(dhcpv4.OptionServerIdentifier) },
+		"wrong server": func(m *dhcpv4.DHCPv4) {
+			m.UpdateOption(dhcpv4.OptServerIdentifier(net.ParseIP("192.168.1.99")))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, ms := newTestServer(t)
+			s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero},
+				request("aa:aa:aa:aa:aa:aa", "laptop", netip.Addr{}))
+			rel := discover("aa:aa:aa:aa:aa:aa", "laptop")
+			rel.UpdateOption(dhcpv4.OptMessageType(dhcpv4.MessageTypeRelease))
+			rel.ClientIPAddr = net.ParseIP("192.168.1.10")
+			rel.UpdateOption(dhcpv4.OptServerIdentifier(net.ParseIP("192.168.1.5")))
+			mutate(rel)
+			s.handle(&captureConn{}, &net.UDPAddr{IP: net.IPv4zero}, rel)
+			if rows, _ := ms.DHCPLeases(); len(rows) != 1 {
+				t.Fatalf("malformed RELEASE removed lease: %+v", rows)
+			}
+		})
 	}
 }
 
