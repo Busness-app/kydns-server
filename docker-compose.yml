@@ -1,6 +1,12 @@
 services:
   kydns:
-    build: .
+    build:
+      context: .
+      args:
+        # Stamped into the binary and shown under the copyright in the web
+        # UI's About popover. `make up` passes the git tag; a bare
+        # `docker compose up` cannot run git, so it reports "dev".
+        VERSION: ${KYDNS_VERSION:-dev}
     image: kydns:latest
     container_name: kydns
     restart: unless-stopped
@@ -99,7 +105,7 @@ volumes:
 #    beats the file, and an empty one is ignored.
 #
 # 3. make setup                  fills in your interface, subnet and gateway
-# 4. docker compose up -d
+# 4. make up                     builds and starts it, stamping the version
 #
 # 5. docker compose logs kydns | grep setup-token
 #    Open http://$KYDNS_IP:8053/ and complete setup with that token.
