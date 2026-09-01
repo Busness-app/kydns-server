@@ -20,6 +20,8 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     permissions:
       contents: write     # create the release
       id-token: write     # keyless attestation
@@ -132,3 +134,60 @@ jobs:
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
             dist/*.tar.gz dist/*.deb dist/*.rpm dist/*.img.xz dist/SHA256SUMS
+
+  # Split out so packages: write never sits on the job that runs a build
+  # script as root, and gated on it so an image is only published for code
+  # that job's `go test ./...` already passed.
+  image:
+    needs: release
+    # Same guard as publishing the release: workflow_dispatch can be run
+    # against an existing tag ref, which would push a real image from what an
+    # operator thought was a dry run.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write     # keyless attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+
+      # Derived, not spelled out: a hardcoded owner silently stopped being
+      # writable when the repository moved accounts, and GITHUB_TOKEN can only
+      # write the owning account's namespace. Lowercased because registries
+      # reject a mixed-case repository name and the owner login is mixed case.
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      # VERSION is what the web UI prints under the copyright, so it has to be
+      # the release and not the commit ci.yml stamps. Both the tag as written
+      # and the bare version are pushed; :latest is left to ci.yml, where it
+      # keeps meaning tip of main.
+      - uses: docker/build-push-action@v7
+        id: push
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ needs.release.outputs.version }}
+          push: true
+          tags: |
+            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.name }}:${{ needs.release.outputs.version }}
+
+      # The packages in the release are attested; an image people docker pull
+      # is no less worth vouching for.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true

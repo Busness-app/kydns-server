@@ -9,12 +9,15 @@ build:
 setup:
 	./scripts/setup-env.sh
 
+# --build so the container matches the tree it was started from, version
+# stamp included; compose otherwise reuses a stale kydns:latest.
 up: setup
-	docker compose up -d
+	KYDNS_VERSION=$(VERSION) docker compose up -d --build
 
-# Debian versions must start with a digit, so a tag's leading "v" is stripped
-# by the caller. This default is what a local build gets.
-VERSION ?= 0.0.0-dev
+# Debian versions must start with a digit, so the tag's leading "v" is
+# stripped. A modified tree keeps its "-dirty" suffix: a build that claims to
+# be the tag when it is not is what makes a bug report useless.
+VERSION ?= $(or $(shell git describe --tags --dirty 2>/dev/null | sed 's/^v//'),0.0.0-dev)
 
 # rpm forbids "-" in a version and nfpm rewrites it to "~", so the file name
 # has to be built from the same substitution or it disagrees with the metadata

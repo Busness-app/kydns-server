@@ -186,6 +186,13 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
+      # Derived, not spelled out: the hardcoded owner silently stopped being
+      # writable when the repository moved accounts, and GITHUB_TOKEN can only
+      # write the owning account's namespace. Lowercased because registries
+      # reject a mixed-case repository name and the owner login is mixed case.
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       # arm64 covers the Pi and the ARM NAS boxes KyDNS is small enough to run
       # on. No QEMU: the Dockerfile cross-compiles with GOARCH, and the
       # distroless base runs nothing at build time.
@@ -198,11 +205,9 @@ jobs:
           push: true
           # The commit tag is what lets an operator pin a known-good image and
           # roll back to it; :latest alone gives them nowhere to go.
-          # Spelled out and lowercase: registries reject a mixed-case
-          # repository name, and the owner login is mixed case.
           tags: |
-            ghcr.io/yoshiofthewire/kydns-server:latest
-            ghcr.io/yoshiofthewire/kydns-server:${{ github.sha }}
+            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.name }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
