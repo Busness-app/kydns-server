@@ -15,6 +15,10 @@ impact, reproduction steps, and any suggested mitigation.
   Queries are answered only from the `allow_query` ranges; everything else gets
   `REFUSED`.
 - Administrative endpoints require authentication and authorization.
+- OIDC login uses authorization code with PKCE and verifies the ID token's
+  signature, issuer, audience, expiry, non-empty subject, and per-login nonce.
+  Userinfo may enrich profile and role claims only when its subject matches the
+  verified ID token.
 - Upstream resolvers are reached over DNS-over-TLS or DNS-over-HTTPS with
   certificate verification always on. Plain `udp://` is per-upstream opt-in and
   clears the authenticated-data bit on anything it answers.
@@ -32,7 +36,10 @@ impact, reproduction steps, and any suggested mitigation.
   subnet, and only an administrator can make one. Hostnames arrive in option
   12, which any device on the LAN chooses, so each one is cut to a single
   lowercase DNS label of letters, digits, and hyphens, or dropped, and a lease
-  can never shadow a service, an alias, or a manual record. The ordinary
+  can never shadow a service, an alias, or a manual record. DHCP does not
+  authenticate clients, so a RELEASE changes state only when its MAC and
+  client address match the active lease and its server identifier names this
+  KyDNS listener; malformed or foreign releases are ignored. The ordinary
   packet exchange is not logged, because MACs and hostnames identify people's
   devices; only the exceptions are — a declined address, a reservation another
   device already answers to, an address that answered a conflict probe, two

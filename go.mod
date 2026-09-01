@@ -3,10 +3,13 @@ module github.com/yoshiofthewire/kydns-server
 go 1.26.5
 
 require (
+	github.com/coreos/go-oidc/v3 v3.20.0
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/insomniacslk/dhcp v0.0.0-20260728151720-c308df0fdcef
 	github.com/miekg/dns v1.1.73
 	golang.org/x/crypto v0.55.0
 	golang.org/x/net v0.58.0
+	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,9 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 )
 
 // SSOTokenClaims represents the verified claims from KySignOn, Authentik, Keycloak, or any OIDC provider.
@@ -135,7 +139,7 @@ func GenerateState() (string, error) {
 }
 
 // AuthURL constructs the authorization URL using OIDC discovery or default paths.
-func (c *SSOClient) AuthURL(redirectURI, state, codeChallenge string) string {
+func (c *SSOClient) AuthURL(redirectURI, state, nonce, codeChallenge string) string {
 	endpoints := c.DiscoverEndpoints(context.Background())
 
 	q := url.Values{}
@@ -144,6 +148,7 @@ func (c *SSOClient) AuthURL(redirectURI, state, codeChallenge string) string {
 	q.Set("redirect_uri", redirectURI)
 	q.Set("scope", "openid profile email groups")
 	q.Set("state", state)
+	q.Set("nonce", nonce)
 	q.Set("code_challenge", codeChallenge)
 	q.Set("code_challenge_method", "S256")
 
@@ -155,84 +160,51 @@ func (c *SSOClient) AuthURL(redirectURI, state, codeChallenge string) string {
 	return fmt.Sprintf("%s%s%s", endpoints.AuthorizationEndpoint, sep, q.Encode())
 }
 
-type tokenResponse struct {
-	AccessToken string `json:"access_token"`
-	IDToken     string `json:"id_token"`
-	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
-}
-
 // ExchangeCode exchanges an authorization code with code_verifier for identity claims.
-func (c *SSOClient) ExchangeCode(ctx context.Context, redirectURI, code, codeVerifier string) (*SSOTokenClaims, error) {
-	endpoints := c.DiscoverEndpoints(ctx)
-
-	form := url.Values{}
-	form.Set("grant_type", "authorization_code")
-	form.Set("code", code)
-	form.Set("redirect_uri", redirectURI)
-	form.Set("client_id", c.ClientID)
-	if c.ClientSecret != "" {
-		form.Set("client_secret", c.ClientSecret)
-	}
-	form.Set("code_verifier", codeVerifier)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoints.TokenEndpoint, strings.NewReader(form.Encode()))
+func (c *SSOClient) ExchangeCode(ctx context.Context, redirectURI, code, codeVerifier, nonce string) (*SSOTokenClaims, error) {
+	ctx = oidc.ClientContext(ctx, c.HTTPClient)
+	provider, err := oidc.NewProvider(ctx, c.IssuerURL)
 	if err != nil {
-		return nil, fmt.Errorf("create token request: %w", err)
+		return nil, fmt.Errorf("discover OIDC provider: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
+	config := oauth2.Config{
+		ClientID: c.ClientID, ClientSecret: c.ClientSecret, Endpoint: provider.Endpoint(),
+		RedirectURL: redirectURI, Scopes: []string{oidc.ScopeOpenID, "profile", "email", "groups"},
+	}
+	token, err := config.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", codeVerifier))
 	if err != nil {
 		return nil, fmt.Errorf("token exchange failed: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var errObj map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&errObj)
-		return nil, fmt.Errorf("token endpoint returned status %d: %v", resp.StatusCode, errObj)
+	rawIDToken, ok := token.Extra("id_token").(string)
+	if !ok || rawIDToken == "" {
+		return nil, fmt.Errorf("token response has no ID token")
 	}
-
-	var tokResp tokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokResp); err != nil {
-		return nil, fmt.Errorf("decode token response: %w", err)
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: c.ClientID}).Verify(ctx, rawIDToken)
+	if err != nil {
+		return nil, fmt.Errorf("verify ID token: %w", err)
 	}
-
+	if nonce == "" || subtle.ConstantTimeCompare([]byte(idToken.Nonce), []byte(nonce)) != 1 {
+		return nil, fmt.Errorf("verify ID token: nonce mismatch")
+	}
 	rawClaims := make(map[string]any)
-
-	// Parse ID Token claims (JWT: header.payload.signature)
-	if tokResp.IDToken != "" {
-		parts := strings.Split(tokResp.IDToken, ".")
-		if len(parts) == 3 {
-			if payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
-				_ = json.Unmarshal(payloadBytes, &rawClaims)
+	if err := idToken.Claims(&rawClaims); err != nil {
+		return nil, fmt.Errorf("decode verified ID token claims: %w", err)
+	}
+	if idToken.Subject == "" {
+		return nil, fmt.Errorf("verify ID token: subject is empty")
+	}
+	if userInfo, err := provider.UserInfo(ctx, oauth2.StaticTokenSource(token)); err == nil {
+		if userInfo.Subject != idToken.Subject {
+			return nil, fmt.Errorf("verify userinfo: subject mismatch")
+		}
+		var userClaims map[string]any
+		if err := userInfo.Claims(&userClaims); err == nil {
+			for k, v := range userClaims {
+				rawClaims[k] = v
 			}
 		}
 	}
-
-	// Always query userinfo endpoint to enrich groups, roles, and profile info
-	if endpoints.UserinfoEndpoint != "" && tokResp.AccessToken != "" {
-		uReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoints.UserinfoEndpoint, nil)
-		if err == nil {
-			uReq.Header.Set("Authorization", "Bearer "+tokResp.AccessToken)
-			uReq.Header.Set("Accept", "application/json")
-			uResp, err := c.HTTPClient.Do(uReq)
-			if err == nil && uResp.StatusCode == http.StatusOK {
-				defer uResp.Body.Close()
-				var uClaims map[string]any
-				if err := json.NewDecoder(uResp.Body).Decode(&uClaims); err == nil {
-					for k, v := range uClaims {
-						rawClaims[k] = v
-					}
-				}
-			}
-		}
-	}
-
-	claims := parseClaimsMap(rawClaims)
-	return claims, nil
+	return parseClaimsMap(rawClaims), nil
 }
 
 func parseClaimsMap(m map[string]any) *SSOTokenClaims {

@@ -1,7 +1,8 @@
 package web
 
 import (
-	"encoding/base64"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 
 	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
 	"github.com/yoshiofthewire/kydns-server/internal/auth"
@@ -390,17 +394,44 @@ func TestEveryPostRouteRequiresSessionAndCSRF(t *testing.T) {
 	}
 }
 
-func fakeIDToken(sub, username, email, role string) string {
-	claims := map[string]any{
-		"sub":      sub,
-		"username": username,
-		"email":    email,
-		"role":     role,
-		"iss":      "https://auth.urlxl.com",
+func oidcTestServer(t *testing.T, sub, username, email, role string) *httptest.Server {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
 	}
-	claimsJSON, _ := json.Marshal(claims)
-	encodedClaims := base64.RawURLEncoding.EncodeToString(claimsJSON)
-	return "header." + encodedClaims + ".signature"
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		claims := map[string]any{"sub": sub, "username": username, "email": email, "role": role}
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer": srv.URL, "authorization_endpoint": srv.URL + "/authorize",
+				"token_endpoint": srv.URL + "/token", "userinfo_endpoint": srv.URL + "/userinfo",
+				"jwks_uri": srv.URL + "/jwks", "id_token_signing_alg_values_supported": []string{"RS256"},
+			})
+		case "/jwks":
+			_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+				Key: &key.PublicKey, KeyID: "test", Algorithm: string(jose.RS256), Use: "sig",
+			}}})
+		case "/token":
+			signer, _ := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
+				(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "test"))
+			raw, _ := jwt.Signed(signer).Claims(map[string]any{
+				"iss": srv.URL, "aud": "kydns", "exp": time.Now().Add(time.Hour).Unix(),
+				"iat": time.Now().Unix(), "nonce": "test_nonce", "sub": sub,
+				"username": username, "email": email, "role": role,
+			}).Serialize()
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "id_token": raw, "token_type": "Bearer"})
+		case "/userinfo":
+			_ = json.NewEncoder(w).Encode(claims)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 func TestSSOLoginButtonShownWhenEnabled(t *testing.T) {
@@ -448,7 +479,7 @@ func TestSSOGetLoginSetsPKCEAndRedirects(t *testing.T) {
 	}
 
 	// Verify cookies were set
-	var stateCookie, verifierCookie *http.Cookie
+	var stateCookie, verifierCookie, nonceCookie *http.Cookie
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == cookieSSOState {
 			stateCookie = c
@@ -456,22 +487,17 @@ func TestSSOGetLoginSetsPKCEAndRedirects(t *testing.T) {
 		if c.Name == cookieSSOVerifier {
 			verifierCookie = c
 		}
+		if c.Name == cookieSSONonce {
+			nonceCookie = c
+		}
 	}
-	if stateCookie == nil || verifierCookie == nil {
-		t.Fatalf("missing PKCE / state cookies")
+	if stateCookie == nil || verifierCookie == nil || nonceCookie == nil {
+		t.Fatalf("missing PKCE / state / nonce cookies")
 	}
 }
 
 func TestSSOCallbackRejectsNonAdminRole(t *testing.T) {
-	mockSSOServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "tok",
-			"id_token":     fakeIDToken("sub-1", "regular_bob", "bob@urlxl.com", "user"),
-			"token_type":   "Bearer",
-		})
-	}))
-	defer mockSSOServer.Close()
+	mockSSOServer := oidcTestServer(t, "sub-1", "regular_bob", "bob@urlxl.com", "user")
 
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
@@ -484,6 +510,7 @@ func TestSSOCallbackRejectsNonAdminRole(t *testing.T) {
 	req := httptest.NewRequest("GET", "/auth/sso/callback?code=mock_code&state=test_state", nil)
 	req.AddCookie(&http.Cookie{Name: cookieSSOState, Value: "test_state"})
 	req.AddCookie(&http.Cookie{Name: cookieSSOVerifier, Value: "test_verifier"})
+	req.AddCookie(&http.Cookie{Name: cookieSSONonce, Value: "test_nonce"})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -497,15 +524,7 @@ func TestSSOCallbackRejectsNonAdminRole(t *testing.T) {
 }
 
 func TestSSOCallbackAutoLinksAdminAndLogsIn(t *testing.T) {
-	mockSSOServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"access_token": "tok",
-			"id_token":     fakeIDToken("sso-sub-admin-999", "admin_yoshi", "yoshi@urlxl.com", "admin"),
-			"token_type":   "Bearer",
-		})
-	}))
-	defer mockSSOServer.Close()
+	mockSSOServer := oidcTestServer(t, "sso-sub-admin-999", "admin_yoshi", "yoshi@urlxl.com", "admin")
 
 	h, srv := newWeb(t)
 	setupAndLogin(t, h)
@@ -518,6 +537,7 @@ func TestSSOCallbackAutoLinksAdminAndLogsIn(t *testing.T) {
 	req := httptest.NewRequest("GET", "/auth/sso/callback?code=mock_code&state=test_state", nil)
 	req.AddCookie(&http.Cookie{Name: cookieSSOState, Value: "test_state"})
 	req.AddCookie(&http.Cookie{Name: cookieSSOVerifier, Value: "test_verifier"})
+	req.AddCookie(&http.Cookie{Name: cookieSSONonce, Value: "test_nonce"})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
