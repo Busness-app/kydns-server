@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // blockEverything denies the "example" apex, which Set.Match extends to every

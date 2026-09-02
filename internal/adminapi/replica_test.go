@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/registry"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/registry"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // newReplicaAPI is newAPI plus a canned replication status, so a test can

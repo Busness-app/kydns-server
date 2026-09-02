@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/Busness-app/kydns-server/internal/zone"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
 const cnameChaseDepth = 8

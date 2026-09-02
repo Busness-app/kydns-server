@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // RefreshCadence is the foreground scheduler tick. Each list still obeys its

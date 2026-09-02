@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // validateFresh is the write path with nothing stored yet: every prefix in v is

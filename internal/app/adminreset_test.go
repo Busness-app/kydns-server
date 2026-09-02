@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/auth"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/auth"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // seeded writes a config and a database with an existing admin password.

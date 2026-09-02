@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
-	"github.com/yoshiofthewire/kydns-server/internal/registry"
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/dnsserver"
+	"github.com/Busness-app/kydns-server/internal/registry"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // testSrv is a small authenticated-request helper, matching how newAPI/do work

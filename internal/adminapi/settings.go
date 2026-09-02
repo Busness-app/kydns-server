@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // settingsDTO is the wire form. It is a flat document because that is what a

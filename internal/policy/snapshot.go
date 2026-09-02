@@ -1,6 +1,6 @@
 package policy
 
-import "github.com/yoshiofthewire/kydns-server/internal/store"
+import "github.com/Busness-app/kydns-server/internal/store"
 
 // The values the query log's policy field can take, alongside a list name.
 const (

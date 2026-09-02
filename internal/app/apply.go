@@ -5,13 +5,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/discovery"
-	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
-	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
-	"github.com/yoshiofthewire/kydns-server/internal/health"
-	"github.com/yoshiofthewire/kydns-server/internal/registry"
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/zone"
+	"github.com/Busness-app/kydns-server/internal/discovery"
+	"github.com/Busness-app/kydns-server/internal/discovery/dhcp"
+	"github.com/Busness-app/kydns-server/internal/dnsserver"
+	"github.com/Busness-app/kydns-server/internal/health"
+	"github.com/Busness-app/kydns-server/internal/registry"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/zone"
 )
 
 // liveComponents is every running piece a settings change fans out to. It

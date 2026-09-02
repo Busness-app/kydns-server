@@ -7,7 +7,7 @@ section: net
 priority: optional
 maintainer: Yoshi <yoshi@urlxl.com>
 vendor: KyDNS
-homepage: https://github.com/yoshiofthewire/kydns-server
+homepage: https://github.com/Busness-app/kydns-server
 license: MIT
 description: |
   Self-hosted local DNS server and service directory.

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
-	"github.com/yoshiofthewire/kydns-server/internal/health"
+	"github.com/Busness-app/kydns-server/internal/discovery/dhcp"
+	"github.com/Busness-app/kydns-server/internal/health"
 )
 
 func TestDiscoveredListsLeases(t *testing.T) {

@@ -5,9 +5,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Busness-app/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/zone"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
-	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
 func testSnap(t *testing.T) *zone.Snapshot {

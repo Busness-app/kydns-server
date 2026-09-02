@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // Failure and recovery thresholds: slow to alarm, fast to recover.

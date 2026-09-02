@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/health"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/health"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 type addressRow struct {

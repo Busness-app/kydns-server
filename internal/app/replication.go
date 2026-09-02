@@ -10,13 +10,13 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
-	"github.com/yoshiofthewire/kydns-server/internal/config"
-	"github.com/yoshiofthewire/kydns-server/internal/health"
-	"github.com/yoshiofthewire/kydns-server/internal/policy"
-	"github.com/yoshiofthewire/kydns-server/internal/replica"
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/adminapi"
+	"github.com/Busness-app/kydns-server/internal/config"
+	"github.com/Busness-app/kydns-server/internal/health"
+	"github.com/Busness-app/kydns-server/internal/policy"
+	"github.com/Busness-app/kydns-server/internal/replica"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 const (

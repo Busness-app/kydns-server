@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/policy"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/policy"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // blacklistListDTO is the wire form of a list. There is nowhere in it to put

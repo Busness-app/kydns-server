@@ -17,14 +17,14 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
-	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
-	"github.com/yoshiofthewire/kydns-server/internal/auth"
-	"github.com/yoshiofthewire/kydns-server/internal/config"
-	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
-	"github.com/yoshiofthewire/kydns-server/internal/policy"
-	"github.com/yoshiofthewire/kydns-server/internal/registry"
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/adminapi"
+	"github.com/Busness-app/kydns-server/internal/auth"
+	"github.com/Busness-app/kydns-server/internal/config"
+	"github.com/Busness-app/kydns-server/internal/dnsserver"
+	"github.com/Busness-app/kydns-server/internal/policy"
+	"github.com/Busness-app/kydns-server/internal/registry"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 const testPassword = "a-good-password"

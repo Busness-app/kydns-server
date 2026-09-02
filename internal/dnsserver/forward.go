@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Busness-app/kydns-server/internal/upstream"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 	"golang.org/x/sync/singleflight"
 )
 

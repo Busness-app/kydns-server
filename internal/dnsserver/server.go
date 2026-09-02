@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Busness-app/kydns-server/internal/zone"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
 // PolicyDecider is the blacklist policy's slice of the DNS pipeline. Keeping

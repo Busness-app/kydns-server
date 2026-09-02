@@ -1,6 +1,6 @@
 [Unit]
 Description=KyDNS local DNS server and service directory
-Documentation=https://github.com/yoshiofthewire/kydns-server
+Documentation=https://github.com/Busness-app/kydns-server
 After=network-online.target
 Wants=network-online.target
 

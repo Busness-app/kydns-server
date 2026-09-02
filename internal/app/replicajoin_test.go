@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/replica"
+	"github.com/Busness-app/kydns-server/internal/replica"
 )
 
 // newJoiner is the replica's half of pairing as the daemon wires it.

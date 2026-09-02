@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 func TestPeerAddressRequiresIPAndPort(t *testing.T) {

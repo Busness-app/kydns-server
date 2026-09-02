@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Busness-app/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/upstream"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
-	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 )
 
 // FieldError names the input that was wrong, so the API and the form both

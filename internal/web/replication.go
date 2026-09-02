@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/adminapi"
-	"github.com/yoshiofthewire/kydns-server/internal/replica"
+	"github.com/Busness-app/kydns-server/internal/adminapi"
+	"github.com/Busness-app/kydns-server/internal/replica"
 )
 
 // roleStandalone mirrors app.Role's standalone value, for the same reason

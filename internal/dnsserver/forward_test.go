@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busness-app/kydns-server/internal/upstream"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/upstream"
 )
 
 // fakeUpstream stands in for a real resolver. secure decides whether the AD

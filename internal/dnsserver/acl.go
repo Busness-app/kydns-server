@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/settings"
 )
 
 var cgnat = netip.MustParsePrefix(settings.TailscaleCGNAT)

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/health"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/health"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // loggedIn returns a handler, server, session cookie, and CSRF token.

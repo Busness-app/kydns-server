@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/dhcpd"
-	"github.com/yoshiofthewire/kydns-server/internal/discovery"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/dhcpd"
+	"github.com/Busness-app/kydns-server/internal/discovery"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // A replica is the exception, not the primary: RoleStandalone is what most

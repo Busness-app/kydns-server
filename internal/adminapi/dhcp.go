@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/netip"
 
-	"github.com/yoshiofthewire/kydns-server/internal/dhcpd"
+	"github.com/Busness-app/kydns-server/internal/dhcpd"
 )
 
 // DHCPRunner is the built-in server's runner as the API reads it. It is the

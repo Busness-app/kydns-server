@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busness-app/kydns-server/internal/dnsserver"
+	"github.com/Busness-app/kydns-server/internal/policy"
+	"github.com/Busness-app/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/zone"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
-	"github.com/yoshiofthewire/kydns-server/internal/policy"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
-	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
 // buildPolicy mirrors the wiring in Serve, so the test proves the shape the

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/cli"
+	"github.com/Busness-app/kydns-server/internal/cli"
 )
 
 // e2eDeadline bounds every poll in this test. The pull loop has its own
