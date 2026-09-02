@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // staleAfter is how long without a successful poll before the operator

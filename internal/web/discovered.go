@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
-	"github.com/yoshiofthewire/kydns-server/internal/registry"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/discovery/dhcp"
+	"github.com/Busness-app/kydns-server/internal/registry"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // discoveryOn reports whether a lease source is configured right now. It is

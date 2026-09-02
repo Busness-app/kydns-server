@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/cli"
-	"github.com/yoshiofthewire/kydns-server/internal/web"
+	"github.com/Busness-app/kydns-server/internal/cli"
+	"github.com/Busness-app/kydns-server/internal/web"
 )
 
 func TestRunUnknownSubcommand(t *testing.T) {

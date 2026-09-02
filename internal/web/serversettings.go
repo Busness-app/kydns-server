@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // RestartItem is one setting whose stored value differs from the one the

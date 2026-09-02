@@ -1,4 +1,4 @@
-module github.com/yoshiofthewire/kydns-server
+module github.com/Busness-app/kydns-server
 
 go 1.26.5
 

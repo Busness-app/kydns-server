@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // PeerStore is the pinned set: membership is the whole access control.

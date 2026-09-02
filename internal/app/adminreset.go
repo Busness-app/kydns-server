@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/yoshiofthewire/kydns-server/internal/auth"
-	"github.com/yoshiofthewire/kydns-server/internal/config"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/auth"
+	"github.com/Busness-app/kydns-server/internal/config"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // PasswordReader collects a password. Injected so the reset flow is testable

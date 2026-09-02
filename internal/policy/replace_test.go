@@ -3,7 +3,7 @@ package policy
 import (
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // ReplacePolicy must not trust an imported document's own builtin flag: only

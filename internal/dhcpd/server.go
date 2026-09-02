@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
+	idhcp "github.com/Busness-app/kydns-server/internal/discovery/dhcp"
+	"github.com/Busness-app/kydns-server/internal/store"
 	"github.com/insomniacslk/dhcp/dhcpv4"
 	"github.com/insomniacslk/dhcp/dhcpv4/server4"
-	idhcp "github.com/yoshiofthewire/kydns-server/internal/discovery/dhcp"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
 )
 
 // The whole point of this package's shape: leases reach DNS through the path

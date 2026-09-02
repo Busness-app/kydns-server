@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/dhcpd"
-	"github.com/yoshiofthewire/kydns-server/internal/discovery"
-	"github.com/yoshiofthewire/kydns-server/internal/settings"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/dhcpd"
+	"github.com/Busness-app/kydns-server/internal/discovery"
+	"github.com/Busness-app/kydns-server/internal/settings"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // replicaDHCPRig wires the three pieces the exemption spans as serve.go does:

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busness-app/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/zone"
 	"github.com/miekg/dns"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
-	"github.com/yoshiofthewire/kydns-server/internal/zone"
 )
 
 // startUDP runs srv on an ephemeral loopback UDP port and returns its address.

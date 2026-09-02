@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/registry"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/registry"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // Refresh interval bounds. The floor keeps a misconfigured list from

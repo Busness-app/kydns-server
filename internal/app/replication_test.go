@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yoshiofthewire/kydns-server/internal/health"
-	"github.com/yoshiofthewire/kydns-server/internal/replica"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/health"
+	"github.com/Busness-app/kydns-server/internal/replica"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // nodeDir prepares a data dir and returns the node identity the daemon will

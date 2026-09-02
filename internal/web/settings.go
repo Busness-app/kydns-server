@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yoshiofthewire/kydns-server/internal/dnsserver"
-	"github.com/yoshiofthewire/kydns-server/internal/store"
+	"github.com/Busness-app/kydns-server/internal/dnsserver"
+	"github.com/Busness-app/kydns-server/internal/store"
 )
 
 // restartNote covers exactly the keys the config file still owns. Everything

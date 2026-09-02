@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yoshiofthewire/kydns-server/internal/replica"
+	"github.com/Busness-app/kydns-server/internal/replica"
 )
 
 const (

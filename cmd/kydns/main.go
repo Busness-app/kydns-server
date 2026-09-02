@@ -9,9 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/yoshiofthewire/kydns-server/internal/app"
-	"github.com/yoshiofthewire/kydns-server/internal/cli"
-	"github.com/yoshiofthewire/kydns-server/internal/web"
+	"github.com/Busness-app/kydns-server/internal/app"
+	"github.com/Busness-app/kydns-server/internal/cli"
+	"github.com/Busness-app/kydns-server/internal/web"
 )
 
 // version is set at link time with -X main.version. "dev" means someone built
