@@ -38,30 +38,32 @@
       root.style.setProperty("--" + k.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase()), t[k]);
     }
     root.style.colorScheme = isLight(t.bg) ? "light" : "dark";
-    root.dataset.theme = name;
   }
 
   function stored() {
     try {
       const v = localStorage.getItem(KEY);
-      return v in THEMES ? v : DEFAULT;
+      return Object.hasOwn(THEMES, v) ? v : DEFAULT;
     } catch (e) {
       return DEFAULT;
     }
   }
 
   apply(stored());
+  // Another tab, or the license iframe's parent, changed it.
+  window.addEventListener("storage", function (e) { if (e.key === KEY) apply(stored()); });
 
   // The picker on Settings: one swatch per theme, painted in its own colours.
   document.addEventListener("DOMContentLoaded", function () {
     const grid = document.querySelector("[data-theme-grid]");
     if (!grid) return;
+    const current = stored();
     for (const name in THEMES) {
       const t = THEMES[name];
       const b = document.createElement("button");
       b.type = "button";
       b.className = "theme-swatch";
-      b.setAttribute("aria-pressed", String(name === stored()));
+      b.setAttribute("aria-pressed", String(name === current));
       b.innerHTML =
         '<span class="theme-swatch-preview" style="background: linear-gradient(90deg, ' +
         t.sidebarStart + " 30%, " + t.bg + ' 30%)"><i style="background:' + t.accent +

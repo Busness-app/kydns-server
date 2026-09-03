@@ -241,6 +241,8 @@
 
           <label for="issuer_url">Issuer URL</label>
           <input id="issuer_url" name="issuer_url" type="url" value="{{.SSOSettings.IssuerURL}}" placeholder="https://auth.urlxl.com">
+          <p class="muted">Authentik issuers include the application:
+             <code>https://authentik.example/application/o/kydns/</code></p>
 
           <label for="client_id">Client ID</label>
           <input id="client_id" name="client_id" type="text" value="{{.SSOSettings.ClientID}}" placeholder="kydns">

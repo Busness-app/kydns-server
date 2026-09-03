@@ -5,15 +5,16 @@
 /* Dark form controls and scrollbars, including inside the license frame. */
 :root {
   color-scheme: dark;
-  /* theme.js sets the eleven KyPost tokens inline on <html>; these are
-     derived from them so every palette gets its own tiers. */
-  --ink-strong: #e8edf4;
+  /* theme.js sets the eleven KyPost tokens inline on <html>. Without it the
+     Patina Ky values below apply; the rest are derived so every palette gets
+     its own tiers. */
+  --ink: #94a3b8;
   --ink-dim: color-mix(in srgb, var(--ink) 65%, var(--bg));
   --line-strong: color-mix(in srgb, var(--line) 70%, var(--ink));
   --raised: color-mix(in srgb, var(--panel) 94%, var(--ink-strong));
   --sidebar-start: var(--bg);
   --sidebar-end: var(--panel);
-  --button-text: #04211f;
+  --button-text: #04120d;
   /* Status colors are semantic, not themed. light-dark follows the
      color-scheme theme.js picks from the palette's background. */
   --ok: light-dark(#1b7f52, #3fd39b);
@@ -86,7 +87,8 @@ body { font-size: 15px; }
 
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card);
         padding: 1.25rem 1.4rem; margin-bottom: 1.1rem;
-        box-shadow: light-dark(0 1px 2px rgba(0,0,0,.04), inset 0 1px 0 rgba(255,255,255,.025)); }
+        box-shadow: 0 1px 2px light-dark(rgba(0,0,0,.04), transparent),
+                    inset 0 1px 0 light-dark(transparent, rgba(255,255,255,.025)); }
 .card > h3 { margin-bottom: .5rem; }
 .card > h3 + p.muted { margin-top: 0; }
 .card > p:first-child { margin-top: 0; }
@@ -140,7 +142,7 @@ body { font-size: 15px; }
 table.grid { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .84rem; }
 table.grid th { text-align: left; color: var(--ink); font-weight: 500; font-size: .74rem;
                 padding: .6rem .75rem; border-bottom: 1px solid var(--line-strong);
-                background: var(--panel); white-space: nowrap; }
+                background: var(--panel); position: sticky; top: 0; z-index: 1; white-space: nowrap; }
 table.grid td { padding: .6rem .75rem; border-bottom: 1px solid var(--line); color: var(--ink-strong);
                 vertical-align: middle; font-variant-numeric: tabular-nums; }
 table.grid tr:last-child td { border-bottom: 0; }
@@ -271,7 +273,7 @@ button:focus-visible, .button:focus-visible, a:focus-visible, .license-link:focu
 
 .sso-linked { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
               gap: .75rem; padding: .85rem 1rem; margin-bottom: 1rem; border-radius: var(--r-control);
-              background: var(--accent-soft); border: 1px solid rgba(77,238,234,.25); }
+              background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
 .sso-linked strong { color: var(--accent); font-family: var(--font-display); }
 .sso-linked .muted { font-size: .84rem; margin-top: .2rem; }
 .sso-linked form { margin: 0; }
@@ -318,16 +320,16 @@ a { color: var(--accent); }
                                             height: 2px; border-radius: 2px 2px 0 0; }
   .app-nav form { margin: 0 0 0 auto; }
   .app-nav form button { width: auto; }
-  .app-footer { margin: 0; padding: 0; flex-basis: 100%; display: none; }
+  .app-footer { margin: 0; padding: .5rem 0 0; flex-basis: 100%; }
   .app-main { padding: 1.25rem 1rem 2rem; }
   .app-main h2 { font-size: 1.35rem; }
-  .stat-row { padding: .75rem 1rem; }
   .stat { flex-basis: 40%; padding: .5rem 1rem; border-left: 0; }
   .stat .value { font-size: 1.6rem; }
   form.stack, .fields { grid-template-columns: minmax(0, 1fr); gap: .3rem; }
   form.stack > label, .fields > label { grid-column: 1; text-align: left; padding-top: .4rem; }
   form.stack > :not(label), .fields > :not(label) { grid-column: 1; }
   .card { overflow-x: auto; padding: 1rem; }
+  .stat-row { padding: .75rem 1rem; }
   /* The desktop column split squeezes a URL to one word per line here; let
      the table scroll inside its card instead. */
   table.grid.lists td:first-child, table.grid.lists td:nth-child(2) { width: auto; min-width: 12rem; }
