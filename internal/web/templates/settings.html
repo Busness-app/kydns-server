@@ -199,32 +199,34 @@
 </div>
 
 <div class="card">
-  <h3>Single Sign-On & OIDC (KySignOn / Authentik / Keycloak)</h3>
+  <h3>Appearance</h3>
+  <p class="muted">The same palettes as KyPost. Saved in this browser, so
+     each operator and device picks its own.</p>
+  <noscript><p class="muted">Choosing a theme needs JavaScript.</p></noscript>
+  <div class="theme-grid" data-theme-grid></div>
+</div>
+
+<div class="card">
+  <h3>Single sign-on</h3>
   <p class="muted">Connect KySignOn, Authentik, Keycloak, or any standard OpenID Connect provider with PKCE.</p>
 
   {{with .AdminIdentity}}
     {{if .SSOSub}}
-    <div style="background: rgba(77, 238, 234, 0.08); border: 1px solid rgba(77, 238, 234, 0.3); border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1rem;">
-      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
-        <div>
-          <strong style="color: #4deeea;">SSO Identity Linked</strong>
-          <div class="muted" style="font-size: 0.85rem; margin-top: 0.25rem;">
-            Account: <code>{{.SSOUsername}}</code> {{if .SSOEmail}}({{.SSOEmail}}){{end}}<br>
-            Subject: <code>{{.SSOSub}}</code>
-          </div>
+    <div class="sso-linked">
+      <div>
+        <strong>SSO identity linked</strong>
+        <div class="muted">
+          Account: <code>{{.SSOUsername}}</code> {{if .SSOEmail}}({{.SSOEmail}}){{end}}<br>
+          Subject: <code>{{.SSOSub}}</code>
         </div>
-        <form method="post" action="/settings/sso/unlink" style="margin: 0;">
-          <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
-          <button type="submit" class="ghost" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4);"{{template "ro" $}}>Unlink SSO Account</button>
-        </form>
       </div>
+      <form method="post" action="/settings/sso/unlink">
+        <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+        <button type="submit" class="danger"{{template "ro" $}}>Unlink SSO account</button>
+      </form>
     </div>
     {{else}}
-    <div style="margin-bottom: 1rem;">
-      <a href="/auth/sso/login?link=true" class="button" style="display: inline-block; background: #4deeea; color: #0d0f14; font-weight: 600; text-decoration: none; border-radius: 4px; padding: 0.4rem 0.85rem;">
-        Link SSO Identity (KySignOn / Authentik)
-      </a>
-    </div>
+    <p><a href="/auth/sso/login?link=true" class="button ghost">Link SSO identity</a></p>
     {{end}}
   {{end}}
 
@@ -232,27 +234,25 @@
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <div class="field-grid">
       <fieldset class="field-set"{{template "ro" .}}>
-        <legend>OIDC Provider Settings</legend>
+        <legend>OpenID Connect provider</legend>
         <div class="fields">
-          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-            <input type="checkbox" name="enabled" value="1" {{if .SSOSettings.Enabled}}checked{{end}}>
-            <strong>Enable Single Sign-On (SSO) Login</strong>
-          </label>
+          <label><input type="checkbox" name="enabled" value="1" {{if .SSOSettings.Enabled}}checked{{end}}>
+            Enable single sign-on</label>
 
-          <label for="issuer_url">Issuer URL (e.g. https://auth.urlxl.com or https://authentik.../application/o/kydns/)</label>
+          <label for="issuer_url">Issuer URL</label>
           <input id="issuer_url" name="issuer_url" type="url" value="{{.SSOSettings.IssuerURL}}" placeholder="https://auth.urlxl.com">
+          <p class="muted">Authentik issuers include the application:
+             <code>https://authentik.example/application/o/kydns/</code></p>
 
-          <label for="client_id">OAuth Client ID</label>
+          <label for="client_id">Client ID</label>
           <input id="client_id" name="client_id" type="text" value="{{.SSOSettings.ClientID}}" placeholder="kydns">
 
-          <label for="client_secret">Client Secret (optional for PKCE public clients)</label>
+          <label for="client_secret">Client secret <span class="muted">(optional with PKCE)</span></label>
           <input id="client_secret" name="client_secret" type="password" value="{{.SSOSettings.ClientSecret}}">
         </div>
       </fieldset>
     </div>
-    <div style="margin-top: 1rem;">
-      <button type="submit"{{template "ro" .}}>Save SSO Settings</button>
-    </div>
+    <button type="submit"{{template "ro" .}}>Save SSO settings</button>
   </form>
 </div>
 

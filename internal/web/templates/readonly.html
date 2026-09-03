@@ -1,9 +1,12 @@
 {{define "body"}}
+<div class="auth">
+<div class="brand">{{template "mark"}}<h1>KyDNS</h1></div>
 <div class="centered card">
   <h2>This node is a read-only replica</h2>
   <p>Nothing was changed here. A replica follows <code>{{.ManagedBy}}</code>, which
      would overwrite this edit on its next sync.</p>
   <p>Make the change on <code>{{.ManagedBy}}</code>, or promote this node first.</p>
   <p><a href="/">Back to the dashboard</a></p>
+</div>
 </div>
 {{end}}

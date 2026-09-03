@@ -1,7 +1,7 @@
 {{define "body"}}
 <div class="app">
   <nav class="app-nav">
-    <h1>KyDNS</h1>
+    <div class="brand">{{template "mark"}}<h1>KyDNS</h1></div>
     <a href="/"{{if eq .Nav "dashboard"}} aria-current="page"{{end}}>Dashboard</a>
     <a href="/services"{{if eq .Nav "services"}} aria-current="page"{{end}}>Services</a>
     <a href="/records"{{if eq .Nav "records"}} aria-current="page"{{end}}>Records</a>
@@ -10,13 +10,13 @@
     <a href="/dhcp"{{if eq .Nav "dhcp"}} aria-current="page"{{end}}>DHCP</a>
     {{if .ShowReplication}}<a href="/replication"{{if eq .Nav "replication"}} aria-current="page"{{end}}>Replication</a>{{end}}
     <a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a>
-    <form method="post" action="/logout" style="padding:1rem 1.25rem">
+    <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{.CSRF}}">
       <button class="ghost" type="submit">Sign out</button>
     </form>
     <footer class="app-footer">
       <button type="button" class="license-link" popovertarget="about">
-        &copy; {{.Year}} &middot; Licensed under the MIT License
+        v{{.Version}} &middot; &copy; {{.Year}} &middot; MIT License
       </button>
     </footer>
   </nav>
