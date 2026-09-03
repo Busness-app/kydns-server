@@ -24,7 +24,7 @@
         if (!cell) continue;
         cell.textContent = s.state;
         cell.className =
-          "badge " + (s.state === "down" ? "down" : s.state === "up" ? "accent" : "");
+          "badge " + (s.state === "down" ? "down" : s.state === "up" ? "up" : "");
       }
     } catch (e) {
       /* transient: the next tick tries again */

@@ -1,4 +1,6 @@
 {{define "body"}}
+<div class="auth">
+<div class="brand">{{template "mark"}}<h1>KyDNS</h1></div>
 <div class="centered card">
   <h2>Set up KyDNS</h2>
   <p class="muted">The setup token was written to the server log when KyDNS started.</p>
@@ -12,5 +14,6 @@
     <input id="confirm" name="confirm" type="password" autocomplete="new-password">
     <button type="submit">Create admin account</button>
   </form>
+</div>
 </div>
 {{end}}

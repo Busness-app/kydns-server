@@ -28,6 +28,29 @@ func TestStaticServesStylesheet(t *testing.T) {
 	}
 }
 
+// The theme script runs before first paint from <head>, so every screen,
+// including the ones before a session exists, gets the stored palette.
+func TestThemeScriptIsLinkedAndEmbedded(t *testing.T) {
+	_, srv := newWeb(t)
+	rec := static(t, srv, "/static/theme.js")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /static/theme.js = %d, want the script to be embedded", rec.Code)
+	}
+	for _, want := range []string{`"Patina Ky"`, `"kydns-theme"`, `"Polished Ky"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("theme.js missing %s", want)
+		}
+	}
+	h, _ := newWeb(t)
+	if body := page(t, h, "/setup", nil); !strings.Contains(body, `<script src="/static/theme.js"></script>`) {
+		t.Error("base.html does not load theme.js from <head>")
+	}
+	setupAndLogin(t, h)
+	if body := get(t, h, "/settings", loginCookie(t, h)).Body.String(); !strings.Contains(body, `data-theme-grid`) {
+		t.Error("settings has no theme picker")
+	}
+}
+
 // A page that links a favicon the binary does not embed shows a broken icon in
 // every tab, so the link and the file are checked together.
 func TestFaviconIsLinkedAndEmbedded(t *testing.T) {

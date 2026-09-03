@@ -613,8 +613,8 @@ func TestSettingsPageRendersWithLinkedSSO(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings page status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Link SSO Identity") {
-		t.Errorf("expected 'Link SSO Identity' in unlinked settings HTML")
+	if !strings.Contains(rec.Body.String(), "Link SSO identity") {
+		t.Errorf("expected 'Link SSO identity' in unlinked settings HTML")
 	}
 
 	// 2. Link identity and render again
@@ -623,7 +623,7 @@ func TestSettingsPageRendersWithLinkedSSO(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings page status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "SSO Identity Linked") || !strings.Contains(rec.Body.String(), "yoshi_admin") {
-		t.Errorf("expected 'SSO Identity Linked' and 'yoshi_admin' in settings HTML, got: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "SSO identity linked") || !strings.Contains(rec.Body.String(), "yoshi_admin") {
+		t.Errorf("expected 'SSO identity linked' and 'yoshi_admin' in settings HTML, got: %s", rec.Body.String())
 	}
 }

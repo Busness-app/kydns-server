@@ -7,6 +7,10 @@
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/static/styles.css">
 <link rel="stylesheet" href="/static/app.css">
+<script src="/static/theme.js"></script>
 </head>
 <body>{{template "body" .}}</body>
 </html>{{end}}
+
+{{/* The favicon's delegation tree, inline so it can sit beside the wordmark. */}}
+{{define "mark"}}<svg viewBox="0 0 32 32" aria-hidden="true" style="color: var(--accent)"><rect width="32" height="32" rx="7" fill="var(--bg)"/><path d="M16 11.5V16M8 16h16M8 16v3.5M24 16v3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="8" r="3.2" fill="currentColor"/><circle cx="8" cy="23" r="3.2" fill="currentColor"/><circle cx="24" cy="23" r="3.2" fill="currentColor"/></svg>{{end}}

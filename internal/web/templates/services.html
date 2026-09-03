@@ -11,7 +11,7 @@
         <td>{{if $a.Tagged}}<span class="badge accent">{{$a.View}}</span>
             {{else}}<span class="muted nowrap">{{$a.View}}</span>{{end}}</td>
         <td>{{if eq $i 0}}{{$svc.Aliases}}{{end}}</td>
-        <td>{{if eq $i 0}}<span class="badge{{if eq $svc.Health "down"}} down{{else if eq $svc.Health "up"}} accent{{end}}"
+        <td>{{if eq $i 0}}<span class="badge{{if eq $svc.Health "down"}} down{{else if eq $svc.Health "up"}} up{{end}}"
               data-health-for="{{$svc.ID}}">{{$svc.Health}}</span>{{end}}</td>
         <td>{{if eq $i 0}}
           <form class="address-row" method="post" action="/services/routing">

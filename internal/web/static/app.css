@@ -1,24 +1,63 @@
 /* App components layered on the Patina Ky tokens from styles.css.
-   The marketing theme is not modified. */
+   The marketing theme is not modified; the app re-tunes a few tokens for
+   dense data on dark panels and adds its own status colors. */
 
 /* Dark form controls and scrollbars, including inside the license frame. */
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+  /* theme.js sets the eleven KyPost tokens inline on <html>; these are
+     derived from them so every palette gets its own tiers. */
+  --ink-strong: #e8edf4;
+  --ink-dim: color-mix(in srgb, var(--ink) 65%, var(--bg));
+  --line-strong: color-mix(in srgb, var(--line) 70%, var(--ink));
+  --raised: color-mix(in srgb, var(--panel) 94%, var(--ink-strong));
+  --sidebar-start: var(--bg);
+  --sidebar-end: var(--panel);
+  --button-text: #04211f;
+  /* Status colors are semantic, not themed. light-dark follows the
+     color-scheme theme.js picks from the palette's background. */
+  --ok: light-dark(#1b7f52, #3fd39b);
+  --ok-soft: rgba(63, 211, 155, .14);
+  --warn: light-dark(#8a5a00, #f2b84b);
+  --warn-soft: rgba(242, 184, 75, .16);
+  --danger: light-dark(#b42323, #f47b7b);
+  --danger-soft: rgba(244, 123, 123, .14);
+  --r-control: 6px;
+  --r-card: 10px;
+}
 
-.app { display: grid; grid-template-columns: 200px 1fr; min-height: 100vh; }
-.app-nav { background: var(--panel); border-right: 1px solid var(--line); padding: 1.5rem 0;
+body { font-size: 15px; }
+::placeholder { color: var(--ink-dim); }
+::selection { background: var(--accent-soft); color: var(--ink-strong); }
+
+/* ---------- Shell ---------- */
+
+.app { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+.app-nav { background: linear-gradient(180deg, var(--sidebar-start), var(--sidebar-end)); border-right: 1px solid var(--line); padding: 1.25rem 0 1rem;
            display: flex; flex-direction: column; position: sticky; top: 0;
            height: 100vh; overflow-y: auto; }
-.app-nav h1 { font-family: var(--font-display); font-size: 1.1rem; margin: 0 1.25rem 1.5rem; color: var(--accent); }
-.app-nav a { display: block; padding: .55rem 1.25rem; color: var(--ink); text-decoration: none;
-             font-family: var(--font-mono); font-size: .85rem; }
-.app-nav a:hover { color: var(--ink-strong); background: rgba(255,255,255,.03); }
-.app-nav a[aria-current="page"] { color: var(--accent); border-left: 2px solid var(--accent); }
-.app-footer { margin-top: auto; padding: 1.5rem 1.25rem 0; }
-.license-link { background: none; border: 0; padding: 0; text-align: left; cursor: pointer;
-                font-family: var(--font-mono); font-size: .7rem; line-height: 1.5; color: var(--ink); }
+.brand { display: flex; align-items: center; gap: .6rem; margin: 0 1.25rem 1.5rem; }
+.brand svg { width: 28px; height: 28px; flex: none; }
+.brand h1 { font-family: var(--font-display); font-size: 1.15rem; font-weight: 600;
+            letter-spacing: -.01em; margin: 0; color: var(--ink-strong); }
+.app-nav a { display: flex; align-items: center; gap: .6rem; margin: 0 .6rem; padding: .5rem .65rem;
+             border-radius: var(--r-control); color: var(--ink); text-decoration: none;
+             font-family: var(--font-display); font-size: .92rem; font-weight: 500;
+             position: relative; transition: color .12s, background .12s; }
+.app-nav a:hover { color: var(--ink-strong); background: var(--raised); text-decoration: none; }
+.app-nav a[aria-current="page"] { color: var(--ink-strong); background: var(--raised); }
+/* The current page is the one with the accent rail on the outer edge. */
+.app-nav a[aria-current="page"]::before { content: ""; position: absolute; left: -.6rem; top: .45rem;
+                                          bottom: .45rem; width: 3px; border-radius: 0 2px 2px 0;
+                                          background: var(--accent); }
+.app-nav form { margin: 1rem .6rem 0; }
+.app-nav form button { width: 100%; }
+.app-footer { margin-top: auto; padding: 1.25rem 1.25rem 0; }
+.license-link { display: block; background: none; border: 0; padding: 0; text-align: left; cursor: pointer;
+                font-family: var(--font-mono); font-size: .7rem; line-height: 1.5; color: var(--ink-dim); }
 .license-link:hover { color: var(--accent); text-decoration: underline; }
 .license-window { width: min(44rem, 92vw); height: min(32rem, 82vh); margin: auto;
-                  border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+                  border: 1px solid var(--line-strong); border-radius: var(--r-card); background: var(--panel);
                   color: var(--ink-strong); padding: 0; overflow: hidden;
                   box-shadow: 0 18px 48px rgba(0,0,0,.55); }
 /* Scoped to :popover-open: an unconditional display would beat the UA rule
@@ -37,60 +76,76 @@
 /* A grid item defaults to min-content width, which lets a wide table stretch
    the whole page instead of scrolling inside its own card. */
 .app > * { min-width: 0; }
-.app-main { padding: 2rem 2.5rem; max-width: var(--max-width); }
-.app-main h2 { font-family: var(--font-display); color: var(--ink-strong); margin-top: 0; }
-.app-main h3 { font-family: var(--font-display); color: var(--ink-strong); font-size: 1rem; margin-top: 0; }
+.app-main { padding: 2rem 2.5rem 3rem; max-width: var(--max-width); }
+.app-main h2 { font-family: var(--font-display); color: var(--ink-strong); font-size: 1.6rem;
+               font-weight: 600; letter-spacing: -.02em; margin: 0 0 1.25rem; }
+.app-main h3 { font-family: var(--font-display); color: var(--ink-strong); font-size: 1rem;
+               font-weight: 600; margin-top: 0; }
 
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-        padding: 1.15rem 1.25rem; margin-bottom: 1.1rem; }
-.card > h3 { display: flex; align-items: baseline; gap: .6rem; margin-bottom: .35rem; }
-.card > h3::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+/* ---------- Cards ---------- */
+
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-card);
+        padding: 1.25rem 1.4rem; margin-bottom: 1.1rem;
+        box-shadow: light-dark(0 1px 2px rgba(0,0,0,.04), inset 0 1px 0 rgba(255,255,255,.025)); }
+.card > h3 { margin-bottom: .5rem; }
 .card > h3 + p.muted { margin-top: 0; }
-.stat-row { display: flex; gap: 0; flex-wrap: wrap; }
-.stat { flex: 1 1 8rem; padding: .15rem 1.5rem; border-left: 1px solid var(--line); }
-.stat:first-child { border-left: 0; padding-left: .25rem; }
-.stat .value { font-family: var(--font-display); font-size: 2rem; letter-spacing: -.02em;
-               line-height: 1.1; color: var(--ink-strong); }
-.stat .label { font-family: var(--font-mono); font-size: .72rem; color: var(--ink); text-transform: uppercase; }
+.card > p:first-child { margin-top: 0; }
+.card > table.grid:first-child { margin: -.35rem 0 0; }
+.card > .grid + form, .card > .grid + p { margin-top: 1rem; }
 
-.chart { margin: 0 0 .9rem; position: relative; }
+/* ---------- Stats ---------- */
+
+.stat-row { display: flex; gap: 0; flex-wrap: wrap; padding: 1rem 1.4rem; }
+.stat { flex: 1 1 8rem; padding: .25rem 1.5rem; border-left: 1px solid var(--line); }
+.stat:first-child { border-left: 0; padding-left: 0; }
+.stat .value { font-family: var(--font-display); font-size: 2.1rem; font-weight: 500;
+               font-variant-numeric: tabular-nums; letter-spacing: -.03em;
+               line-height: 1.1; color: var(--ink-strong); }
+.stat .label { font-family: var(--font-mono); font-size: .74rem; color: var(--ink); margin-top: .2rem; }
+
+/* ---------- Charts ---------- */
+
+.chart { margin: 0 0 1.1rem; position: relative; }
 .chart:last-child { margin-bottom: 0; }
-.chart figcaption { font-family: var(--font-mono); font-size: .72rem; text-transform: uppercase;
-                    color: var(--ink-strong); display: flex; align-items: baseline;
-                    gap: .5rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.chart figcaption { font-family: var(--font-mono); font-size: .76rem; color: var(--ink-strong);
+                    display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; margin-bottom: .5rem; }
+.chart figcaption .muted { color: var(--ink-dim); }
 .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-.chart-pair { display: flex; gap: 1.25rem; flex-wrap: wrap; }
+.chart-pair { display: flex; gap: 1.5rem; flex-wrap: wrap; }
 .chart-pair .chart { flex: 1 1 16rem; margin-bottom: 0; }
 
 /* The value sits in the legend rather than beside the line: three labels at the
    right edge collide the moment two series are close. */
-.legend { margin-left: auto; display: flex; gap: .9rem; }
-.legend .key { color: var(--ink); display: inline-flex; align-items: center; gap: .35rem; }
-.legend .key b { color: var(--ink-strong); font-weight: 500; }
+.legend { margin-left: auto; display: flex; gap: 1rem; }
+.legend .key { color: var(--ink); display: inline-flex; align-items: center; gap: .4rem; }
+.legend .key b { color: var(--ink-strong); font-weight: 500; font-variant-numeric: tabular-nums; }
 .legend .key::before { content: ""; width: .55rem; height: .55rem; border-radius: 2px; background: var(--series-1); }
 .legend .key[data-series="forwarded"]::before { background: var(--series-2); }
 .legend .key[data-series="blocked"]::before { background: var(--series-3); }
 
-.chart .axis { fill: var(--ink); font-family: var(--font-mono); font-size: 10px; }
+.chart .axis { fill: var(--ink-dim); font-family: var(--font-mono); font-size: 10px; }
 .chart .gridline { stroke: var(--line); stroke-width: 1; }
 .chart .crosshair { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart .tip { position: absolute; top: 1.5rem; pointer-events: none; z-index: 2;
-              background: var(--bg); border: 1px solid var(--line); border-radius: 5px;
-              padding: .35rem .5rem; font-family: var(--font-mono); font-size: .72rem;
-              color: var(--ink-strong); white-space: nowrap; }
+              background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--r-control);
+              padding: .4rem .55rem; font-family: var(--font-mono); font-size: .72rem;
+              color: var(--ink-strong); white-space: nowrap; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
 .chart .tip .k::before { content: ""; display: inline-block; width: .5rem; height: .5rem;
                          border-radius: 2px; margin-right: .3rem; background: var(--series-1); }
 .chart .tip .k[data-series="forwarded"]::before { background: var(--series-2); }
 .chart .tip .k[data-series="blocked"]::before { background: var(--series-3); }
 
-table.grid { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .85rem; }
-table.grid th { text-align: left; color: var(--ink); font-weight: 500; text-transform: uppercase;
-                font-size: .7rem; padding: .5rem .75rem; border-bottom: 1px solid var(--line);
-                background: var(--panel); position: sticky; top: 0; z-index: 1; white-space: nowrap; }
-table.grid td { padding: .5rem .75rem; border-bottom: 1px solid var(--line); color: var(--ink-strong);
-                vertical-align: middle; }
+/* ---------- Tables ---------- */
+
+table.grid { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: .84rem; }
+table.grid th { text-align: left; color: var(--ink); font-weight: 500; font-size: .74rem;
+                padding: .6rem .75rem; border-bottom: 1px solid var(--line-strong);
+                background: var(--panel); white-space: nowrap; }
+table.grid td { padding: .6rem .75rem; border-bottom: 1px solid var(--line); color: var(--ink-strong);
+                vertical-align: middle; font-variant-numeric: tabular-nums; }
 table.grid tr:last-child td { border-bottom: 0; }
-table.grid tr:hover td { background: rgba(255,255,255,.02); }
+table.grid tr:hover td { background: light-dark(rgba(0,0,0,.025), rgba(255,255,255,.02)); }
+table.grid td.muted { color: var(--ink); }
 /* The trailing column of a grid is always its row's controls. Keep them on one
    line and against the right edge instead of wrapping the table wider. */
 table.grid td:last-child:has(form) { text-align: right; white-space: nowrap; width: 1%; }
@@ -104,70 +159,141 @@ table.grid.lists td:nth-child(5) { white-space: nowrap; }
 table.grid.lists td:first-child .muted { display: block; margin-top: .2rem; font-size: .78rem;
                                          line-height: 1.5; }
 
-.badge { display: inline-block; padding: .12rem .5rem; border-radius: 999px; font-size: .7rem;
-         font-family: var(--font-mono); border: 1px solid var(--line); color: var(--ink);
-         white-space: nowrap; }
-.nowrap { white-space: nowrap; }
-.badge.accent { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
-.badge.warn { color: #fbbf24; border-color: #78350f; background: rgba(120,53,15,.2); }
-.badge.down { color: #f87171; border-color: #7f1d1d; background: rgba(127,29,29,.2); }
+/* ---------- Badges and status ---------- */
 
-.banner { border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1.5rem;
-          border: 1px solid #78350f; background: rgba(120,53,15,.2); color: #fde68a; font-size: .9rem; }
-.banner strong { display: block; font-family: var(--font-display); margin-bottom: .35rem; color: #fbbf24; }
+.badge { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .55rem;
+         border-radius: 999px; font-size: .7rem; line-height: 1.4; font-family: var(--font-mono);
+         border: 1px solid var(--line-strong); color: var(--ink); background: var(--raised);
+         white-space: nowrap; vertical-align: middle; }
+.nowrap { white-space: nowrap; }
+.badge.accent { color: var(--accent); border-color: transparent; background: var(--accent-soft); }
+.badge.up { color: var(--ok); border-color: transparent; background: var(--ok-soft); }
+.badge.warn { color: var(--warn); border-color: transparent; background: var(--warn-soft); }
+.badge.down { color: var(--danger); border-color: transparent; background: var(--danger-soft); }
+/* Health reads as a light, not only as a word: a state dot at the leading edge. */
+.badge[data-health-for]::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%;
+                                  background: currentColor; opacity: .9; }
+
+.banner { border-radius: var(--r-card); padding: 1rem 1.25rem 1rem 1.4rem; margin-bottom: 1.25rem;
+          border: 1px solid rgba(242,184,75,.35); border-left: 3px solid var(--warn);
+          background: var(--warn-soft); color: light-dark(#4a3300, #f6e2b3); font-size: .9rem; }
+.banner strong { display: block; font-family: var(--font-display); margin-bottom: .35rem; color: var(--warn); }
 .banner p { margin: .35rem 0; }
-.banner code, code { font-family: var(--font-mono); background: rgba(0,0,0,.35);
-                     padding: .1rem .35rem; border-radius: 3px; }
+.banner ul { margin: .4rem 0; padding-left: 1.2rem; }
+.banner code, code { font-family: var(--font-mono); font-size: .92em; background: light-dark(rgba(0,0,0,.07), rgba(0,0,0,.35));
+                     padding: .1rem .35rem; border-radius: 4px; }
+
+/* ---------- Forms ---------- */
 
 /* Label beside its control, not above it: the same fields in half the height,
    and the labels line up into a column you can read down. */
 form.stack, .fields { display: grid; grid-template-columns: minmax(6rem, 11rem) minmax(0, 1fr);
-                      gap: .5rem .9rem; align-items: start; max-width: 46rem; margin-top: .9rem; }
+                      gap: .55rem .9rem; align-items: start; max-width: 46rem; margin-top: .9rem; }
 .fields { margin-top: 0; max-width: none; }
-form.stack > label, .fields > label { font-family: var(--font-mono); font-size: .72rem; color: var(--ink);
-                                      text-transform: uppercase; letter-spacing: .03em; grid-column: 1;
-                                      padding-top: .62rem; line-height: 1.35; }
+form.stack > label, .fields > label { font-family: var(--font-mono); font-size: .76rem; color: var(--ink);
+                                      grid-column: 1; padding-top: .6rem; line-height: 1.4; }
 form.stack > :not(label), .fields > :not(label) { grid-column: 2; }
 form.stack > button, .fields > button { justify-self: start; margin-top: .3rem; }
 /* A submit that has to come first in DOM order - implicit submission picks
    the first one, and Enter must save rather than run a wizard - but last on
    screen, where the operator looks for it. */
 form.stack > button.last { order: 1; }
-form.stack > p, .fields > p { margin: .1rem 0 .3rem; font-size: .82rem; }
-input[type=text], input[type=password], input[type=number], textarea, select {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: .5rem .65rem;
-  color: var(--ink-strong); font-family: var(--font-mono); font-size: .85rem; width: 100%;
-  box-sizing: border-box; }
+form.stack > p, .fields > p { margin: .1rem 0 .3rem; font-size: .84rem; line-height: 1.55; }
+input[type=text], input[type=password], input[type=number], input[type=url], textarea, select {
+  background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--r-control);
+  padding: .5rem .7rem; color: var(--ink-strong); font-family: var(--font-mono); font-size: .85rem;
+  width: 100%; box-sizing: border-box; transition: border-color .12s, box-shadow .12s; }
+input:hover, select:hover, textarea:hover { border-color: var(--ink-dim); }
 textarea { resize: vertical; line-height: 1.5; }
 /* Numbers are short. A full-width box for "60" reads as a mistake. */
 input[type=number] { max-width: 9rem; }
 /* A checkbox is a switch, not a full-width text box. It carries its own label,
    so it spans both columns rather than leaving an empty label cell. */
 form.stack > label:has(input[type=checkbox]), .fields > label:has(input[type=checkbox]) {
-  display: flex; gap: .5rem; align-items: center; text-transform: none; color: var(--ink-strong);
-  grid-column: 1 / -1; text-align: left; padding-top: .2rem; font-size: .82rem; }
-form.stack input[type=checkbox], .fields input[type=checkbox] { width: auto; accent-color: var(--accent); }
+  display: flex; gap: .55rem; align-items: center; color: var(--ink-strong); font-family: var(--font-display);
+  grid-column: 1 / -1; text-align: left; padding-top: .2rem; font-size: .88rem; }
+input[type=checkbox] { width: 1rem; height: 1rem; accent-color: var(--accent); flex: none; }
 
 /* Settings is seven groups of related fields, not one wall of eighteen. */
-.field-grid { display: grid; gap: .9rem; align-items: start; margin: .9rem 0 1rem;
+.field-grid { display: grid; gap: 1rem; align-items: start; margin: 1rem 0 1.1rem;
               grid-template-columns: repeat(auto-fit, minmax(22rem, 1fr)); }
-.field-set { border: 1px solid var(--line); border-radius: 6px; padding: .5rem 1rem 1rem;
-             margin: 0; min-width: 0; }
-.field-set legend { font-family: var(--font-mono); font-size: .68rem; letter-spacing: .09em;
-                    text-transform: uppercase; color: var(--accent); padding: 0 .4rem; }
+.field-set { border: 1px solid var(--line); border-radius: var(--r-card); padding: .6rem 1.1rem 1.1rem;
+             margin: 0; min-width: 0; background: light-dark(rgba(0,0,0,.025), rgba(0,0,0,.12)); }
+.field-set legend { font-family: var(--font-display); font-size: .88rem; font-weight: 600;
+                    color: var(--ink-strong); padding: 0 .4rem; }
+.field-set:disabled { opacity: .6; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--glow); }
-button { background: var(--accent); color: #04211f; border: 0; border-radius: 5px; padding: .55rem 1.1rem;
-         font-family: var(--font-mono); font-size: .82rem; cursor: pointer; }
-button:hover { filter: brightness(1.1); }
-button.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
-button.danger { background: transparent; color: #f87171; border: 1px solid #7f1d1d; }
-.error { color: #f87171; font-family: var(--font-mono); font-size: .82rem; }
+button, .button { display: inline-flex; align-items: center; justify-content: center; gap: .45rem;
+         background: var(--accent); color: var(--button-text); border: 1px solid transparent;
+         border-radius: var(--r-control); padding: .5rem 1rem; font-family: var(--font-display);
+         font-size: .86rem; font-weight: 600; line-height: 1.3; cursor: pointer; text-decoration: none;
+         white-space: nowrap; transition: filter .12s, background .12s, border-color .12s; }
+button:hover, .button:hover { filter: brightness(1.08); text-decoration: none; }
+button:disabled { cursor: not-allowed; opacity: .5; filter: none; }
+button.ghost, .button.ghost { background: transparent; color: var(--ink-strong); border-color: var(--line-strong); }
+button.ghost:hover, .button.ghost:hover { background: var(--raised); filter: none; }
+button.danger { background: transparent; color: var(--danger); border-color: rgba(244,123,123,.35); }
+button.danger:hover { background: var(--danger-soft); filter: none; }
+button:focus-visible, .button:focus-visible, a:focus-visible, .license-link:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px; }
+.error { color: var(--danger); font-family: var(--font-mono); font-size: .82rem; line-height: 1.6; }
+.warn { color: var(--warn); }
+
+/* ---------- Sign-in and setup ---------- */
+
 /* Sign-in and setup are one narrow column. Side labels need a width these
    cards do not have, so they keep the stacked form. */
-.centered { max-width: 24rem; margin: 12vh auto; }
-.centered form.stack { grid-template-columns: minmax(0, 1fr); gap: .35rem; }
-.centered form.stack > label { grid-column: 1; text-align: left; padding-top: .4rem; }
+.auth { min-height: 100vh; display: grid; place-content: center; gap: 1.5rem; padding: 2rem 1rem;
+        position: relative; isolation: isolate; }
+/* The only decoration in the app: the marketing site's rain, faint, behind the
+   door. */
+.auth::before { content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+                background: radial-gradient(ellipse 60% 45% at 50% 40%, var(--glow), transparent 70%);
+                opacity: .35; }
+.auth .brand { justify-content: center; margin: 0; }
+.auth .brand svg { width: 36px; height: 36px; }
+.auth .brand h1 { font-size: 1.4rem; }
+.centered { width: min(24rem, 100%); margin: 0; padding: 1.75rem 1.75rem 1.5rem;
+            box-shadow: 0 24px 60px -30px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,255,255,.03); }
+.centered h2 { font-family: var(--font-display); font-size: 1.3rem; font-weight: 600;
+               letter-spacing: -.01em; margin: 0 0 .5rem; }
+.centered form.stack { grid-template-columns: minmax(0, 1fr); gap: .35rem; margin-top: 1rem; }
+.centered form.stack > label { grid-column: 1; text-align: left; padding-top: .45rem; }
 .centered form.stack > :not(label) { grid-column: 1; }
+.centered form.stack > button { width: 100%; margin-top: .75rem; }
+.sso-button { width: 100%; background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.sso-button:hover { background: var(--accent-soft); filter: brightness(1.15); }
+.or-divider { display: flex; align-items: center; gap: .75rem; margin: 1rem 0 .25rem;
+              font-family: var(--font-mono); font-size: .74rem; color: var(--ink-dim); }
+.or-divider::before, .or-divider::after { content: ""; flex: 1; height: 1px; background: var(--line-strong); }
+
+/* ---------- SSO settings ---------- */
+
+.sso-linked { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+              gap: .75rem; padding: .85rem 1rem; margin-bottom: 1rem; border-radius: var(--r-control);
+              background: var(--accent-soft); border: 1px solid rgba(77,238,234,.25); }
+.sso-linked strong { color: var(--accent); font-family: var(--font-display); }
+.sso-linked .muted { font-size: .84rem; margin-top: .2rem; }
+.sso-linked form { margin: 0; }
+
+/* ---------- Appearance ---------- */
+
+/* KyPost's picker: one swatch per theme, painted in that theme's own colours. */
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem;
+              margin-top: 1rem; }
+.theme-swatch { display: block; width: 100%; padding: 6px; border: 2px solid transparent; border-radius: 12px;
+                background: transparent; color: var(--ink-strong); text-align: left; cursor: pointer;
+                font-family: var(--font-display); font-weight: 500; white-space: normal; }
+.theme-swatch:hover { border-color: color-mix(in srgb, var(--accent) 50%, transparent); filter: none; }
+.theme-swatch[aria-pressed="true"] { border-color: var(--accent); }
+.theme-swatch-preview { display: grid; align-content: start; gap: 6px; height: 84px; padding: 12px 12px 12px 42%;
+                        border-radius: 8px; border: 1px solid rgba(0,0,0,.25); }
+.theme-swatch-preview i { display: block; height: 8px; border-radius: 4px; }
+.theme-swatch-preview i:first-child { width: 40%; }
+.theme-swatch-name { display: block; margin-top: 6px; font-size: .85rem; }
+
+/* ---------- Misc ---------- */
+
 .address-row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 .address-row input[type=text] { flex: 2 1 8rem; }
 .address-row select { flex: 1 1 6rem; }
@@ -176,24 +302,35 @@ button.danger { background: transparent; color: #f87171; border: 1px solid #7f1d
    does not, so the width goes on the ones with a field. */
 table.grid .address-row:has(input[type=text]) { min-width: 16rem; }
 table.grid .address-row input[type=text] { min-width: 8rem; }
+table.grid .address-row label { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; }
 .muted { color: var(--ink); }
+p.muted { line-height: 1.55; }
 a { color: var(--accent); }
 
 /* Below the two-column breakpoint the nav rides the top instead of the side. */
 @media (max-width: 860px) {
   .app { grid-template-columns: 1fr; }
-  .app-nav { position: static; height: auto; flex-flow: row wrap; align-items: center; gap: .25rem;
+  .app-nav { position: static; height: auto; flex-flow: row wrap; align-items: center; gap: .2rem;
              padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--line); }
-  .app-nav h1 { margin: 0 .75rem 0 0; }
-  .app-nav a { padding: .4rem .6rem; }
-  .app-nav a[aria-current="page"] { border-left: 0; border-bottom: 2px solid var(--accent); }
-  .app-nav form { padding: 0 !important; margin-left: auto; }
-  .app-footer { margin: 0; padding: 0; flex-basis: 100%; }
-  .app-main { padding: 1.25rem 1rem; }
+  .brand { margin: 0 .75rem 0 0; }
+  .app-nav a { margin: 0; padding: .4rem .6rem; font-size: .86rem; }
+  .app-nav a[aria-current="page"]::before { left: .6rem; right: .6rem; top: auto; bottom: 0; width: auto;
+                                            height: 2px; border-radius: 2px 2px 0 0; }
+  .app-nav form { margin: 0 0 0 auto; }
+  .app-nav form button { width: auto; }
+  .app-footer { margin: 0; padding: 0; flex-basis: 100%; display: none; }
+  .app-main { padding: 1.25rem 1rem 2rem; }
+  .app-main h2 { font-size: 1.35rem; }
+  .stat-row { padding: .75rem 1rem; }
+  .stat { flex-basis: 40%; padding: .5rem 1rem; border-left: 0; }
+  .stat .value { font-size: 1.6rem; }
   form.stack, .fields { grid-template-columns: minmax(0, 1fr); gap: .3rem; }
   form.stack > label, .fields > label { grid-column: 1; text-align: left; padding-top: .4rem; }
   form.stack > :not(label), .fields > :not(label) { grid-column: 1; }
-  .card { overflow-x: auto; }
+  .card { overflow-x: auto; padding: 1rem; }
+  /* The desktop column split squeezes a URL to one word per line here; let
+     the table scroll inside its card instead. */
+  table.grid.lists td:first-child, table.grid.lists td:nth-child(2) { width: auto; min-width: 12rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {
