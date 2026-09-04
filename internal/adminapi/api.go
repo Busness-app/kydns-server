@@ -38,6 +38,7 @@ type API struct {
 	replicaAdmin    ReplicaAdmin
 	replicaJoiner   ReplicaJoiner
 	replicaPromoter ReplicaPromoter
+	backup          *BackupService
 }
 
 // ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
@@ -104,6 +105,8 @@ func (a *API) WithSettings(s *settings.Service) *API {
 	a.settings = s
 	return a
 }
+
+func (a *API) WithBackupService(s *BackupService) *API { a.backup = s; return a }
 
 // WithReplication attaches the status producer for GET /api/v1/replica/status.
 // It is optional; an API built without it reports standalone, since that is
@@ -276,6 +279,11 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("PATCH "+PathSettings, auth(a.patchSettings))
 
 	mux.HandleFunc("GET /api/v1/replica/status", auth(a.getReplicaStatus))
+	mux.HandleFunc("POST /api/v1/backup/drill", auth(a.backupDrill))
+	mux.HandleFunc("GET /api/v1/backup/export-capsule", auth(a.backupExport))
+	mux.HandleFunc("POST /api/v1/backup/pair-remote", auth(a.backupPair))
+	mux.HandleFunc("POST /api/v1/backup/deposit", auth(a.backupDeposit))
+	mux.HandleFunc("GET /api/v1/backup/status", auth(a.backupStatus))
 
 	// Registered from the constants the exemption list is built from, so a
 	// renamed path cannot end up gated on one side and exempt on the other.

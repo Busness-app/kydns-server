@@ -68,6 +68,23 @@ CREATE TABLE IF NOT EXISTS tokens (
   created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
   last_used_at INTEGER NOT NULL DEFAULT 0
 );
+-- Backup pairing, receipts, and audit are node-local. Replication snapshots
+-- deliberately have no representation for either table.
+CREATE TABLE IF NOT EXISTS local_settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_events (
+  id         INTEGER PRIMARY KEY,
+  actor      TEXT NOT NULL,
+  action     TEXT NOT NULL,
+  resource   TEXT NOT NULL DEFAULT '',
+  details    TEXT NOT NULL DEFAULT '',
+  ip         TEXT NOT NULL DEFAULT '',
+  outcome    TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at);
 -- The CHECK makes a second admin account impossible at the schema level.
 CREATE TABLE IF NOT EXISTS admin (
   id            INTEGER PRIMARY KEY CHECK (id = 1),

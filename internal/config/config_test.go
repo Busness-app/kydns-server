@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Busness-app/kydns-server/internal/store"
 )
@@ -18,6 +19,29 @@ func write(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+func TestBackupDepositIntervalEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+		bad  bool
+	}{
+		{"0", 0, false}, {"15m", 15 * time.Minute, false}, {"24h", 24 * time.Hour, false},
+		{"14m59s", 0, true}, {"-1h", 0, true}, {"later", 0, true},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("KYDNS_BACKUP_DEPOSIT_INTERVAL", tc.raw)
+			cfg := &Config{}
+			err := cfg.applyBackupEnv()
+			if (err != nil) != tc.bad {
+				t.Fatalf("error = %v, bad=%v", err, tc.bad)
+			}
+			if err == nil && cfg.BackupDepositInterval != tc.want {
+				t.Fatalf("interval = %v, want %v", cfg.BackupDepositInterval, tc.want)
+			}
+		})
+	}
 }
 
 func TestLoadAppliesDefaults(t *testing.T) {

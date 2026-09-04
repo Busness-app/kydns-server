@@ -55,6 +55,9 @@ Keep these aligned:
   what moves, what applies live, and the `allow_query` guardrail.
 - `docs/superpowers/plans/2026-08-13-kydns-settings-in-the-ui.md` — the
   implementation plan for that spec.
+- `docs/superpowers/plans/2026-09-04-kydns-kyrecovery-deposit.md` — implementation
+  plan for adopting `ky-primitives` and adding sealed KyRecovery pairing,
+  capsule export, scheduled deposits, drills, and restore.
 
 Code, one concern per package:
 
@@ -70,6 +73,8 @@ Code, one concern per package:
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.
+- `internal/backup` — KyRecovery pairing, sealed local credentials, consistent SQLite
+  snapshots, `ky-primitives` capsules, deposits, drills, and restore boundaries.
 - `internal/replica` — linked-node pairing accepts only literal IP:port peer
   addresses and authenticates self-signed peers by Ed25519 key fingerprint.
 - `internal/dnsserver` — ACL, authoritative answers, cache, forwarding.
@@ -89,4 +94,6 @@ Code, one concern per package:
 
 The build must stay cgo-free: the image is distroless, so the pure-Go SQLite
 driver is not optional.
-- `zero_code_pairing_handoff_spec.md`: contract for pairing this service to KyRecovery with an ephemeral 6-digit PIN, then pushing backups plus a declarative verification recipe. This repo owns the client half (`POST /api/pairing/claim`, `POST /api/backup/push`); KyRecovery owns the spec.
+- KyRecovery owns the authoritative pairing and deposit contract in
+  `kyrecovery-server/zero_code_pairing_handoff_spec.md`. KyDNS implements the product
+  client and keeps pairing settings, audit events, keys, and receipts node-local.

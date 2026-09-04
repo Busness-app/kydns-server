@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Busness-app/kydns-server/internal/store"
 	"gopkg.in/yaml.v3"
@@ -29,6 +30,9 @@ type Config struct {
 	Discovery DiscoveryConfig `yaml:"discovery"`
 	Health    HealthConfig    `yaml:"health"`
 	DataDir   string          `yaml:"data_dir"`
+	// BackupDepositInterval is node-local process policy, populated only from
+	// KYDNS_BACKUP_DEPOSIT_INTERVAL. Zero disables scheduled deposits.
+	BackupDepositInterval time.Duration `yaml:"-"`
 
 	Replication ReplicationConfig `yaml:"replication"`
 
@@ -151,10 +155,32 @@ func Load(path string) (*Config, error) {
 
 	c.overlayEnv()
 	c.applyDefaults()
+	if err := c.applyBackupEnv(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	if err := c.validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 	return &c, nil
+}
+
+const MinBackupDepositInterval = 15 * time.Minute
+
+func (c *Config) applyBackupEnv() error {
+	raw, ok := os.LookupEnv("KYDNS_BACKUP_DEPOSIT_INTERVAL")
+	if !ok || strings.TrimSpace(raw) == "" {
+		c.BackupDepositInterval = 24 * time.Hour
+		return nil
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("KYDNS_BACKUP_DEPOSIT_INTERVAL: %w", err)
+	}
+	if d < 0 || (d > 0 && d < MinBackupDepositInterval) {
+		return fmt.Errorf("KYDNS_BACKUP_DEPOSIT_INTERVAL: %s is below the %s minimum (0 disables)", d, MinBackupDepositInterval)
+	}
+	c.BackupDepositInterval = d
+	return nil
 }
 
 func (c *Config) applyDefaults() {

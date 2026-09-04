@@ -84,6 +84,29 @@ func (c *Client) Do(method, path string, body, out any) error {
 	return nil
 }
 
+func (c *Client) Download(path string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET %s: %s: %s", path, resp.Status, strings.TrimSpace(string(raw)))
+	}
+	return raw, nil
+}
+
 // Command is one subcommand: the name it is invoked by, the one-line summary
 // the binary's usage text prints for it, and what runs it.
 type Command struct {
@@ -108,6 +131,55 @@ var Commands = []Command{
 	{"replica", "manage replication and pairing", replicaCmd},
 	{"export", "write registry contents to YAML or JSON", exportCmd},
 	{"import", "load registry contents from YAML or JSON", importCmd},
+	{"backup-drill", "verify a sealed recovery capsule can be built", backupDrillCmd},
+	{"export-capsule", "write a sealed recovery capsule", exportCapsuleCmd},
+	{"deposit", "deposit a sealed capsule with KyRecovery", depositCmd},
+}
+
+func backupDrillCmd(c *Client, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kydns backup-drill")
+		return 2
+	}
+	var out any
+	if err := c.Do(http.MethodPost, "/api/v1/backup/drill", nil, &out); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintln(stdout, "backup drill passed")
+	return 0
+}
+
+func depositCmd(c *Client, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kydns deposit")
+		return 2
+	}
+	var out struct {
+		CapsuleID string `json:"capsule_id"`
+	}
+	if err := c.Do(http.MethodPost, "/api/v1/backup/deposit", nil, &out); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "deposited %s\n", out.CapsuleID)
+	return 0
+}
+
+func exportCapsuleCmd(c *Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("export-capsule", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	out := fs.String("out", "kydns-backup.kycap", "output path")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	raw, err := c.Download("/api/v1/backup/export-capsule")
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := os.WriteFile(*out, raw, 0600); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintln(stdout, *out)
+	return 0
 }
 
 // Lookup finds a subcommand by name, so a caller can tell "not mine" from a

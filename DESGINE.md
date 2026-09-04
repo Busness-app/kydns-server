@@ -288,3 +288,11 @@ Parental controls, device posture, traffic inspection, local DNSSEC validation,
 local certificate issuance, and automatic peer discovery are outside the
 boundary. Blacklist filtering is specified in
 [`docs/superpowers/specs/2026-08-12-kydns-blacklists.md`](docs/superpowers/specs/2026-08-12-kydns-blacklists.md).
+
+## Disaster recovery
+
+`internal/backup` snapshots SQLite through the live store handle and seals the database,
+node identity when present, node-local token key, and boot manifest into the suite's
+`ky-primitives` capsule format. KyRecovery retains the opaque capsule and returns a receipt;
+only custodian shares reconstruct the private recovery key. Pairing state, audit events,
+keys, and receipts are node-local and never enter linked-node replication.

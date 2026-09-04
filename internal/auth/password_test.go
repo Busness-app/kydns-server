@@ -1,9 +1,13 @@
 package auth
 
 import (
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/argon2"
 )
 
 func TestHashAndVerify(t *testing.T) {
@@ -53,6 +57,18 @@ func TestVerifyRejectsMalformed(t *testing.T) {
 func TestHashRejectsEmptyPassword(t *testing.T) {
 	if _, err := HashPassword(""); err == nil {
 		t.Error("HashPassword(\"\") error = nil, want error")
+	}
+}
+
+func TestVerifyAcceptsExistingKyDNSHash(t *testing.T) {
+	// Reproduce the pre-shared-library KyDNS encoding (m=65536,t=3,p=2).
+	const plaintext = "legacy password"
+	salt := []byte("saltsaltsaltsalt")
+	key := argon2.IDKey([]byte(plaintext), salt, 3, 64*1024, 2, 32)
+	legacy := fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=2$%s$%s",
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+	if !VerifyPassword(legacy, plaintext) {
+		t.Fatal("shared verifier rejected a legacy KyDNS password hash")
 	}
 }
 

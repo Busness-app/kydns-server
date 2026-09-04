@@ -161,5 +161,11 @@ refused whole, and a replica still never serves DHCP until it is promoted.
 A replica that cannot reach its primary reports itself stale, and reports
 health it cannot verify as unknown rather than as the last value it saw.
 
+KyRecovery pairing accepts only HTTPS origins resolving to public, non-reserved addresses
+and refuses redirects. Its bearer token is encrypted under a mode-0600 node-local key and
+is never returned by status endpoints or rendered in HTML. Capsules are sealed to the
+pinned suite recovery public key; receipt digest, size, and capsule ID must match before a
+deposit is recorded. Restore shares are accepted on standard input, never command arguments.
+
 See [DESGINE.md](DESGINE.md) for the architecture and
 [LOGGING.md](LOGGING.md) for privacy-safe logging requirements.

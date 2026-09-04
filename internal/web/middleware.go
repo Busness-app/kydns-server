@@ -65,6 +65,9 @@ type Options struct {
 	// takes effect without a restart. Nil means nothing is replicating, which
 	// is a standalone node and edits freely.
 	Replication func() ReplicaStatus
+
+	// Backup is shared with the authenticated JSON transport.
+	Backup *adminapi.BackupService
 }
 
 // ReplicaStatus is the slice of app.ReplicaStatus this transport renders. web
