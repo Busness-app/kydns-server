@@ -7,6 +7,11 @@ Its primary job is to make private services easy to name and reach. It also
 provides opt-out DNS blackhole filtering with built-in and operator-managed
 lists.
 
+KyDNS can pair with KyRecovery using a one-time six-digit code, seal consistent
+SQLite snapshots with the suite recovery public key, deposit them automatically,
+run local restore drills, and restore a capsule from custodian shares supplied on
+standard input. `KYDNS_BACKUP_DEPOSIT_INTERVAL` defaults to `24h`; `0` disables it.
+
 ## Example
 
 Register a service once:

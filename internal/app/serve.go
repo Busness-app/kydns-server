@@ -21,6 +21,7 @@ import (
 
 	"github.com/Busness-app/kydns-server/internal/adminapi"
 	"github.com/Busness-app/kydns-server/internal/auth"
+	"github.com/Busness-app/kydns-server/internal/backup"
 	"github.com/Busness-app/kydns-server/internal/config"
 	"github.com/Busness-app/kydns-server/internal/discovery"
 	"github.com/Busness-app/kydns-server/internal/discovery/dhcp"
@@ -299,6 +300,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
+	backupSvc := &adminapi.BackupService{Config: cfg, Store: st, Client: backup.NewClient(), Version: web.Version}
 	api := adminapi.NewAPI(reg, acl, cache).
 		WithProviders(leaseFn, healthFn, poller.Enabled).
 		WithPolicy(policySvc).
@@ -306,6 +308,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		WithMetrics(dnsSrv.Metrics()).
 		WithReplication(func() adminapi.ReplicaStatus { return replStatus().toAdminAPI() }).
 		WithDHCP(dhcpRun).
+		WithBackupService(backupSvc).
 		WithReplicaAdmin(&replicaAdmin{st: st, srv: repl.srv}).
 		// Wired on every node: promotion answers "already a primary" rather than
 		// an error, and a replica must never find this endpoint missing.
@@ -339,6 +342,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		Logger:      logger,
 		Health:      healthFn,
 		Replication: func() web.ReplicaStatus { return replStatus().toWeb() },
+		Backup:      backupSvc,
 		// Left nil: no setting the database owns needs a restart any more.
 		// private_domain moved to a live swap, and dhcp_lease_file went with
 		// the built-in DHCP server — the poller always exists now and Apply
@@ -371,6 +375,9 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	go poller.Run(ctx)
 	go checker.Run(ctx)
 	go refresher.Run(ctx)
+	if cfg.BackupDepositInterval > 0 {
+		go depositLoop(ctx, cfg, st, backupSvc, logger)
+	}
 	set, err := policySvc.Settings()
 	if err != nil {
 		return err
@@ -387,6 +394,32 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return errors.Join(dnsSrv.Shutdown(shutdown), adminSrv.Shutdown(shutdown))
+}
+
+func depositLoop(ctx context.Context, cfg *config.Config, st *store.Store, svc *adminapi.BackupService, logger *slog.Logger) {
+	ticker := time.NewTicker(cfg.BackupDepositInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			upload, cancel := context.WithTimeout(context.WithoutCancel(ctx), 16*time.Minute)
+			receipt, manifest, err := backup.Deposit(upload, cfg, st, st, svc.Client, svc.Version)
+			cancel()
+			if errors.Is(err, backup.ErrNotPaired) {
+				continue
+			}
+			outcome, action, details := "success", "backup.deposited", receipt.Digest
+			if err != nil && !errors.Is(err, backup.ErrReceiptUnrecorded) {
+				outcome, action, details = "failure", "backup.deposit_failed", err.Error()
+			}
+			_ = st.RecordAudit(store.AuditEvent{Actor: "scheduler", Action: action, Resource: manifest.CapsuleID, Details: backup.AuditSafe(details), Outcome: outcome})
+			if err != nil {
+				logger.Error("scheduled backup deposit failed", "error", backup.AuditSafe(err.Error()))
+			}
+		}
+	}
 }
 
 // logEnvOverrides records which file-owned settings the environment replaced.

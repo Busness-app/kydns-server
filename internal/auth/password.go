@@ -3,76 +3,27 @@
 package auth
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/base64"
-	"errors"
-	"fmt"
-	"strings"
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/argon2"
+	"github.com/Busness-app/ky-primitives/password"
 )
 
 // MinPasswordLen is the shortest admin password accepted, wherever one is
 // set: the web setup form and the reset-password command both use it.
 const MinPasswordLen = 12
 
-// argon2id parameters. Tuned for a homelab box: roughly 64 MiB and a few tens
-// of milliseconds, which is ample for an interactive login and painful for an
-// offline attacker.
-const (
-	argonMemory  = 64 * 1024 // KiB
-	argonTime    = 3
-	argonThreads = 2
-	argonKeyLen  = 32
-	argonSaltLen = 16
-)
-
 // HashPassword returns a PHC-format argon2id string that embeds its own
 // parameters, so raising the cost later does not invalidate old hashes.
 func HashPassword(plaintext string) (string, error) {
-	if plaintext == "" {
-		return "", errors.New("password must not be empty")
-	}
-	salt := make([]byte, argonSaltLen)
-	if _, err := rand.Read(salt); err != nil {
-		return "", err
-	}
-	key := argon2.IDKey([]byte(plaintext), salt, argonTime, argonMemory, argonThreads, argonKeyLen)
-	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
-		argon2.Version, argonMemory, argonTime, argonThreads,
-		base64.RawStdEncoding.EncodeToString(salt),
-		base64.RawStdEncoding.EncodeToString(key)), nil
+	return password.Hash(plaintext)
 }
 
 // VerifyPassword compares in constant time. A malformed hash is a false, never
 // a panic: a corrupted row must not crash the login page.
 func VerifyPassword(encoded, plaintext string) bool {
-	parts := strings.Split(encoded, "$")
-	if len(parts) != 6 || parts[1] != "argon2id" {
-		return false
-	}
-	var version int
-	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil || version != argon2.Version {
-		return false
-	}
-	var memory, times uint32
-	var threads uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &times, &threads); err != nil {
-		return false
-	}
-	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
-	if err != nil || len(salt) == 0 {
-		return false
-	}
-	want, err := base64.RawStdEncoding.DecodeString(parts[5])
-	if err != nil || len(want) == 0 {
-		return false
-	}
-	got := argon2.IDKey([]byte(plaintext), salt, times, memory, threads, uint32(len(want)))
-	return subtle.ConstantTimeCompare(got, want) == 1
+	ok, err := password.Verify(plaintext, encoded)
+	return err == nil && ok
 }
 
 const (

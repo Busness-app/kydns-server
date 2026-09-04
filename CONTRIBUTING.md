@@ -39,6 +39,10 @@ For documentation-only changes:
 - search for stale project names or contradictory requirements;
 - inspect the complete diff for unintended changes.
 
+Backup changes additionally run `go test -race ./internal/backup ./internal/store` and
+must preserve legacy password verification, WAL-safe snapshots, token-at-rest encryption,
+receipt verification, recovery URL restrictions, and the stdin-only restore boundary.
+
 ## AI-assisted contributions
 
 Disclose AI assistance in the commit or pull request. State whether the work

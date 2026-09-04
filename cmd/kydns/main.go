@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/recoverykey"
+	"github.com/Busness-app/ky-primitives/shamir"
 	"github.com/Busness-app/kydns-server/internal/app"
 	"github.com/Busness-app/kydns-server/internal/cli"
 	"github.com/Busness-app/kydns-server/internal/web"
@@ -36,6 +41,10 @@ commands:
   replica   manage replication and pairing
   export    write registry contents to YAML or JSON
   import    load registry contents from YAML or JSON
+  backup-drill verify a sealed recovery capsule can be built
+  export-capsule write a sealed recovery capsule
+  deposit   deposit a sealed capsule with KyRecovery
+  restore   restore a capsule using custodian shares from stdin
   admin     local recovery: reset-password
   version   print the version
 `
@@ -80,6 +89,48 @@ func run(args []string, stdout io.Writer) int {
 		return 0
 	case "version":
 		fmt.Fprintln(stdout, version)
+		return 0
+	case "restore":
+		fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+		fs.SetOutput(stdout)
+		capsulePath := fs.String("capsule", "", "sealed capsule path")
+		out := fs.String("out", "", "empty restore directory")
+		if err := fs.Parse(args[1:]); err != nil || *capsulePath == "" || *out == "" {
+			fmt.Fprintln(stdout, "usage: kydns restore --capsule path --out directory")
+			return 2
+		}
+		raw, err := os.ReadFile(*capsulePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		var shares []shamir.Share
+		scan := bufio.NewScanner(os.Stdin)
+		for scan.Scan() {
+			line := strings.TrimSpace(scan.Text())
+			if line == "" {
+				continue
+			}
+			share, err := shamir.ParseShare(line)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "kydns:", err)
+				return 1
+			}
+			shares = append(shares, share)
+		}
+		if err := scan.Err(); err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		key, err := recoverykey.Combine(shares)
+		if err == nil {
+			_, _, err = capsule.Open(raw, key, *out)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, *out)
 		return 0
 	default:
 		// Asking the cli package rather than repeating its command list here:

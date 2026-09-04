@@ -266,6 +266,28 @@
     <input type="hidden" name="csrf_token" value="{{.CSRF}}">
     <button class="ghost" type="submit"{{template "ro" $}}>Flush DNS cache</button>
   </form>
+
+  {{with .Backup}}
+  <hr>
+  <h4>KyRecovery</h4>
+  {{if .Paired}}
+    <p>Paired with <code>{{.RecoveryURL}}</code></p>
+    <p class="muted">Pinned key: <code>{{.RecoveryKeyID}}</code></p>
+    {{with .LastDeposit}}<p>Last verified deposit: <code>{{.CapsuleID}}</code> ({{.SizeBytes}} bytes)</p>{{end}}
+    <div class="actions">
+      <form method="post" action="/settings/backup/deposit"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit"{{template "ro" $}}>Deposit now</button></form>
+      <form method="post" action="/settings/backup/drill"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="ghost" type="submit"{{template "ro" $}}>Run drill</button></form>
+      <a href="/settings/backup/export">Download sealed capsule</a>
+    </div>
+  {{else}}
+    <form class="stack" method="post" action="/settings/backup/pair">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <label for="recovery_url">KyRecovery URL</label><input id="recovery_url" name="recovery_url" type="url" required placeholder="https://recovery.example.com">
+      <label for="pairing_code">Six-digit pairing code</label><input id="pairing_code" name="pairing_code" inputmode="numeric" pattern="[0-9]{6}" required>
+      <button type="submit"{{template "ro" $}}>Pair KyRecovery</button>
+    </form>
+  {{end}}
+  {{end}}
 </div>
 
 {{if .Upstreams}}

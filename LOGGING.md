@@ -45,3 +45,7 @@ per-list match counts) never carry client identity.
 Do not add an embedded log database or product-specific log viewer. Operators
 should use their existing logging platform for search, alerting, retention, and
 access control.
+
+Backup audit events record bounded action, outcome, capsule ID, remote address, and a
+printable error summary. They never record pairing codes, bearer tokens, sealed token
+ciphertext, capsule contents, recovery shares, or recovery private keys.
