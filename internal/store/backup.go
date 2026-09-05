@@ -69,6 +69,23 @@ func (s *Store) IntegrityCheck() error {
 // magic, not a successful open, is what tells a real snapshot from a truncated one.
 const sqliteHeader = "SQLite format 3\x00"
 
+// OpenSnapshot opens a verified artifact read-only, without migrations or defaults.
+// Callers own Close; even the Store's write methods cannot change this connection.
+func OpenSnapshot(path string) (*Store, error) {
+	if err := VerifySnapshot(path); err != nil {
+		return nil, err
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: abs, RawQuery: "mode=ro"}).String())
+	if err != nil {
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
 // VerifySnapshot reports whether path holds an intact KyDNS database. It opens read-only
 // and never creates or migrates: the file is an artifact under test, not this node's store.
 func VerifySnapshot(path string) error {

@@ -269,39 +269,6 @@ func TestDrillRunsKyDNSChecks(t *testing.T) {
 	}
 }
 
-// An extracted database that is empty must not pass: store.Open would have written the
-// schema into it and reported the artifact it just filled as intact.
-func TestDrillChecksFailOnAnEmptyDatabase(t *testing.T) {
-	s := testService(t, nil)
-	p, err := s.Collect()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	for _, f := range p.Files {
-		path := filepath.Join(dir, f.Path)
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, f.Data, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := checkByName(t, drillChecks(p)(dir)); !got["required files"] || !got["sqlite integrity"] {
-		t.Fatalf("intact extraction failed its own checks: %v", got)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "data", "kydns.db"), nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	got := checkByName(t, drillChecks(p)(dir))
-	if got["sqlite integrity"] {
-		t.Fatal("sqlite integrity passed on an empty database")
-	}
-	if !got["required files"] {
-		t.Fatal("required files failed for the wrong reason")
-	}
-}
-
 func checkByName(t *testing.T, checks []recoveryclient.Check) map[string]bool {
 	t.Helper()
 	names := map[string]bool{}

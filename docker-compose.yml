@@ -29,7 +29,7 @@ services:
       - no-new-privileges:true
 
     environment:
-      # Backups. The schedule is set in the admin UI once Phase B lands; this is
+      # Backups. The schedule is set in the admin UI; this is
       # only its default. A local backup directory needs a volume mounted at the
       # same path. See README "Backups".
       KYDNS_BACKUP_DEPOSIT_INTERVAL: ${KYDNS_BACKUP_DEPOSIT_INTERVAL:-24h}

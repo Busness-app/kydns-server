@@ -1,0 +1,28 @@
+package main
+import (
+ "bytes"
+ "encoding/json"
+ "os"
+ "path/filepath"
+ "github.com/Busness-app/ky-primitives/keyfile"
+ "github.com/Busness-app/ky-primitives/recoveryclient"
+ "github.com/Busness-app/ky-primitives/recoverykey"
+)
+type settings map[string]string
+func (s settings) Get(k string)(string,error){v,ok:=s[k];if !ok{return "",recoveryclient.ErrNotFound};return v,nil}
+func (s settings) Set(k,v string)error{s[k]=v;return nil}
+func (s settings) Delete(k string)error{delete(s,k);return nil}
+func must(err error){if err!=nil{panic(err)}}
+func main(){
+ dir,err:=os.MkdirTemp("","kydns-v050-fixture-");must(err);defer os.RemoveAll(dir)
+ key:=bytes.Repeat([]byte{0x42},32)
+ private,err:=recoverykey.Generate();must(err)
+ s:=settings{}
+ must(recoveryclient.StoreRecoveryKey(dir,s,recoveryclient.RecoveryKey{Public:private.Public(),Threshold:2,TotalShares:3}))
+ sealer,err:=recoveryclient.NewAESGCMSealer(key,"KyDNS:kyrecovery_token");must(err)
+ must(recoveryclient.StorePairing(s,sealer,"https://recovery.example","synthetic-v050-token"))
+ must(keyfile.Store(filepath.Join(dir,"backup_key"),key,keyfile.Hex))
+ keyBytes,err:=os.ReadFile(filepath.Join(dir,"backup_key"));must(err)
+ enc:=json.NewEncoder(os.Stdout);enc.SetIndent("","  ")
+ must(enc.Encode(struct{Version string; Key,KeyFile,Public []byte; Token string; Settings settings}{"v0.5.0",key,keyBytes,private.Public().Bytes(),"synthetic-v050-token",s}))
+}
