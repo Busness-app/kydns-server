@@ -62,6 +62,7 @@ Keep these aligned:
   bringing that integration to the suite spec on `ky-primitives/kyrecovery`: local
   copies, admin schedule, pin by hand, unpair, restore runbook. Phase B targets
   ky-primitives v0.5.0.
+- `docs/RESTORE.md` — restore runbook; `scripts/restore-drill.sh` proves Step 1.
 
 Code, one concern per package:
 

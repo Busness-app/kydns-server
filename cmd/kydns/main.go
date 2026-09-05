@@ -95,9 +95,16 @@ func run(args []string, stdout io.Writer) int {
 		fs.SetOutput(stdout)
 		capsulePath := fs.String("capsule", "", "sealed capsule path")
 		out := fs.String("out", "", "empty restore directory")
-		if err := fs.Parse(args[1:]); err != nil || *capsulePath == "" || *out == "" {
+		if err := fs.Parse(args[1:]); err != nil || *capsulePath == "" || *out == "" || fs.NArg() > 0 {
 			fmt.Fprintln(stdout, "usage: kydns restore --capsule path --out directory")
+			fmt.Fprintln(stdout, "custodian shares are read from stdin, one per line")
 			return 2
+		}
+		// capsule.Open refuses a non-empty target too, but only after the
+		// custodians have read their cards aloud. Refuse before that.
+		if entries, err := os.ReadDir(*out); err == nil && len(entries) > 0 {
+			fmt.Fprintln(os.Stderr, "kydns: restore directory must be empty")
+			return 1
 		}
 		raw, err := os.ReadFile(*capsulePath)
 		if err != nil {
