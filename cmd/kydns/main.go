@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Busness-app/ky-primitives/capsule"
 	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/kydns-server/internal/app"
 	"github.com/Busness-app/kydns-server/internal/backup"
@@ -106,6 +107,23 @@ func run(args []string, stdout io.Writer) int {
 		// custodians have read their cards aloud. Refuse before that.
 		if entries, err := os.ReadDir(*out); err == nil && len(entries) > 0 {
 			fmt.Fprintln(os.Stderr, "kydns: restore directory must be empty")
+			return 1
+		}
+		// Refuse another product's capsule before any custodian types a share. Restore
+		// authenticates this same manifest before it combines them, so rewriting the
+		// cleartext service name here cannot bypass anything.
+		raw, err := os.ReadFile(*capsulePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		peek, err := capsule.ReadUnverifiedManifest(raw)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		if peek.ServiceName != backup.ServiceName {
+			fmt.Fprintf(os.Stderr, "kydns: capsule is for service %q, want %q\n", peek.ServiceName, backup.ServiceName)
 			return 1
 		}
 		shares, err := recoveryclient.ReadShares(os.Stdin)

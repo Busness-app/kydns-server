@@ -66,7 +66,9 @@ Keep these aligned:
 
 Code, one concern per package:
 
-- `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs.
+- `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs. Restore
+  checks the unverified manifest for service `KyDNS` before reading shares; authenticated
+  extraction then proves that same service binding.
 - `internal/app` — process wiring: config, store, servers, background loops.
 - `internal/config` — the YAML config and its defaults. The file owns three
   keys (`data_dir`, `dns.listen`, `admin.listen`); every other key it carries

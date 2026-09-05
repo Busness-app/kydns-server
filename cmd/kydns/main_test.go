@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Busness-app/ky-primitives/capsule"
+	"github.com/Busness-app/ky-primitives/recoverykey"
 	"github.com/Busness-app/kydns-server/internal/cli"
 	"github.com/Busness-app/kydns-server/internal/web"
 )
@@ -118,6 +120,30 @@ func TestRestoreRefusesASharePassedOnArgv(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "usage: kydns restore") {
 		t.Errorf("output = %q, want the restore usage line", out.String())
+	}
+}
+
+func TestRestoreRefusesAnotherProductBeforeReadingShares(t *testing.T) {
+	key, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := capsule.Seal("KySignOn", "test", []capsule.File{{Path: "data/foreign.db", Content: []byte("foreign"), Mode: 0o600}}, nil, nil, 2, 3, key.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "foreign.kycap")
+	if err := os.WriteFile(capPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outDir := t.TempDir()
+	var out bytes.Buffer
+	code, stderr := runCapturingStderr(t, []string{"restore", "--capsule", capPath, "--out", outDir}, &out)
+	if code != 1 || !strings.Contains(stderr, `capsule is for service "KySignOn", want "KyDNS"`) {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	if entries, err := os.ReadDir(outDir); err != nil || len(entries) != 0 {
+		t.Fatalf("wrong-service restore changed target: entries=%v err=%v", entries, err)
 	}
 }
 
