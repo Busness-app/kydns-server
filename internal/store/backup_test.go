@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -46,4 +47,24 @@ func TestSnapshotIncludesCommittedWALData(t *testing.T) {
 	if err != nil || len(services) != 1 || services[0].Name != "uncheckpointed" {
 		t.Fatalf("snapshot services = %+v, %v", services, err)
 	}
+}
+
+func TestSnapshotPathIsBoundNotInterpolated(t *testing.T) {
+	s := open(t)
+	dst := filepath.Join(t.TempDir(), "snapshot'; PRAGMA user_version=999; --.db")
+	if err := s.SnapshotTo(dst); err != nil {
+		t.Fatal(err)
+	}
+	if version := userVersion(t, s.db); version != len(migrations) {
+		t.Fatalf("user_version = %d, want %d", version, len(migrations))
+	}
+}
+
+func userVersion(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	return version
 }

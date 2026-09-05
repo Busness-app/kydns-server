@@ -58,6 +58,10 @@ Keep these aligned:
 - `docs/superpowers/plans/2026-09-04-kydns-kyrecovery-deposit.md` — implementation
   plan for adopting `ky-primitives` and adding sealed KyRecovery pairing,
   capsule export, scheduled deposits, drills, and restore.
+- `docs/superpowers/plans/2026-09-04-kydns-backup-to-suite-spec.md` — follow-on plan
+  bringing that integration to the suite spec on `ky-primitives/kyrecovery`: local
+  copies, admin schedule, pin by hand, unpair, restore runbook. Phase B targets
+  ky-primitives v0.5.0.
 
 Code, one concern per package:
 
@@ -71,6 +75,7 @@ Code, one concern per package:
 - `internal/settings` — the settings snapshot the runtime reads, and the single
   path by which it changes: validate, persist, rebuild, apply, all or nothing.
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
+  `SnapshotTo` must bind the `VACUUM INTO` destination path, not interpolate it.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.
 - `internal/backup` — KyRecovery pairing, sealed local credentials, consistent SQLite
