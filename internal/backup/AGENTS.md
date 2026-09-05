@@ -38,6 +38,8 @@ behaviour that belongs to every product in the suite is fixed there, not here.
   what the scheduler will actually use.
 - No server code opens a suite-sealed capsule; only the `restore` command does, from
   custodian shares read on stdin.
+- `New` deletes the `kyrecovery_token` row on every start: PR #27's plaintext-format
+  leftover, superseded by `kyrecovery_token_enc` and undecryptable by the library sealer.
 
 ## Verification
 

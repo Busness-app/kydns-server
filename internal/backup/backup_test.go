@@ -80,6 +80,25 @@ func dumpLocalSettings(t *testing.T, s *Service) string {
 	return out.String()
 }
 
+func TestNewDeletesStalePlaintextToken(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	if err := st.SetLocalSetting("kyrecovery_token", "leftover-plaintext"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{DataDir: dir, BackupKeep: 7, DNS: config.DNSConfig{Listen: ":53"}, Admin: config.AdminConfig{Listen: "127.0.0.1:8053"}}
+	if _, err := New(cfg, st, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetLocalSetting("kyrecovery_token"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("kyrecovery_token error = %v, want store.ErrNotFound", err)
+	}
+}
+
 func TestPinByHandIsWriteOnce(t *testing.T) {
 	s := testService(t, nil)
 	pinFresh(t, s)

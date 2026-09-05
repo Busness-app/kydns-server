@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -44,5 +45,41 @@ func TestBackupExportDisablesCachingAndSniffing(t *testing.T) {
 	}
 	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
+// A recovery.pub that disagrees with the pinned key ID is ErrKeyMismatch, the same
+// precondition class as a missing pin, so the export must answer 412 rather than 500.
+func TestBackupExportKeyMismatchIs412(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "kydns.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{DataDir: dir, DNS: config.DNSConfig{Listen: ":53"}, Admin: config.AdminConfig{Listen: "127.0.0.1:8053"}}
+	svc, err := backup.New(cfg, st, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recoveryclient.StoreRecoveryKey(dir, svc.Settings(), recoveryclient.RecoveryKey{Public: pinned.Public(), Threshold: 2, TotalShares: 3}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recoveryclient.RecoveryKeyPath(dir), other.Public().Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{o: Options{Backup: svc}}
+	rec := httptest.NewRecorder()
+	s.getBackupExport(rec, httptest.NewRequest("GET", "/settings/backup/export", nil))
+	if rec.Code != 412 {
+		t.Fatalf("export = %d: %s, want 412", rec.Code, rec.Body)
 	}
 }

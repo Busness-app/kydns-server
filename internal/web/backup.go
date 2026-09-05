@@ -101,8 +101,14 @@ func (s *Server) postBackupPinKey(w http.ResponseWriter, r *http.Request) {
 		s.backupError(w, r, errors.New("backup service is unavailable"))
 		return
 	}
-	k, _ := strconv.Atoi(r.PostFormValue("threshold"))
-	n, _ := strconv.Atoi(r.PostFormValue("total_shares"))
+	k, errK := strconv.Atoi(r.PostFormValue("threshold"))
+	n, errN := strconv.Atoi(r.PostFormValue("total_shares"))
+	if errK != nil || errN != nil {
+		err := errors.New("threshold and total shares must be numbers")
+		s.auditBackup(b, r, "backup.key_pinned", "", r.PostFormValue("threshold")+"/"+r.PostFormValue("total_shares"), err)
+		s.backupError(w, r, err)
+		return
+	}
 	key, err := b.PinKey(r.PostFormValue("public_key"), k, n)
 	s.auditBackup(b, r, "backup.key_pinned", key.Public.ID(), fmt.Sprintf("%d-of-%d", k, n), err)
 	if err != nil {
@@ -135,6 +141,7 @@ func (s *Server) postBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	minutes, err := strconv.ParseInt(r.PostFormValue("interval_minutes"), 10, 64)
 	if err != nil || minutes < 0 || minutes > int64(recoveryclient.MaxInterval/time.Minute) {
+		s.auditBackup(b, r, "backup.schedule", "", r.PostFormValue("interval_minutes"), recoveryclient.ErrBadInterval)
 		s.backupError(w, r, recoveryclient.ErrBadInterval)
 		return
 	}
@@ -202,7 +209,7 @@ func (s *Server) getBackupExport(w http.ResponseWriter, r *http.Request) {
 		// A node with no key to seal to is a precondition the operator can fix,
 		// the same answer the JSON transport gives; anything else is this box.
 		code := 500
-		if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrKeyPinMissing) {
+		if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrKeyPinMissing) || errors.Is(err, recoveryclient.ErrKeyMismatch) {
 			code = 412
 		}
 		http.Error(w, backupMessage(err), code)

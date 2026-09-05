@@ -47,6 +47,11 @@ func New(cfg *config.Config, st *store.Store, version string) (*Service, error) 
 	if err != nil {
 		return nil, err
 	}
+	// PR #27's plaintext-format row; the current one is kyrecovery_token_enc and this
+	// old value can't be decrypted by the library sealer, so it must not ride along.
+	if err := st.DeleteLocalSetting("kyrecovery_token"); err != nil {
+		return nil, err
+	}
 	return &Service{Cfg: cfg, Store: st, Version: version,
 		Client: recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.BackupAllowPrivateRecovery}),
 		sealer: sealer}, nil
@@ -228,6 +233,7 @@ func (s *Service) Status() (Status, error) {
 	switch {
 	case err == nil:
 		st.KeyPinned, st.RecoveryKeyID, st.Threshold, st.TotalShares = true, key.Public.ID(), key.Threshold, key.TotalShares
+	// ErrKeyPinMissing: defensive only, LoadRecoveryKey doesn't return it today (LoadPairing does).
 	case errors.Is(err, recoveryclient.ErrKeyPinMissing), errors.Is(err, recoveryclient.ErrKeyMismatch):
 		st.KeyPinned, st.KeyPinMissing = true, true
 	case errors.Is(err, recoveryclient.ErrNotPaired):

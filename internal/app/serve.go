@@ -432,7 +432,7 @@ func backupLoop(ctx context.Context, svc *backup.Service, logger *slog.Logger) {
 		action, outcome, details := recoveryclient.Outcome(res, err)
 		b, _ := json.Marshal(details)
 		_ = svc.Store.RecordAudit(store.AuditEvent{Actor: "scheduler", Action: action,
-			Resource: res.Manifest.CapsuleID, Details: string(b), Outcome: outcome})
+			Resource: recoveryclient.AuditSafe(res.Manifest.CapsuleID), Details: string(b), Outcome: outcome})
 		if err != nil {
 			logger.Error("scheduled backup failed", "error", recoveryclient.AuditSafe(err.Error()))
 		}
