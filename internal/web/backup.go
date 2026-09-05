@@ -92,7 +92,13 @@ func (s *Server) getBackupExport(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, manifest, err := b.Export()
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		// A node with no key to seal to is a precondition the operator can fix,
+		// the same answer the JSON transport gives; anything else is this box.
+		code := 500
+		if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrKeyPinMissing) {
+			code = 412
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	if err := b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.exported",
