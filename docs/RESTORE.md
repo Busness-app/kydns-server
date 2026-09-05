@@ -220,7 +220,7 @@ was not found, which means the copy went somewhere other than `$vol`.
   /api/v1/backup/pair-remote` with `recovery_url` and `pairing_code`, since the
   web pairing form is hidden while the database still reports the server as
   paired. All three are accepted only for the key already pinned: a different
-  key is refused with `already paired to recovery key ...`, which is the
+  key is refused with `already pinned to a different recovery key`, which is the
   write-once guardrail working.
 - Without `data/backup_key` nothing will deposit, whatever the pairing says: the
   KyRecovery token in the database is sealed under that file and nothing else

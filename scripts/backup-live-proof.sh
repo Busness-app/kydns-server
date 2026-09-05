@@ -5,13 +5,23 @@
 # Nothing here touches a real KyRecovery: pairing needs a live one, see the PR.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
-work=${KYDNS_LIVE_DIR:-/tmp/kydns-live}
+# A directory of our own by default. An operator who names one keeps it: this script
+# deletes the directory it works in, so it refuses to adopt anything already there.
+work=${KYDNS_LIVE_DIR:-}
 dns_addr=${KYDNS_LIVE_DNS:-127.0.0.1:15353}
 admin_addr=${KYDNS_LIVE_ADMIN:-127.0.0.1:18053}
 # The key generator has to live inside the module to import its dependencies.
 gen="$root/.superpowers/sdd/live-gen-$$"
 pid=""
 
+if [ -z "$work" ]; then
+	work=$(mktemp -d)
+elif [ -e "$work" ] && [ -n "$(ls -A "$work" 2>/dev/null)" ]; then
+	echo "live proof: $work exists and is not empty; this script deletes what it works in" >&2
+	exit 1
+fi
+
+# Installed only once $work is ours to delete.
 cleanup() {
 	if [ -n "$pid" ]; then
 		kill -TERM "$pid" 2>/dev/null || true
@@ -34,7 +44,6 @@ api() { # api METHOD PATH [BODY]
 fail() { echo "live proof: $*" >&2; exit 1; }
 
 cd "$root"
-rm -rf "$work"
 mkdir -p "$work/backups"
 mkdir -m 700 -p "$work/data"
 printf 'data_dir: %s/data\ndns:\n  listen: "%s"\nadmin:\n  listen: "%s"\n' \
@@ -115,11 +124,19 @@ code=$(curl -sS -o "$work/pin2.json" -w '%{http_code}' -X POST \
 	-H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
 	-d "$(printf '{"public_key":"%s","threshold":2,"total_shares":3}' "$other")" \
 	"http://$admin_addr/api/v1/backup/pin-key")
+cat "$work/pin2.json"; echo
 [ "$code" = "409" ] || fail "a second key was not refused with 409 (got $code)"
+# docs/RESTORE.md quotes this sentence to the operator, so the proof pins it.
+grep -q 'already pinned to a different recovery key' "$work/pin2.json" ||
+	fail "the 409 body is not the sentence the runbook quotes"
 
 echo "== back up now"
-api POST /api/v1/backup/deposit | tee "$work/run.json"
-grep -q '"capsule_id"' "$work/run.json" || fail "no capsule id from the run"
+# The response carries the whole manifest, encapsulated key and all. It goes to the
+# file; stdout gets the one field a reader needs.
+api POST /api/v1/backup/deposit > "$work/run.json"
+capsule_id=$(sed -n 's/.*"capsule_id":"\([^"]*\)".*/\1/p' "$work/run.json")
+[ -n "$capsule_id" ] || fail "no capsule id from the run"
+echo "deposited $capsule_id"
 
 echo "== the local copy"
 ls -la "$work/backups"
