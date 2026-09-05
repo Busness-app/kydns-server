@@ -7,11 +7,8 @@ Its primary job is to make private services easy to name and reach. It also
 provides opt-out DNS blackhole filtering with built-in and operator-managed
 lists.
 
-KyDNS can pair with KyRecovery using a one-time six-digit code, seal consistent
-SQLite snapshots with the suite recovery public key, deposit them automatically,
-run local restore drills, and restore a capsule from custodian shares supplied on
-standard input. `KYDNS_BACKUP_DEPOSIT_INTERVAL` defaults to `24h`; `0` disables
-it. Restoring is [documented step by step](docs/RESTORE.md).
+KyDNS can pair with KyRecovery using a one-time six-digit code and back itself
+up automatically; see [Backups](#backups) below.
 
 ## Example
 
@@ -32,6 +29,28 @@ webmail.home.arpa
 ```
 
 without manually maintaining hosts files or opaque DNS rewrite rules.
+
+## Backups
+
+Backups are sealed to the suite recovery key and this server never holds what opens them.
+The key arrives by pairing with KyRecovery, or (Phase B) is pasted from the ceremony page
+for a server with no KyRecovery. Every capsule is sealed to it and (Phase B) goes to each
+configured destination: KyRecovery when paired, and `KYDNS_BACKUP_DIR` when set, as
+`KyDNS.<capsule-id>.kycap` at mode 0600. The newest `KYDNS_BACKUP_KEEP` (default 7) with
+that prefix are kept; other files in the directory are never touched.
+
+`KYDNS_BACKUP_DEPOSIT_INTERVAL` (default `24h`, 15 minute floor, `0` disables) is the
+schedule default. Custodian cards come from the KyRecovery ceremony; a restore needs k of
+them typed on stdin, see [docs/RESTORE.md](docs/RESTORE.md).
+
+**KyRecovery must be reached over HTTPS, and by default at a public address.** TLS is not
+for the capsule, which is already sealed. It protects the public key that arrives at
+pairing (trust on first use), the deposit token, and the receipts. For a KyRecovery on your
+own network behind a TLS proxy, set `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY=true`; HTTPS is
+still required and loopback stays refused. Whatever the wire, compare the key fingerprint
+Settings shows with the one in the KyRecovery dashboard; a swapped key then fails at
+pairing instead of at restore. In Docker, names that exist only on your LAN need
+`docker-compose.lan-dns.yml` with `KYDNS_DNS` on the command line.
 
 ## What works today
 
