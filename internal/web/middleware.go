@@ -10,6 +10,7 @@ import (
 
 	"github.com/Busness-app/kydns-server/internal/adminapi"
 	"github.com/Busness-app/kydns-server/internal/auth"
+	"github.com/Busness-app/kydns-server/internal/backup"
 	"github.com/Busness-app/kydns-server/internal/config"
 	"github.com/Busness-app/kydns-server/internal/discovery/dhcp"
 	"github.com/Busness-app/kydns-server/internal/dnsserver"
@@ -67,7 +68,7 @@ type Options struct {
 	Replication func() ReplicaStatus
 
 	// Backup is shared with the authenticated JSON transport.
-	Backup *adminapi.BackupService
+	Backup *backup.Service
 }
 
 // ReplicaStatus is the slice of app.ReplicaStatus this transport renders. web

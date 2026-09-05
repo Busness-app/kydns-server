@@ -433,3 +433,35 @@ func TestTheExemptSettingsPatchStillNeedsAToken(t *testing.T) {
 		t.Error("an anonymous patch configured DHCP")
 	}
 }
+
+// The backup routes are the ones most recently added, and every one of them
+// writes: a pin, a pairing, a schedule or a capsule. Naming them here is the
+// hardening list — TestEveryMutatingRouteIsRefusedOnAReplica derives its table
+// from the router, so a backup route dropped from routes() would silently stop
+// being covered rather than fail.
+func TestTheBackupMutatingRoutesAreGated(t *testing.T) {
+	want := map[[2]string]bool{
+		{"POST", "/api/v1/backup/deposit"}:     true,
+		{"POST", "/api/v1/backup/drill"}:       true,
+		{"POST", "/api/v1/backup/pair-remote"}: true,
+		{"POST", "/api/v1/backup/pin-key"}:     true,
+		{"DELETE", "/api/v1/backup/pairing"}:   true,
+		{"PUT", "/api/v1/backup/schedule"}:     true,
+	}
+	for _, r := range registeredRoutes(t) {
+		delete(want, r)
+	}
+	if len(want) != 0 {
+		t.Fatalf("backup routes missing from the router: %v", want)
+	}
+	h, tok := replicaOf(t, "10.0.0.2:8443")
+	for r := range map[[2]string]bool{
+		{"POST", "/api/v1/backup/pin-key"}:   true,
+		{"DELETE", "/api/v1/backup/pairing"}: true,
+		{"PUT", "/api/v1/backup/schedule"}:   true,
+	} {
+		if rec := do(t, h, r[0], r[1], tok, "{}"); rec.Code != http.StatusConflict {
+			t.Errorf("%s %s on a replica = %d, want 409", r[0], r[1], rec.Code)
+		}
+	}
+}

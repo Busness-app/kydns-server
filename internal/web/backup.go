@@ -2,11 +2,13 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/kydns-server/internal/backup"
 	"github.com/Busness-app/kydns-server/internal/store"
 )
@@ -23,15 +25,15 @@ func (s *Server) postBackupPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u, code := r.PostFormValue("recovery_url"), r.PostFormValue("pairing_code")
-	result, err := b.Client.Claim(r.Context(), u, code)
-	if err == nil {
-		err = backup.StorePairing(b.Store, b.Config.DataDir, u, result.Token, result.Key)
-	}
+	key, err := b.Pair(r.Context(), u, code)
+	details := u + " allow_private=" + strconv.FormatBool(b.Cfg.BackupAllowPrivateRecovery)
 	outcome := "success"
 	if err != nil {
-		outcome = "failure"
+		outcome, details = "failure", details+" "+err.Error()
 	}
-	_ = b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.paired", Resource: result.Key.Public.ID(), Details: backup.AuditSafe(u + " " + fmt.Sprint(err)), IP: backup.AuditSafe(r.RemoteAddr), Outcome: outcome})
+	_ = b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.paired",
+		Resource: key.Public.ID(), Details: recoveryclient.AuditSafe(details),
+		IP: recoveryclient.AuditSafe(r.RemoteAddr), Outcome: outcome})
 	if err != nil {
 		s.backupError(w, r, err)
 		return
@@ -47,13 +49,13 @@ func (s *Server) postBackupDeposit(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 16*time.Minute)
 	defer cancel()
-	receipt, manifest, err := backup.Deposit(ctx, b.Config, b.Store, b.Store, b.Client, b.Version)
-	outcome, action, details := "success", "backup.deposited", receipt.Digest
-	if err != nil && !errors.Is(err, backup.ErrReceiptUnrecorded) {
-		outcome, action, details = "failure", "backup.deposit_failed", err.Error()
-	}
-	_ = b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: action, Resource: manifest.CapsuleID, Details: backup.AuditSafe(details), IP: backup.AuditSafe(r.RemoteAddr), Outcome: outcome})
-	if err != nil {
+	res, err := b.Run(ctx)
+	action, outcome, details := recoveryclient.Outcome(res, err)
+	raw, _ := json.Marshal(details)
+	_ = b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: action,
+		Resource: recoveryclient.AuditSafe(res.Manifest.CapsuleID), Details: string(raw),
+		IP: recoveryclient.AuditSafe(r.RemoteAddr), Outcome: outcome})
+	if err != nil && !errors.Is(err, recoveryclient.ErrReceiptUnrecorded) {
 		s.backupError(w, r, err)
 		return
 	}
@@ -66,12 +68,15 @@ func (s *Server) postBackupDrill(w http.ResponseWriter, r *http.Request) {
 		s.backupError(w, r, errors.New("backup service is unavailable"))
 		return
 	}
-	_, err := backup.Drill(b.Config, b.Store, b.Version)
-	outcome := "success"
+	result, err := b.Drill(r.Context())
+	details, outcome := "", "success"
 	if err != nil {
-		outcome = "failure"
+		details, outcome = err.Error(), "failure"
+	} else if !result.Passed {
+		details, outcome = result.ErrorMessage, "failure"
 	}
-	_ = b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.drill", Details: backup.AuditSafe(fmt.Sprint(err)), IP: backup.AuditSafe(r.RemoteAddr), Outcome: outcome})
+	_ = b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.drill",
+		Details: recoveryclient.AuditSafe(details), IP: recoveryclient.AuditSafe(r.RemoteAddr), Outcome: outcome})
 	if err != nil {
 		s.backupError(w, r, err)
 		return
@@ -85,22 +90,18 @@ func (s *Server) getBackupExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backup unavailable", 503)
 		return
 	}
-	key, err := backup.LoadRecoveryKey(b.Store, b.Config.DataDir)
-	if err != nil {
-		http.Error(w, err.Error(), 412)
-		return
-	}
-	raw, manifest, err := backup.Seal(b.Config, b.Store, b.Version, key)
+	raw, manifest, err := b.Export()
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	if err := b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.exported", Resource: manifest.CapsuleID, IP: backup.AuditSafe(r.RemoteAddr), Outcome: "success"}); err != nil {
+	if err := b.Store.RecordAudit(store.AuditEvent{Actor: "admin", Action: "backup.exported",
+		Resource: manifest.CapsuleID, IP: recoveryclient.AuditSafe(r.RemoteAddr), Outcome: "success"}); err != nil {
 		http.Error(w, "audit failed; capsule not exported", 503)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="kydns-backup.kycap"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+backup.ServiceName+"."+recoveryclient.FilenameSafe(manifest.CapsuleID)+`.kycap"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(raw)

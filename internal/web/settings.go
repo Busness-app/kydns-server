@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Busness-app/kydns-server/internal/backup"
 	"github.com/Busness-app/kydns-server/internal/dnsserver"
 	"github.com/Busness-app/kydns-server/internal/store"
 )
@@ -104,7 +103,7 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 		"SSOSettings":   sso,
 	}
 	if s.o.Backup != nil {
-		status, err := backup.ReadStatus(s.o.Backup.Store)
+		status, err := s.o.Backup.Status()
 		if err != nil && errMsg == "" {
 			data["Error"] = err.Error()
 		}

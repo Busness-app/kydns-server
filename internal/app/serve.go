@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/miekg/dns"
 
 	"github.com/Busness-app/kydns-server/internal/adminapi"
@@ -298,9 +300,15 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 		return replicaStatus(roleHolder.Current(), cfg.Replication.Primary, nodeID, p)
 	}
 
+	backupSvc, err := backup.New(cfg, st, web.Version)
+	if err != nil {
+		return err
+	}
+	if cfg.BackupAllowPrivateRecovery {
+		logger.Warn("KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY is set: private and CGNAT KyRecovery addresses admitted; HTTPS still required")
+	}
 	// One mux serves both transports: the API owns /api/v1/... and the web
 	// server owns everything else.
-	backupSvc := &adminapi.BackupService{Config: cfg, Store: st, Client: backup.NewClient(), Version: web.Version}
 	api := adminapi.NewAPI(reg, acl, cache).
 		WithProviders(leaseFn, healthFn, poller.Enabled).
 		WithPolicy(policySvc).
@@ -375,9 +383,7 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	go poller.Run(ctx)
 	go checker.Run(ctx)
 	go refresher.Run(ctx)
-	if cfg.BackupDepositInterval > 0 {
-		go depositLoop(ctx, cfg, st, backupSvc, logger)
-	}
+	go backupLoop(ctx, backupSvc, logger)
 	set, err := policySvc.Settings()
 	if err != nil {
 		return err
@@ -396,28 +402,39 @@ func Serve(ctx context.Context, cfgPath string, logger *slog.Logger) error {
 	return errors.Join(dnsSrv.Shutdown(shutdown), adminSrv.Shutdown(shutdown))
 }
 
-func depositLoop(ctx context.Context, cfg *config.Config, st *store.Store, svc *adminapi.BackupService, logger *slog.Logger) {
-	ticker := time.NewTicker(cfg.BackupDepositInterval)
+// backupLoop polls the schedule every minute so an admin's change needs no restart. The
+// next run counts from the last attempt, successful or not, so a dead destination is
+// retried once per interval. An upload already started outlives SIGTERM.
+func backupLoop(ctx context.Context, svc *backup.Service, logger *slog.Logger) {
+	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			upload, cancel := context.WithTimeout(context.WithoutCancel(ctx), 16*time.Minute)
-			receipt, manifest, err := backup.Deposit(upload, cfg, st, st, svc.Client, svc.Version)
-			cancel()
-			if errors.Is(err, backup.ErrNotPaired) {
-				continue
-			}
-			outcome, action, details := "success", "backup.deposited", receipt.Digest
-			if err != nil && !errors.Is(err, backup.ErrReceiptUnrecorded) {
-				outcome, action, details = "failure", "backup.deposit_failed", err.Error()
-			}
-			_ = st.RecordAudit(store.AuditEvent{Actor: "scheduler", Action: action, Resource: manifest.CapsuleID, Details: backup.AuditSafe(details), Outcome: outcome})
-			if err != nil {
-				logger.Error("scheduled backup deposit failed", "error", backup.AuditSafe(err.Error()))
-			}
+		}
+		st, err := svc.Status()
+		if err != nil {
+			logger.Error("backup schedule unreadable", "error", recoveryclient.AuditSafe(err.Error()))
+			continue
+		}
+		if st.NextRun == nil || time.Now().Before(*st.NextRun) {
+			continue
+		}
+		upload, cancel := context.WithTimeout(context.WithoutCancel(ctx), 16*time.Minute)
+		res, err := svc.Run(upload)
+		cancel()
+		// Not configured is not a failure to report every interval.
+		if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrNoDestination) {
+			continue
+		}
+		action, outcome, details := recoveryclient.Outcome(res, err)
+		b, _ := json.Marshal(details)
+		_ = svc.Store.RecordAudit(store.AuditEvent{Actor: "scheduler", Action: action,
+			Resource: res.Manifest.CapsuleID, Details: string(b), Outcome: outcome})
+		if err != nil {
+			logger.Error("scheduled backup failed", "error", recoveryclient.AuditSafe(err.Error()))
 		}
 	}
 }
