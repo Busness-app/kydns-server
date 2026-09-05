@@ -28,6 +28,15 @@ services:
     security_opt:
       - no-new-privileges:true
 
+    environment:
+      # Backups. The schedule is set in the admin UI once Phase B lands; this is
+      # only its default. A local backup directory needs a volume mounted at the
+      # same path. See README "Backups".
+      KYDNS_BACKUP_DEPOSIT_INTERVAL: ${KYDNS_BACKUP_DEPOSIT_INTERVAL:-24h}
+      KYDNS_BACKUP_DIR: ${KYDNS_BACKUP_DIR:-}
+      KYDNS_BACKUP_KEEP: ${KYDNS_BACKUP_KEEP:-7}
+      KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY: ${KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+
     volumes:
       # The config is read once at startup. Read-only: KyDNS never writes it.
       - ${KYDNS_CONFIG:-./kydns.yaml}:/etc/kydns/kydns.yaml:ro

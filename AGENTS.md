@@ -62,10 +62,13 @@ Keep these aligned:
   bringing that integration to the suite spec on `ky-primitives/kyrecovery`: local
   copies, admin schedule, pin by hand, unpair, restore runbook. Phase B targets
   ky-primitives v0.5.0.
+- `docs/RESTORE.md` — restore runbook; `scripts/restore-drill.sh` proves Step 1.
 
 Code, one concern per package:
 
-- `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs.
+- `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs. Restore
+  checks the unverified manifest for service `KyDNS` before reading shares; authenticated
+  extraction then proves that same service binding.
 - `internal/app` — process wiring: config, store, servers, background loops.
 - `internal/config` — the YAML config and its defaults. The file owns three
   keys (`data_dir`, `dns.listen`, `admin.listen`); every other key it carries
