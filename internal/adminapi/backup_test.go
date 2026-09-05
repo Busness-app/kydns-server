@@ -90,8 +90,12 @@ func backupDB(t *testing.T, path string) *sql.DB {
 // auditRows is every audit event as "action details", newline separated.
 func auditRows(t *testing.T, e backupEnv) string {
 	t.Helper()
-	rows, err := backupDB(t, e.dbPath).Query(
-		`SELECT action || ' ' || details FROM audit_events ORDER BY id`)
+	return auditQuery(t, e, `SELECT action || ' ' || details FROM audit_events ORDER BY id`)
+}
+
+func auditQuery(t *testing.T, e backupEnv, q string) string {
+	t.Helper()
+	rows, err := backupDB(t, e.dbPath).Query(q)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,6 +112,12 @@ func auditRows(t *testing.T, e backupEnv) string {
 		t.Fatal(err)
 	}
 	return strings.Join(out, "\n")
+}
+
+// auditOutcomes is every audit event as "action outcome", newline separated.
+func auditOutcomes(t *testing.T, e backupEnv) string {
+	t.Helper()
+	return auditQuery(t, e, `SELECT action || ' ' || outcome FROM audit_events ORDER BY id`)
 }
 
 // breakAudit makes every audit write fail, which is the only way to test that
@@ -204,21 +214,42 @@ func TestBackupExportRefusedWhenAuditFails(t *testing.T) {
 }
 
 // A recovery URL this node must not send a capsule to is refused before any
-// network call, and leaves no pin behind. The private-address refusal names the
-// switch that would admit it, because on a homelab that is the likely intent.
+// network call, leaves no pin behind, and is still audited: probing pair-remote
+// for which destinations this node accepts must leave the same trail as pairing
+// with one. The switch is named only for an address it would actually admit.
 func TestBackupPairRefusesUnusableRecoveryURLs(t *testing.T) {
-	for _, u := range []string{"http://example.com", "https://127.0.0.1", "https://example.com/?x=1"} {
+	for _, tc := range []struct {
+		url         string
+		namesSwitch bool
+	}{
+		{"http://example.com", false},
+		{"https://example.com/?x=1", false},
+		// Loopback is refused with or without the opt-in, so naming it would send
+		// the operator to set a variable that changes nothing.
+		{"https://127.0.0.1", false},
+		{"https://192.168.1.10", true},
+	} {
 		e, tok := backupAPI(t, nil)
-		body, err := json.Marshal(map[string]string{"recovery_url": u, "pairing_code": "123456"})
+		body, err := json.Marshal(map[string]string{"recovery_url": tc.url, "pairing_code": "123456"})
 		if err != nil {
 			t.Fatal(err)
 		}
 		rr := do(t, e.h, "POST", "/api/v1/backup/pair-remote", tok, string(body))
 		if rr.Code != http.StatusBadRequest && rr.Code != http.StatusBadGateway {
-			t.Errorf("pair %s = %d, want 400 or 502: %s", u, rr.Code, rr.Body)
+			t.Errorf("pair %s = %d, want 400 or 502: %s", tc.url, rr.Code, rr.Body)
 		}
-		if u == "https://127.0.0.1" && !strings.Contains(rr.Body.String(), "KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY") {
-			t.Errorf("pair %s does not name the switch: %s", u, rr.Body)
+		if named := strings.Contains(rr.Body.String(), "KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY"); named != tc.namesSwitch {
+			t.Errorf("pair %s names the switch = %v, want %v: %s", tc.url, named, tc.namesSwitch, rr.Body)
+		}
+		rows := auditRows(t, e)
+		if !strings.Contains(rows, "backup.paired") || !strings.Contains(rows, "allow_private=false") {
+			t.Errorf("pair %s left no audit row: %q", tc.url, rows)
+		}
+		if n := strings.Count(rows, "backup.paired"); n != 1 {
+			t.Errorf("pair %s wrote %d backup.paired rows, want 1: %q", tc.url, n, rows)
+		}
+		if !strings.Contains(auditOutcomes(t, e), "backup.paired failure") {
+			t.Errorf("pair %s was not audited as a failure: %s", tc.url, auditOutcomes(t, e))
 		}
 		var st backup.Status
 		sr := do(t, e.h, "GET", "/api/v1/backup/status", tok, "")
@@ -226,7 +257,7 @@ func TestBackupPairRefusesUnusableRecoveryURLs(t *testing.T) {
 			t.Fatal(err)
 		}
 		if st.KeyPinned || st.Paired {
-			t.Errorf("pair %s left state behind: %+v", u, st)
+			t.Errorf("pair %s left state behind: %+v", tc.url, st)
 		}
 	}
 }

@@ -48,7 +48,7 @@ func backupStatusCode(err error) (int, string) {
 	case errors.Is(err, recoveryclient.ErrInProgress):
 		return http.StatusConflict, "a backup is already in progress"
 	case errors.Is(err, recoveryclient.ErrBadInterval):
-		return http.StatusBadRequest, err.Error()
+		return http.StatusBadRequest, recoveryclient.AuditSafe(err.Error())
 	case errors.Is(err, recoveryclient.ErrRemote):
 		return http.StatusBadGateway, recoveryclient.AuditSafe(err.Error())
 	default:
@@ -86,15 +86,16 @@ func (a *API) backupStatus(w http.ResponseWriter, _ *http.Request) {
 // product's switch named. The library says "the private-destination option"
 // without knowing what KyDNS calls it, and an operator whose KyRecovery is on
 // their own LAN has nowhere to go without the variable's name. The clause is
-// added exactly when flipping the opt-in would change the answer, so a bad
-// scheme or a stray query string is not answered with an irrelevant switch.
+// added only when setting the switch would actually admit this URL, so a bad
+// scheme, a stray query string, or a loopback address the switch never admits
+// either is not answered with an irrelevant variable to go and set.
 func pairURLError(raw string, allowPrivate bool) error {
 	err := recoveryclient.ValidateURL(raw, allowPrivate)
 	if err == nil || allowPrivate {
 		return err
 	}
-	if lenient := recoveryclient.ValidateURL(raw, true); lenient == nil || lenient.Error() != err.Error() {
-		return fmt.Errorf("%w; KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY admits a KyRecovery on your own network, never a loopback or link-local one", err)
+	if recoveryclient.ValidateURL(raw, true) == nil {
+		return fmt.Errorf("%w; set KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY for a KyRecovery on your own network", err)
 	}
 	return err
 }
@@ -111,14 +112,18 @@ func (a *API) backupPair(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
+	allow := " allow_private=" + strconv.FormatBool(s.Cfg.BackupAllowPrivateRecovery)
 	// Checked before the claim, so a URL this node would never deposit to is
-	// refused without presenting the pairing code to it.
+	// refused without presenting the pairing code to it. The refusal is audited
+	// like any other: an operator probing pair-remote for which destinations this
+	// node will accept must leave the same trail as one who succeeds.
 	if err := pairURLError(req.RecoveryURL, s.Cfg.BackupAllowPrivateRecovery); err != nil {
+		_ = backupAudit(s.Store, "backup.paired", "", req.RecoveryURL+allow+" "+err.Error(), r.RemoteAddr, "failure")
 		writeErr(w, http.StatusBadRequest, "backup_pair", "recovery_url", err.Error())
 		return
 	}
 	key, err := s.Pair(r.Context(), req.RecoveryURL, req.PairingCode)
-	details := req.RecoveryURL + " allow_private=" + strconv.FormatBool(s.Cfg.BackupAllowPrivateRecovery)
+	details := req.RecoveryURL + allow
 	if err != nil {
 		details += " " + err.Error()
 	}
