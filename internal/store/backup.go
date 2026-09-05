@@ -1,10 +1,13 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
+
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 )
 
 type AuditEvent struct {
@@ -44,10 +47,7 @@ func (s *Store) SnapshotTo(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("snapshot path must be absolute")
 	}
-	if _, err := s.db.Exec(`VACUUM INTO ?`, path); err != nil {
-		return fmt.Errorf("snapshot database: %w", err)
-	}
-	return nil
+	return recoveryclient.SQLiteSnapshot(context.Background(), s.db, path)
 }
 
 func (s *Store) IntegrityCheck() error {

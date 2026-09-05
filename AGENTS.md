@@ -76,11 +76,13 @@ Code, one concern per package:
 - `internal/settings` — the settings snapshot the runtime reads, and the single
   path by which it changes: validate, persist, rebuild, apply, all or nothing.
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
-  `SnapshotTo` must bind the `VACUUM INTO` destination path, not interpolate it.
+  `SnapshotTo` delegates to `recoveryclient.SQLiteSnapshot`, which binds the
+  `VACUUM INTO` destination path rather than interpolating it.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.
-- `internal/backup` — KyRecovery pairing, sealed local credentials, consistent SQLite
-  snapshots, `ky-primitives` capsules, deposits, drills, and restore boundaries.
+- `internal/backup` — the KyDNS adapter over `ky-primitives/recoveryclient`: what a
+  capsule carries, the drill checks, and the `Service` the routes, scheduler and CLI
+  share. Pairing, pinning, delivery and schedule live in the library.
 - `internal/replica` — linked-node pairing accepts only literal IP:port peer
   addresses and authenticates self-signed peers by Ed25519 key fingerprint.
 - `internal/dnsserver` — ACL, authoritative answers, cache, forwarding.

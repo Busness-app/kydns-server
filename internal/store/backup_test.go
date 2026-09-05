@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -37,6 +38,13 @@ func TestSnapshotIncludesCommittedWALData(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "snapshot.db")
 	if err := s.SnapshotTo(dst); err != nil {
 		t.Fatal(err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("snapshot mode = %o, want 600", info.Mode().Perm())
 	}
 	copy, err := Open(dst)
 	if err != nil {
