@@ -34,8 +34,8 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 
 Backups are sealed to the suite recovery key and this server never holds what opens them.
 The key arrives by pairing with KyRecovery, or (Phase B) is pasted from the ceremony page
-for a server with no KyRecovery. Every capsule is sealed to it and (Phase B) goes to each
-configured destination: KyRecovery when paired, and `KYDNS_BACKUP_DIR` when set, as
+for a server with no KyRecovery. Every capsule is sealed to it and goes to each configured
+destination: KyRecovery when paired, and (Phase B) `KYDNS_BACKUP_DIR` when set, as
 `KyDNS.<capsule-id>.kycap` at mode 0600. The newest `KYDNS_BACKUP_KEEP` (default 7) with
 that prefix are kept; other files in the directory are never touched.
 
