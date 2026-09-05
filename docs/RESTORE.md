@@ -5,7 +5,7 @@ party. That is the point.
 
 | What | Where it comes from | Who holds it |
 | --- | --- | --- |
-| The sealed capsule | KyRecovery (Capsules → newest `KyDNS`), or **Settings → Disaster recovery → Download capsule**, or `kydns export-capsule --out path` | the operator |
+| The sealed capsule | KyRecovery (Capsules → newest `KyDNS`), or a local copy `KyDNS.<capsule-id>.kycap` in `KYDNS_BACKUP_DIR`, or **Settings → Disaster recovery → Download capsule**, or `kydns export-capsule --out path` | the operator |
 | k custodian shares | printed cards, one line each, beginning `ky2-` | k of your custodians, in person |
 | A machine to restore onto | any host with the `kydns` binary or the image | the operator |
 
@@ -19,10 +19,13 @@ loses the backup, so treat the cards as seriously as the server.
 | `data/kydns.db` | the whole server: views, services, records, aliases, blacklist lists and rules, settings and local settings, the admin password hash, API tokens, SSO settings, DHCP leases, replication peers, and the audit log |
 | `data/backup_key` | 32 bytes. The KyRecovery token stored sealed in the database opens **only** with this file; without it a restored node cannot talk to KyRecovery |
 | `data/node_key` | this node's replication identity. Present only when the node has joined or hosted replication; a standalone node has none |
+| `data/recovery.pub` | the pinned suite recovery public key. Present only when the node had a pinned key; it is what the restored node seals its next capsule to |
 | `config/kydns.yaml` | a record of `data_dir`, `dns.listen` and `admin.listen` as they were. Reference only — it is not the file the server reads |
 
-`data/recovery.pub`, the pinned KyRecovery public key, is **not** a capsule
-member. See Step 4.
+`node_key` and `recovery.pub` are carried when they exist, and are then named in
+the capsule's `required_files`: a restore that dropped one is a failed restore,
+not a partial one. There is no private recovery key in a capsule, ever — only
+the custodian shares reconstruct that.
 
 Everything above comes out of the capsule in the clear. The restore directory
 is the live `data_dir`, containing an admin hash and every API token. Create it
@@ -107,8 +110,10 @@ you remember. Compare the capsule id and creation time Step 1 printed against
 the ones you noted in KyRecovery; that line is read out of the capsule's
 authenticated manifest, so it cannot disagree with the bytes that were opened.
 
-`data/kydns.db` should be mode 600, as should `data/backup_key`. If
-`data/node_key` is absent, this node was standalone — that is not a fault.
+`data/kydns.db` should be mode 600, as should `data/backup_key` and
+`data/recovery.pub`. If `data/node_key` is absent, this node was standalone —
+that is not a fault. If `data/recovery.pub` is absent, the node had no pinned
+key when the capsule was sealed; see Step 4.
 
 ## Step 3: put it in service
 
@@ -172,8 +177,8 @@ docker compose up -d
 docker compose logs kydns | head
 ```
 
-The `ls -A` should list `kydns.db`, `backup_key`, and `node_key` if the capsule
-had one — names only, never contents. The logs should show the DNS and admin
+The `ls -A` should list `kydns.db`, `backup_key`, `recovery.pub`, and `node_key`
+if the capsule had them — names only, never contents. The logs should show the DNS and admin
 listeners coming up with **no setup token**: a setup token means the database
 was not found, which means the copy went somewhere other than `$vol`.
 
@@ -183,25 +188,35 @@ was not found, which means the copy went somewhere other than `$vol`.
   from the restored registry.
 - Log in to the admin UI on port 8053 with the **old** password. The hash came
   from the capsule.
-- Settings → Disaster recovery still shows the pinned key id and the URL: both live in
-  the database, which the capsule carried.
+- **Settings → Disaster recovery** still shows the pinned key id, its k-of-n, and
+  the KyRecovery URL: all three live in the database, which the capsule carried.
 - **Run drill** still passes: it seals and reopens with an ephemeral key and
   never needs the pinned one, so it is a good check that the restored database
   is whole.
-- **Back up now** and **Download capsule** will nonetheless fail with `paired but
-  the recovery public key is missing or does not match the pin; restore
-  recovery.pub or re-pair`. `data/recovery.pub` is not a capsule member,
-  so the pinned public key itself did not come across. Two ways back:
-  copy `recovery.pub` from `old-data/` if you saved the old volume, or pair
-  again with a fresh six-digit code from KyRecovery — `POST
+- **Back up now** and **Download capsule** work straight away. `data/recovery.pub`
+  is a capsule member when the node had a pinned key, so a restored node comes
+  back pinned to the same key the custodians split, and the KyRecovery token in
+  the database opens with the restored `data/backup_key`. Deposits resume with
+  nothing typed.
+- **If `recovery.pub` did not come across** — an older capsule, or a partial
+  copy into the volume — the card says *Paired, but recovery.pub is missing or
+  does not match the pin*, and **Back up now** and **Download capsule** fail
+  with `paired but the recovery public key is missing or does not match the pin;
+  restore recovery.pub or re-pair`. Three ways back, in order of preference:
+  copy `recovery.pub` from `old-data/` if you saved the old volume; pin the same
+  key by hand — `kydns backup-pin-key --public-key-file p --threshold k
+  --total-shares n`, or `POST /api/v1/backup/pin-key`, which recreates the
+  missing file when the key ID matches the pin (the screen's *Pin the suite key
+  by hand* form is hidden while the pin row exists, so use the CLI or the API);
+  or pair again with a fresh six-digit code from KyRecovery — `POST
   /api/v1/backup/pair-remote` with `recovery_url` and `pairing_code`, since the
-  web form is hidden while the database still reports the server as paired.
-  Re-pairing is accepted only to the key already pinned: a different key is
-  refused with `already pinned to a different recovery key`, which is the
-  guardrail working.
-- With `data/backup_key` in place the KyRecovery token from the database opens
-  and deposits resume. Without that file nothing will deposit, whatever the
-  pairing says.
+  web pairing form is hidden while the database still reports the server as
+  paired. All three are accepted only for the key already pinned: a different
+  key is refused with `already paired to recovery key ...`, which is the
+  write-once guardrail working.
+- Without `data/backup_key` nothing will deposit, whatever the pairing says: the
+  KyRecovery token in the database is sealed under that file and nothing else
+  opens it.
 - Replication: a restored primary that has `data/node_key` keeps its identity
   and its replicas reconnect. A standalone node has no `node_key` and there is
   nothing here to prove.

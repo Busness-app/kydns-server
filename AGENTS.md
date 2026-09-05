@@ -59,8 +59,8 @@ Keep these aligned:
   plan for adopting `ky-primitives` and adding sealed KyRecovery pairing,
   capsule export, scheduled deposits, drills, and restore.
 - `docs/superpowers/plans/2026-09-04-kydns-backup-to-suite-spec.md` — follow-on plan
-  bringing that integration to the suite spec on `ky-primitives/kyrecovery`: local
-  copies, admin schedule, pin by hand, unpair, restore runbook. Phase B targets
+  bringing that integration to the suite spec on `ky-primitives/recoveryclient`: local
+  copies, admin schedule, pin by hand, unpair, restore runbook. Phase B is on
   ky-primitives v0.5.0.
 - `docs/RESTORE.md` — restore runbook; `scripts/restore-drill.sh` proves Step 1.
 

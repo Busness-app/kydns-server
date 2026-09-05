@@ -295,9 +295,9 @@
     <a href="/settings/backup/export">Download capsule</a>
   </div>
 
-  <p class="muted">A capsule carries the database, <code>backup_key</code>, <code>node_key</code>
-     when this node is replicated, and a record of the config. It is sealed to the suite
-     recovery key: this server cannot open it.</p>
+  <p class="muted">A capsule carries the database, <code>backup_key</code>, a record of the
+     config, and <code>node_key</code> and <code>recovery.pub</code> when this node has them.
+     It is sealed to the suite recovery key: this server cannot open it.</p>
 
   <form class="stack" method="post" action="/settings/backup/schedule">
     <input type="hidden" name="csrf_token" value="{{$.CSRF}}">

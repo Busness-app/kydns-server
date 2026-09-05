@@ -168,10 +168,20 @@ pinned suite recovery public key; receipt digest, size, and capsule ID must matc
 deposit is recorded. Capsule downloads are marked no-store and nosniff. Restore shares are
 accepted on standard input, never command arguments.
 
-Private and CGNAT targets are refused unless (Phase B) `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY`
-is set, which will be logged at startup and on the pairing audit row; loopback, link-local,
+Private and CGNAT targets are refused unless `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY`
+is set, which is logged at startup and named on the pairing audit row; loopback, link-local,
 multicast, unspecified, and reserved ranges are refused regardless. Plain HTTP is never
 accepted. The operator compares fingerprints because TLS protects the wire, not the capsule.
+
+A suite with no KyRecovery to pair with pins the recovery public key by hand, from the
+ceremony page, on **Settings → Disaster recovery** or with `kydns backup-pin-key`. The
+pin is write-once: a second, different key is refused with 409, so a capsule cannot be
+quietly re-sealed to a key the custodians never split.
+
+Unpairing removes the KyRecovery URL and the sealed token rows and nothing else. The key
+pin, the receipts and the local copies stay, and the screen says so. The deposit
+credential itself is dead only when the KyRecovery admin revokes it — KyDNS can forget a
+token, it cannot invalidate one.
 
 See [DESGINE.md](DESGINE.md) for the architecture and
 [LOGGING.md](LOGGING.md) for privacy-safe logging requirements.

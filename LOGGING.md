@@ -47,5 +47,9 @@ should use their existing logging platform for search, alerting, retention, and
 access control.
 
 Backup audit events record bounded action, outcome, capsule ID, remote address, and a
-printable error summary. They never record pairing codes, bearer tokens, sealed token
-ciphertext, capsule contents, recovery shares, or recovery private keys.
+printable error summary. The actions are `backup.paired`, `backup.key_pinned`,
+`backup.unpaired`, `backup.schedule`, `backup.exported`, `backup.export_failed`,
+`backup.drill`, and `admin.backup_run`, which is written by the library for every backup
+run whatever started it and whose details column is a JSON object rather than a sentence.
+They never record pairing codes, bearer tokens, sealed token ciphertext, capsule contents,
+recovery shares, or recovery private keys.

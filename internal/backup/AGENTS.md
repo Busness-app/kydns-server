@@ -41,7 +41,9 @@ behaviour that belongs to every product in the suite is fixed there, not here.
 
 ## Verification
 
-`go test -race ./internal/backup`
+`go test -race ./internal/backup`. `nodecrypt_test.go` is the decrypt guard: it runs
+`guardtest.NoDecryptOutside` over the whole repository and fails if anything but
+`cmd/kydns/main.go`'s `run` reaches a share-combining or capsule-opening call.
 
 ## Child DOX Index
 
