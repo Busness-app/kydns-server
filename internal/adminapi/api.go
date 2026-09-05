@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/Busness-app/kydns-server/internal/backup"
 	"github.com/Busness-app/kydns-server/internal/discovery/dhcp"
 	"github.com/Busness-app/kydns-server/internal/dnsserver"
 	"github.com/Busness-app/kydns-server/internal/health"
@@ -38,7 +39,7 @@ type API struct {
 	replicaAdmin    ReplicaAdmin
 	replicaJoiner   ReplicaJoiner
 	replicaPromoter ReplicaPromoter
-	backup          *BackupService
+	backup          *backup.Service
 }
 
 // ReplicaStatus is what GET /api/v1/replica/status renders. It mirrors
@@ -106,7 +107,7 @@ func (a *API) WithSettings(s *settings.Service) *API {
 	return a
 }
 
-func (a *API) WithBackupService(s *BackupService) *API { a.backup = s; return a }
+func (a *API) WithBackupService(s *backup.Service) *API { a.backup = s; return a }
 
 // WithReplication attaches the status producer for GET /api/v1/replica/status.
 // It is optional; an API built without it reports standalone, since that is
@@ -282,7 +283,10 @@ func (a *API) routes(mux registrar) {
 	mux.HandleFunc("POST /api/v1/backup/drill", auth(a.backupDrill))
 	mux.HandleFunc("GET /api/v1/backup/export-capsule", auth(a.backupExport))
 	mux.HandleFunc("POST /api/v1/backup/pair-remote", auth(a.backupPair))
-	mux.HandleFunc("POST /api/v1/backup/deposit", auth(a.backupDeposit))
+	mux.HandleFunc("POST /api/v1/backup/pin-key", auth(a.backupPinKey))
+	mux.HandleFunc("DELETE /api/v1/backup/pairing", auth(a.backupUnpair))
+	mux.HandleFunc("PUT /api/v1/backup/schedule", auth(a.backupSchedule))
+	mux.HandleFunc("POST /api/v1/backup/deposit", auth(a.backupRun))
 	mux.HandleFunc("GET /api/v1/backup/status", auth(a.backupStatus))
 
 	// Registered from the constants the exemption list is built from, so a

@@ -59,8 +59,8 @@ Keep these aligned:
   plan for adopting `ky-primitives` and adding sealed KyRecovery pairing,
   capsule export, scheduled deposits, drills, and restore.
 - `docs/superpowers/plans/2026-09-04-kydns-backup-to-suite-spec.md` — follow-on plan
-  bringing that integration to the suite spec on `ky-primitives/kyrecovery`: local
-  copies, admin schedule, pin by hand, unpair, restore runbook. Phase B targets
+  bringing that integration to the suite spec on `ky-primitives/recoveryclient`: local
+  copies, admin schedule, pin by hand, unpair, restore runbook. Phase B is on
   ky-primitives v0.5.0.
 - `docs/RESTORE.md` — restore runbook; `scripts/restore-drill.sh` proves Step 1.
 
@@ -69,7 +69,9 @@ Code, one concern per package:
 - `cmd/kydns` — command dispatch. `serve`, `admin`, and the API-backed verbs. Restore
   checks the unverified manifest for service `KyDNS` before reading shares; authenticated
   extraction then proves that same service binding.
-- `internal/app` — process wiring: config, store, servers, background loops.
+- `internal/app` — process wiring: config, store, servers, background loops. The scheduled
+  backup loop is quiet only for unconfigured backups; a pinned key whose file is missing is
+  audited and logged as a failed backup run.
 - `internal/config` — the YAML config and its defaults. The file owns three
   keys (`data_dir`, `dns.listen`, `admin.listen`); every other key it carries
   is a first-run seed for the database. `internal/config/example_test.go`
@@ -78,11 +80,13 @@ Code, one concern per package:
 - `internal/settings` — the settings snapshot the runtime reads, and the single
   path by which it changes: validate, persist, rebuild, apply, all or nothing.
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
-  `SnapshotTo` must bind the `VACUUM INTO` destination path, not interpolate it.
+  `SnapshotTo` delegates to `recoveryclient.SQLiteSnapshot`, which binds the
+  `VACUUM INTO` destination path rather than interpolating it.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.
-- `internal/backup` — KyRecovery pairing, sealed local credentials, consistent SQLite
-  snapshots, `ky-primitives` capsules, deposits, drills, and restore boundaries.
+- `internal/backup` — the KyDNS adapter over `ky-primitives/recoveryclient`: what a
+  capsule carries, the drill checks, and the `Service` the routes, scheduler and CLI
+  share. Pairing, pinning, delivery and schedule live in the library.
 - `internal/replica` — linked-node pairing accepts only literal IP:port peer
   addresses and authenticates self-signed peers by Ed25519 key fingerprint.
 - `internal/dnsserver` — ACL, authoritative answers, cache, forwarding.

@@ -291,8 +291,14 @@ boundary. Blacklist filtering is specified in
 
 ## Disaster recovery
 
-`internal/backup` snapshots SQLite through the live store handle and seals the database,
-node identity when present, node-local token key, and boot manifest into the suite's
-`ky-primitives` capsule format. KyRecovery retains the opaque capsule and returns a receipt;
+`internal/backup` is KyDNS's adapter over `ky-primitives/recoveryclient`. It owns only
+what differs per product: what a capsule carries, the KyDNS drill checks, and one
+`Service` the admin routes, the scheduler and the CLI share. Pairing, key pinning,
+sealing, delivery to every destination, local retention, the schedule and restore are the
+library's, so a behaviour that belongs to every product in the suite is fixed once.
+
+A capsule carries a SQLite snapshot taken through the live store handle, the node-local
+token key, a record of the boot config, and the node identity and pinned recovery public
+key when this node has them. KyRecovery retains the opaque capsule and returns a receipt;
 only custodian shares reconstruct the private recovery key. Pairing state, audit events,
 keys, and receipts are node-local and never enter linked-node replication.

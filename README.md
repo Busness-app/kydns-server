@@ -33,22 +33,30 @@ without manually maintaining hosts files or opaque DNS rewrite rules.
 ## Backups
 
 Backups are sealed to the suite recovery key and this server never holds what opens them.
-The key arrives by pairing with KyRecovery, or (Phase B) is pasted from the ceremony page
-for a server with no KyRecovery. Every capsule is sealed to it and goes to each configured
-destination: KyRecovery when paired, and (Phase B) `KYDNS_BACKUP_DIR` when set, as
-`KyDNS.<capsule-id>.kycap` at mode 0600. The newest `KYDNS_BACKUP_KEEP` (default 7) with
-that prefix are kept; other files in the directory are never touched.
+The key arrives by pairing with KyRecovery, or is pasted from the ceremony page for a
+server with no KyRecovery. **Settings → Disaster recovery** does both, and shows the
+pinned key, the destinations, the schedule and the newest local copy. Every capsule is
+sealed to that key and goes to each configured destination: KyRecovery when paired, and
+`KYDNS_BACKUP_DIR` when set, as `KyDNS.<capsule-id>.kycap` at mode 0600. The newest
+`KYDNS_BACKUP_KEEP` (default 7) with that prefix are kept; other files in the directory
+are never touched. A local copy that fails never cancels the deposit, and a deposit that
+fails never deletes the local copy.
 
-`KYDNS_BACKUP_DEPOSIT_INTERVAL` (default `24h`, 15 minute floor, `0` disables) is the
-schedule default. Custodian cards come from the KyRecovery ceremony; a restore needs k of
-them typed on stdin, see [docs/RESTORE.md](docs/RESTORE.md).
+A capsule carries `data/kydns.db`, `data/backup_key` and a record of the config, plus
+`data/node_key` and `data/recovery.pub` when this node has them.
+
+`KYDNS_BACKUP_DEPOSIT_INTERVAL` (default `24h`, 15 minute floor, `0` disables) seeds the
+schedule on first start; after that the schedule is an admin setting you change on the
+screen or with `kydns backup-schedule --minutes n`. Custodian cards come from the
+KyRecovery ceremony; a restore needs k of them typed on stdin, see
+[docs/RESTORE.md](docs/RESTORE.md).
 
 **KyRecovery must be reached over HTTPS, and by default at a public address.** TLS is not
 for the capsule, which is already sealed. It protects the public key that arrives at
 pairing (trust on first use), the deposit token, and the receipts. For a KyRecovery on your
-own network behind a TLS proxy, set `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY=true`; HTTPS is
-still required and loopback stays refused. Whatever the wire, compare the key fingerprint
-Settings shows with the one in the KyRecovery dashboard; a swapped key then fails at
+own network behind a TLS proxy, set `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY=true`;
+HTTPS is still required and loopback stays refused. Whatever the wire, compare the key
+fingerprint Settings shows with the one in the KyRecovery dashboard; a swapped key then fails at
 pairing instead of at restore. In Docker, names that exist only on your LAN need
 `docker-compose.lan-dns.yml` with `KYDNS_DNS` on the command line.
 
@@ -629,6 +637,13 @@ works from any machine that can reach the admin listener:
 | `kydns settings set k=v ...` | Change them. `--confirm-public <cidr>` for a public `allow_query` range. |
 | `kydns replica invite\|list\|remove` | Manage the replicas this node serves. `invite` prints a pairing code and this node's fingerprint; confirm the fingerprint on the replica before entering the code. |
 | `kydns export` / `kydns import` | Read or write the registry and settings as YAML or JSON. |
+| `kydns backup-pin-key --public-key-file p --threshold k --total-shares n` | Pin the suite recovery public key by hand, for a suite with no KyRecovery. Write-once: a second, different key is refused. |
+| `kydns backup-unpair` | Forget the KyRecovery URL and sealed token. The key pin stays. |
+| `kydns backup-schedule --minutes n` | Set the automatic backup interval; `0` turns it off, the floor is 15. |
+| `kydns deposit` | Run a backup now, to every configured destination. |
+| `kydns export-capsule --out path` | Write a sealed capsule to a file. |
+| `kydns backup-drill` | Seal and reopen a capsule with an ephemeral key; proves collection and SQLite integrity. |
+| `kydns restore --capsule p --out dir` | Open a capsule with custodian shares read from stdin. See [docs/RESTORE.md](docs/RESTORE.md). |
 | `kydns admin reset-password` | Local recovery. Opens the database directly. |
 
 ### Forgot the admin password

@@ -39,9 +39,12 @@ For documentation-only changes:
 - search for stale project names or contradictory requirements;
 - inspect the complete diff for unintended changes.
 
-Backup changes additionally run `go test -race ./internal/backup ./internal/store` and
-must preserve legacy password verification, WAL-safe snapshots, token-at-rest encryption,
-receipt verification, recovery URL restrictions, and the stdin-only restore boundary.
+Backup changes additionally run `go test -race ./internal/backup ./internal/store`,
+`scripts/restore-drill.sh` (proves the restore runbook's Step 1 and its refusals against a
+throwaway 2-of-3 key) and `scripts/backup-live-proof.sh` (starts a real server on a
+throwaway data dir and proves pin, run and schedule over the API). They must preserve
+legacy password verification, WAL-safe snapshots, token-at-rest encryption, receipt
+verification, recovery URL restrictions, and the stdin-only restore boundary.
 
 ## AI-assisted contributions
 

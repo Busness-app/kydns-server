@@ -1,20 +1,18 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/Busness-app/ky-primitives/capsule"
-	"github.com/Busness-app/ky-primitives/recoverykey"
-	"github.com/Busness-app/ky-primitives/shamir"
+	"github.com/Busness-app/ky-primitives/recoveryclient"
 	"github.com/Busness-app/kydns-server/internal/app"
+	"github.com/Busness-app/kydns-server/internal/backup"
 	"github.com/Busness-app/kydns-server/internal/cli"
 	"github.com/Busness-app/kydns-server/internal/web"
 )
@@ -42,6 +40,9 @@ commands:
   export    write registry contents to YAML or JSON
   import    load registry contents from YAML or JSON
   backup-drill verify a sealed recovery capsule can be built
+  backup-pin-key pin the suite recovery public key by hand
+  backup-unpair  forget the KyRecovery URL and token
+  backup-schedule set the automatic backup interval
   export-capsule write a sealed recovery capsule
   deposit   deposit a sealed capsule with KyRecovery
   restore   restore a capsule using custodian shares from stdin
@@ -95,6 +96,8 @@ func run(args []string, stdout io.Writer) int {
 		fs.SetOutput(stdout)
 		capsulePath := fs.String("capsule", "", "sealed capsule path")
 		out := fs.String("out", "", "empty restore directory")
+		// fs.NArg() > 0 makes a share on argv a usage error: argv is world-readable
+		// in /proc and lands in shell history.
 		if err := fs.Parse(args[1:]); err != nil || *capsulePath == "" || *out == "" || fs.NArg() > 0 {
 			fmt.Fprintln(stdout, "usage: kydns restore --capsule path --out directory")
 			fmt.Fprintln(stdout, "custodian shares are read from stdin, one per line")
@@ -106,49 +109,31 @@ func run(args []string, stdout io.Writer) int {
 			fmt.Fprintln(os.Stderr, "kydns: restore directory must be empty")
 			return 1
 		}
+		// Refuse another product's capsule before any custodian types a share. Restore
+		// authenticates this same manifest before it combines them, so rewriting the
+		// cleartext service name here cannot bypass anything.
 		raw, err := os.ReadFile(*capsulePath)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "kydns:", err)
 			return 1
 		}
-		manifest, err := capsule.ReadUnverifiedManifest(raw)
+		peek, err := capsule.ReadUnverifiedManifest(raw)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "kydns:", err)
 			return 1
 		}
-		// Check the product before custodians expose their shares. Open authenticates this
-		// same manifest later, so rewriting the cleartext service name cannot bypass it.
-		if manifest.ServiceName != "KyDNS" {
-			fmt.Fprintf(os.Stderr, "kydns: capsule is for service %q, want %q\n", manifest.ServiceName, "KyDNS")
+		if peek.ServiceName != backup.ServiceName {
+			fmt.Fprintf(os.Stderr, "kydns: capsule is for service %q, want %q\n", peek.ServiceName, backup.ServiceName)
 			return 1
 		}
-		var shares []shamir.Share
-		scan := bufio.NewScanner(os.Stdin)
-		for scan.Scan() {
-			line := strings.TrimSpace(scan.Text())
-			if line == "" {
-				continue
-			}
-			share, err := shamir.ParseShare(line)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "kydns:", err)
-				return 1
-			}
-			shares = append(shares, share)
-		}
-		if err := scan.Err(); err != nil {
-			fmt.Fprintln(os.Stderr, "kydns:", err)
-			return 1
-		}
-		key, err := recoverykey.Combine(shares)
+		shares, err := recoveryclient.ReadShares(os.Stdin)
 		if err == nil {
-			_, _, err = capsule.Open(raw, key, *out)
+			err = recoveryclient.Restore(*capsulePath, *out, backup.ServiceName, shares, stdout)
 		}
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "kydns:", err)
 			return 1
 		}
-		fmt.Fprintln(stdout, *out)
 		return 0
 	default:
 		// Asking the cli package rather than repeating its command list here:
