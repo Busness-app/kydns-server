@@ -107,7 +107,7 @@ func (s *Server) settingsData(errMsg, newToken string) map[string]any {
 		if err != nil && errMsg == "" {
 			data["Error"] = err.Error()
 		}
-		data["Backup"] = status
+		data["Backup"] = backupView{Status: status, IntervalMinutes: status.IntervalSec / 60}
 	}
 	// Absent rather than zero when the service is not wired: the template then
 	// renders the read-only view instead of a form full of empty boxes.

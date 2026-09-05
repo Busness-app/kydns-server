@@ -134,6 +134,9 @@ var Commands = []Command{
 	{"backup-drill", "verify a sealed recovery capsule can be built", backupDrillCmd},
 	{"export-capsule", "write a sealed recovery capsule", exportCapsuleCmd},
 	{"deposit", "deposit a sealed capsule with KyRecovery", depositCmd},
+	{"backup-pin-key", "pin the suite recovery public key by hand", backupPinKeyCmd},
+	{"backup-unpair", "forget the KyRecovery URL and token", backupUnpairCmd},
+	{"backup-schedule", "set the automatic backup interval", backupScheduleCmd},
 }
 
 func backupDrillCmd(c *Client, args []string, stdout, stderr io.Writer) int {
@@ -146,6 +149,78 @@ func backupDrillCmd(c *Client, args []string, stdout, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	fmt.Fprintln(stdout, "backup drill passed")
+	return 0
+}
+
+// backupPinKeyCmd reads the base64 public key from a file, never from argv: argv is
+// world-readable in /proc and lands in shell history.
+func backupPinKeyCmd(c *Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backup-pin-key", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("public-key-file", "", "file holding the base64 recovery public key")
+	k := fs.Int("threshold", 0, "custodian threshold (k)")
+	n := fs.Int("total-shares", 0, "custodian shares (n)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *path == "" || fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "usage: kydns backup-pin-key --public-key-file path --threshold k --total-shares n")
+		return 2
+	}
+	raw, err := os.ReadFile(*path)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	var out struct {
+		RecoveryKeyID string `json:"recovery_key_id"`
+		Threshold     int    `json:"threshold"`
+		TotalShares   int    `json:"total_shares"`
+	}
+	body := map[string]any{"public_key": strings.TrimSpace(string(raw)), "threshold": *k, "total_shares": *n}
+	if err := c.Do(http.MethodPost, "/api/v1/backup/pin-key", body, &out); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "pinned %s (%d-of-%d)\n", out.RecoveryKeyID, out.Threshold, out.TotalShares)
+	return 0
+}
+
+func backupUnpairCmd(c *Client, args []string, stdout, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kydns backup-unpair")
+		return 2
+	}
+	var out struct {
+		Note string `json:"note"`
+	}
+	if err := c.Do(http.MethodDelete, "/api/v1/backup/pairing", nil, &out); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintln(stdout, out.Note)
+	return 0
+}
+
+func backupScheduleCmd(c *Client, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backup-schedule", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	minutes := fs.Int64("minutes", -1, "backup interval in minutes; 0 turns it off")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *minutes < 0 || fs.NArg() > 0 {
+		fmt.Fprintln(stderr, "usage: kydns backup-schedule --minutes n   (0 turns it off)")
+		return 2
+	}
+	var out struct {
+		IntervalSec int64 `json:"interval_sec"`
+	}
+	if err := c.Do(http.MethodPut, "/api/v1/backup/schedule", map[string]any{"interval_sec": *minutes * 60}, &out); err != nil {
+		return fail(stderr, err)
+	}
+	if out.IntervalSec == 0 {
+		fmt.Fprintln(stdout, "scheduled backups are off")
+		return 0
+	}
+	fmt.Fprintf(stdout, "every %d minutes\n", out.IntervalSec/60)
 	return 0
 }
 

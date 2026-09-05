@@ -267,19 +267,56 @@
     <button class="ghost" type="submit"{{template "ro" $}}>Flush DNS cache</button>
   </form>
 
-  {{with .Backup}}
-  <hr>
-  <h4>KyRecovery</h4>
+</div>
+
+{{with .Backup}}
+<div class="card">
+  <h3>Disaster recovery</h3>
+
+  {{if not .KeyPinned}}<p class="muted">No recovery key. Pair with KyRecovery or pin the suite key by hand below.</p>{{end}}
+  {{if .KeyPinMissing}}<p class="muted">Paired, but recovery.pub is missing or does not match the pin. Restore the file or re-pair; a different key is refused.</p>{{end}}
+  {{if not .HasDestination}}<p class="muted">Nowhere to put a capsule. Pair with KyRecovery or set KYDNS_BACKUP_DIR.</p>{{end}}
+  {{if eq .IntervalSec 0}}<p class="muted">Schedule is off. Backups run only when you click.</p>{{end}}
+
+  <table class="grid">
+    <tr><th>Recovery key</th>
+      <td>{{if .RecoveryKeyID}}<code>{{.RecoveryKeyID}}</code> &middot; {{.Threshold}}-of-{{.TotalShares}} custodians{{else if .KeyPinned}}pinned, but the key file is missing{{else}}not pinned{{end}}</td></tr>
+    <tr><th>KyRecovery</th>
+      <td>{{if .Paired}}<code>{{.RecoveryURL}}</code>{{with .LastDeposit}}<br>last verified deposit <code>{{.CapsuleID}}</code> at {{.DepositedAt}}{{end}}{{else}}not paired{{end}}{{if .AllowPrivate}}<br><span class="muted">private addresses admitted</span>{{end}}</td></tr>
+    <tr><th>Local copies</th>
+      <td>{{if .LocalDir}}<code>{{.LocalDir}}</code> &middot; keep {{.LocalKeep}}{{if .LocalCopies}}<br>newest <code>{{(index .LocalCopies 0).Name}}</code>{{end}}{{else}}KYDNS_BACKUP_DIR not set{{end}}</td></tr>
+    <tr><th>Schedule</th>
+      <td>{{if .IntervalSec}}every {{.IntervalMinutes}} minutes{{with .NextRun}} &middot; next run {{.}}{{end}}{{else}}off{{end}}</td></tr>
+  </table>
+
+  <div class="actions">
+    <form method="post" action="/settings/backup/deposit"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit"{{template "ro" $}}>Back up now</button></form>
+    <form method="post" action="/settings/backup/drill"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="ghost" type="submit"{{template "ro" $}}>Run drill</button></form>
+    <a href="/settings/backup/export">Download capsule</a>
+  </div>
+
+  <p class="muted">A capsule carries the database, <code>backup_key</code>, <code>node_key</code>
+     when this node is replicated, and a record of the config. It is sealed to the suite
+     recovery key: this server cannot open it.</p>
+
+  <form class="stack" method="post" action="/settings/backup/schedule">
+    <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+    <label for="interval_minutes">Back up every (minutes; 0 turns it off; at least 15)</label>
+    <input id="interval_minutes" name="interval_minutes" type="number" min="0" step="1" value="{{.IntervalMinutes}}">
+    <button type="submit"{{template "ro" $}}>Save schedule</button>
+  </form>
+
   {{if .Paired}}
+    <h4>Pairing</h4>
     <p>Paired with <code>{{.RecoveryURL}}</code></p>
-    <p class="muted">Pinned key: <code>{{.RecoveryKeyID}}</code></p>
-    {{with .LastDeposit}}<p>Last verified deposit: <code>{{.CapsuleID}}</code> ({{.SizeBytes}} bytes)</p>{{end}}
-    <div class="actions">
-      <form method="post" action="/settings/backup/deposit"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button type="submit"{{template "ro" $}}>Deposit now</button></form>
-      <form method="post" action="/settings/backup/drill"><input type="hidden" name="csrf_token" value="{{$.CSRF}}"><button class="ghost" type="submit"{{template "ro" $}}>Run drill</button></form>
-      <a href="/settings/backup/export">Download sealed capsule</a>
-    </div>
+    <form method="post" action="/settings/backup/unpair">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <button class="ghost" type="submit"{{template "ro" $}}>Unpair</button>
+    </form>
+    <p class="muted">Removes the URL and sealed token rows. The key pin, receipts and local
+       copies stay. The credential is dead only when the KyRecovery admin revokes it.</p>
   {{else}}
+    <h4>Pair with KyRecovery</h4>
     <form class="stack" method="post" action="/settings/backup/pair">
       <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
       <label for="recovery_url">KyRecovery URL</label><input id="recovery_url" name="recovery_url" type="url" required placeholder="https://recovery.example.com">
@@ -287,8 +324,22 @@
       <button type="submit"{{template "ro" $}}>Pair KyRecovery</button>
     </form>
   {{end}}
+
+  {{if not .KeyPinned}}
+    <h4>Pin the suite key by hand</h4>
+    <p class="muted">For a suite with no KyRecovery to pair with: paste the recovery public
+       key from the ceremony page and the custodian split it was made with.</p>
+    <form class="stack" method="post" action="/settings/backup/pin-key">
+      <input type="hidden" name="csrf_token" value="{{$.CSRF}}">
+      <label for="public_key">Recovery public key (base64)</label>
+      <textarea id="public_key" name="public_key" rows="4" required></textarea>
+      <label for="threshold">Threshold (k)</label><input id="threshold" name="threshold" type="number" min="2" step="1" required>
+      <label for="total_shares">Total shares (n)</label><input id="total_shares" name="total_shares" type="number" min="2" max="255" step="1" required>
+      <button type="submit"{{template "ro" $}}>Pin recovery key</button>
+    </form>
   {{end}}
 </div>
+{{end}}
 
 {{if .Upstreams}}
 <div class="card">

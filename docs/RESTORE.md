@@ -5,7 +5,7 @@ party. That is the point.
 
 | What | Where it comes from | Who holds it |
 | --- | --- | --- |
-| The sealed capsule | KyRecovery (Capsules → newest `KyDNS`), or **Settings → Download sealed capsule** (`kydns-backup.kycap`), or `kydns export-capsule --out path` | the operator |
+| The sealed capsule | KyRecovery (Capsules → newest `KyDNS`), or **Settings → Disaster recovery → Download capsule**, or `kydns export-capsule --out path` | the operator |
 | k custodian shares | printed cards, one line each, beginning `ky2-` | k of your custodians, in person |
 | A machine to restore onto | any host with the `kydns` binary or the image | the operator |
 
@@ -66,7 +66,15 @@ docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
 ```
 
 Each custodian types their line and presses Enter. After the k-th line, press
-Ctrl-D. The command prints the restore directory and exits 0.
+Ctrl-D. The command prints the capsule's authenticated manifest — file count,
+capsule id, service and version, creation time, recovery key id and payload
+hash — and exits 0:
+
+    Restored 3 files from capsule cap-KyDNS-1788609154776731567
+      service:      KyDNS (vdrill)
+      created:      2026-09-05T11:52:34Z
+      recovery key: fe85c333...
+      payload hash: 87419e2e...
 
 ### When it refuses
 
@@ -76,16 +84,16 @@ Ctrl-D. The command prints the restore directory and exits 0.
 | Shares from two different splits | `kydns: shamir: shares belong to different splits` |
 | The same card typed twice | `kydns: shamir: shares repeat an index` |
 | A capsule sealed to a different recovery key | `kydns: capsule is sealed to a different recovery key` |
+| A capsule belonging to another product | `kydns: capsule is for service "KyPost", this instance is "KyDNS"; pass -service to override` (there is no such flag on `kydns restore`; restore it with that product's binary) |
 | The target directory is not empty | `kydns: restore directory must be empty` |
 | A share passed as an argument | the usage text above, exit 2 |
 
 All of these leave the target directory untouched.
 
-One thing the command does **not** check today is the service name in the
-capsule: the whole suite seals to one recovery key, so a KySignOn or KyPost
-capsule opened with these shares extracts happily into `restored/`. Check the
-file names in Step 2 — if you do not see `data/kydns.db`, you opened another
-product's backup.
+The whole suite seals to one recovery key, so these shares would open a KySignOn
+or KyPost capsule too. The command refuses one before it combines a single
+share: the capsule's service name must be `KyDNS`. Restore another product's
+capsule with that product's binary.
 
 ## Step 2: check what came out
 
@@ -95,9 +103,9 @@ sqlite3 restored/data/kydns.db 'PRAGMA integrity_check; SELECT count(*) FROM ser
 ```
 
 `integrity_check` must print `ok`, and the service count should be roughly what
-you remember. Compare the capsule id you noted in KyRecovery against the file
-you opened; the digest KyRecovery shows is of the same bytes you fed to
-`--capsule`.
+you remember. Compare the capsule id and creation time Step 1 printed against
+the ones you noted in KyRecovery; that line is read out of the capsule's
+authenticated manifest, so it cannot disagree with the bytes that were opened.
 
 `data/kydns.db` should be mode 600, as should `data/backup_key`. If
 `data/node_key` is absent, this node was standalone — that is not a fault.
@@ -175,20 +183,22 @@ was not found, which means the copy went somewhere other than `$vol`.
   from the restored registry.
 - Log in to the admin UI on port 8053 with the **old** password. The hash came
   from the capsule.
-- Settings → KyRecovery still shows the pinned key id and the URL: both live in
+- Settings → Disaster recovery still shows the pinned key id and the URL: both live in
   the database, which the capsule carried.
 - **Run drill** still passes: it seals and reopens with an ephemeral key and
   never needs the pinned one, so it is a good check that the restored database
   is whole.
-- **Deposit now** and **Download sealed capsule** will nonetheless fail with
-  `backup: paired recovery public key is missing`. `data/recovery.pub` is not a capsule member,
+- **Back up now** and **Download capsule** will nonetheless fail with `paired but
+  the recovery public key is missing or does not match the pin; restore
+  recovery.pub or re-pair`. `data/recovery.pub` is not a capsule member,
   so the pinned public key itself did not come across. Two ways back:
   copy `recovery.pub` from `old-data/` if you saved the old volume, or pair
   again with a fresh six-digit code from KyRecovery — `POST
   /api/v1/backup/pair-remote` with `recovery_url` and `pairing_code`, since the
   web form is hidden while the database still reports the server as paired.
   Re-pairing is accepted only to the key already pinned: a different key is
-  refused with `already pinned to <key id>`, which is the guardrail working.
+  refused with `already pinned to a different recovery key`, which is the
+  guardrail working.
 - With `data/backup_key` in place the KyRecovery token from the database opens
   and deposits resume. Without that file nothing will deposit, whatever the
   pairing says.
@@ -232,7 +242,7 @@ Changes made after it are gone unless you re-apply them.
   recovery key protects every product's capsules, so it needs a new key ceremony
   and a re-pair everywhere, not a fix in KyDNS.
 - Take a fresh backup once the restored server is the real one: Settings →
-  **Deposit now**.
+  **Back up now**.
 
 ## Drill it
 
