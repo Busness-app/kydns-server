@@ -111,6 +111,17 @@ func run(args []string, stdout io.Writer) int {
 			fmt.Fprintln(os.Stderr, "kydns:", err)
 			return 1
 		}
+		manifest, err := capsule.ReadUnverifiedManifest(raw)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "kydns:", err)
+			return 1
+		}
+		// Check the product before custodians expose their shares. Open authenticates this
+		// same manifest later, so rewriting the cleartext service name cannot bypass it.
+		if manifest.ServiceName != "KyDNS" {
+			fmt.Fprintf(os.Stderr, "kydns: capsule is for service %q, want %q\n", manifest.ServiceName, "KyDNS")
+			return 1
+		}
 		var shares []shamir.Share
 		scan := bufio.NewScanner(os.Stdin)
 		for scan.Scan() {

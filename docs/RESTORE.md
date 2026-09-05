@@ -76,16 +76,15 @@ Ctrl-D. The command prints the restore directory and exits 0.
 | Shares from two different splits | `kydns: shamir: shares belong to different splits` |
 | The same card typed twice | `kydns: shamir: shares repeat an index` |
 | A capsule sealed to a different recovery key | `kydns: capsule is sealed to a different recovery key` |
+| A capsule from another suite product | `kydns: capsule is for service "KySignOn", want "KyDNS"` |
 | The target directory is not empty | `kydns: restore directory must be empty` |
 | A share passed as an argument | the usage text above, exit 2 |
 
 All of these leave the target directory untouched.
 
-One thing the command does **not** check today is the service name in the
-capsule: the whole suite seals to one recovery key, so a KySignOn or KyPost
-capsule opened with these shares extracts happily into `restored/`. Check the
-file names in Step 2 — if you do not see `data/kydns.db`, you opened another
-product's backup.
+The command checks the capsule's declared service before asking for shares, and
+`capsule.Open` authenticates that declaration before extraction. A capsule from
+another suite product therefore never reaches the restore directory.
 
 ## Step 2: check what came out
 
@@ -112,16 +111,22 @@ no shell, no `cp`, no `ls`. So every step below that has to look at or move
 files uses a throwaway `busybox` container with the volume mounted, not the
 KyDNS container.
 
-**Find the volume's real name first.** Compose prefixes the project name, which
-defaults to the directory name:
+**Resolve this project's exact volume before touching it.** Do not select a
+volume by suffix: another checkout or Compose project can also have a
+`kydns-data` volume. Ask this project's container which named volume is mounted
+at `/var/lib/kydns`:
 
 ```bash
-docker volume ls | grep kydns-data          # e.g. kydns-server_kydns-data
-vol=$(docker volume ls --format '{{.Name}}' | grep -m1 kydns-data)
+cid=$(docker compose ps -aq kydns)
+if [ -z "$cid" ]; then docker compose create kydns; cid=$(docker compose ps -aq kydns); fi
+vol=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/lib/kydns"}}{{.Name}}{{end}}{{end}}' "$cid")
+test -n "$vol"
+docker volume inspect "$vol" --format '{{.Name}}'
 ```
 
-Everything below uses `$vol`. If nothing matches, the stack has never run here
-and the volume does not exist yet; skip to the copy-in.
+Everything below uses that exact `$vol`. The commands stop if Compose cannot
+identify the container or its `/var/lib/kydns` named volume; resolve that
+configuration instead of guessing from `docker volume ls`.
 
 **Gate: the volume must be empty before you copy anything in.**
 
@@ -149,8 +154,9 @@ files land in `old-data` owned by root, and mode 700 keeps them yours. Compare
 the two counts yourself. Only when they match:
 
 ```bash
-docker compose down -v                   # deletes the volume
-docker volume create "$vol"              # recreate it empty, same name
+docker compose down
+docker volume rm "$vol"                  # deletes only the volume inspected above
+docker volume create "$vol"              # recreate it empty, same exact name
 ```
 
 Now copy the restored data in — again as root, because the volume is
