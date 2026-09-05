@@ -1,6 +1,6 @@
 **Repo:** kydns-server
-**PR:** #30 — https://github.com/Busness-app/kydns-server/pull/30 (merged predecessor; no migration PR yet)
-**Worktree:** /home/yoshi/busness.app/kydns-server (main, 14839aea5a383d490fba7e2dc858424b12b91c39)
+**PR:** #31 — https://github.com/Busness-app/kydns-server/pull/31 (migration; predecessor #30 merged)
+**Worktree:** /home/yoshi/busness.app/kydns-server (branch fix/recoveryclient-v051; baseline 14839aea5a383d490fba7e2dc858424b12b91c39)
 
 # KyDNS recoveryclient v0.5.1 migration plan
 
@@ -11,7 +11,7 @@ reported separately in the completion record.
 
 ## Verified starting point
 
-- Fetch completed; local main and origin/main are at the SHA above. The checkout
+- Fetch completed; local main and origin/main are at the baseline SHA above when planning began. The checkout
   was clean before adding this plan and its DOX index entry.
 - `go.mod` pins ky-primitives v0.5.0. The local library tag v0.5.1 resolves to
   `e9bd63b44ea62b98340a90e18a35e2ffd8d21f66`; its drill callback takes
