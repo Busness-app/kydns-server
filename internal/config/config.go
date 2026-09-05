@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,6 +34,12 @@ type Config struct {
 	// BackupDepositInterval is node-local process policy, populated only from
 	// KYDNS_BACKUP_DEPOSIT_INTERVAL. Zero disables scheduled deposits.
 	BackupDepositInterval time.Duration `yaml:"-"`
+	// BackupDir, BackupKeep and BackupAllowPrivateRecovery are node-local process
+	// policy from KYDNS_BACKUP_DIR, KYDNS_BACKUP_KEEP and
+	// KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY. An empty BackupDir means no local copies.
+	BackupDir                  string `yaml:"-"`
+	BackupKeep                 int    `yaml:"-"`
+	BackupAllowPrivateRecovery bool   `yaml:"-"`
 
 	Replication ReplicationConfig `yaml:"replication"`
 
@@ -170,7 +177,7 @@ func (c *Config) applyBackupEnv() error {
 	raw, ok := os.LookupEnv("KYDNS_BACKUP_DEPOSIT_INTERVAL")
 	if !ok || strings.TrimSpace(raw) == "" {
 		c.BackupDepositInterval = 24 * time.Hour
-		return nil
+		return c.applyBackupDestinationEnv()
 	}
 	d, err := time.ParseDuration(strings.TrimSpace(raw))
 	if err != nil {
@@ -180,6 +187,31 @@ func (c *Config) applyBackupEnv() error {
 		return fmt.Errorf("KYDNS_BACKUP_DEPOSIT_INTERVAL: %s is below the %s minimum (0 disables)", d, MinBackupDepositInterval)
 	}
 	c.BackupDepositInterval = d
+	return c.applyBackupDestinationEnv()
+}
+
+func (c *Config) applyBackupDestinationEnv() error {
+	c.BackupKeep = 7
+	if v := strings.TrimSpace(os.Getenv("KYDNS_BACKUP_DIR")); v != "" {
+		if !filepath.IsAbs(v) {
+			return fmt.Errorf("KYDNS_BACKUP_DIR: %q must be an absolute path", v)
+		}
+		c.BackupDir = v
+	}
+	if v := strings.TrimSpace(os.Getenv("KYDNS_BACKUP_KEEP")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return fmt.Errorf("KYDNS_BACKUP_KEEP: %q must be a positive integer", v)
+		}
+		c.BackupKeep = n
+	}
+	if v := strings.TrimSpace(os.Getenv("KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY")); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY: %q must be true or false", v)
+		}
+		c.BackupAllowPrivateRecovery = b
+	}
 	return nil
 }
 

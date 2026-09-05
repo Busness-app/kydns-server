@@ -438,3 +438,51 @@ func TestEnvAddressesAreValidated(t *testing.T) {
 		})
 	}
 }
+
+func loadMinimal(t *testing.T) *Config {
+	t.Helper()
+	c, err := loadMinimalErr(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func loadMinimalErr(t *testing.T) (*Config, error) {
+	t.Helper()
+	return Load(write(t, "data_dir: /tmp/x\n"))
+}
+
+func TestBackupEnvDefaults(t *testing.T) {
+	for _, k := range []string{"KYDNS_BACKUP_DIR", "KYDNS_BACKUP_KEEP", "KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY"} {
+		t.Setenv(k, "")
+	}
+	c := loadMinimal(t)
+	if c.BackupDir != "" || c.BackupKeep != 7 || c.BackupAllowPrivateRecovery {
+		t.Fatalf("defaults = %q %d %v", c.BackupDir, c.BackupKeep, c.BackupAllowPrivateRecovery)
+	}
+}
+
+func TestBackupEnvValues(t *testing.T) {
+	t.Setenv("KYDNS_BACKUP_DIR", "/var/backups/kydns")
+	t.Setenv("KYDNS_BACKUP_KEEP", "3")
+	t.Setenv("KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY", "true")
+	c := loadMinimal(t)
+	if c.BackupDir != "/var/backups/kydns" || c.BackupKeep != 3 || !c.BackupAllowPrivateRecovery {
+		t.Fatalf("got %q %d %v", c.BackupDir, c.BackupKeep, c.BackupAllowPrivateRecovery)
+	}
+}
+
+func TestBackupEnvRejectsBadValues(t *testing.T) {
+	for _, tc := range []struct{ k, v string }{
+		{"KYDNS_BACKUP_KEEP", "0"}, {"KYDNS_BACKUP_KEEP", "-1"}, {"KYDNS_BACKUP_KEEP", "seven"},
+		{"KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY", "yes"}, {"KYDNS_BACKUP_DIR", "relative/dir"},
+	} {
+		t.Run(tc.k+"="+tc.v, func(t *testing.T) {
+			t.Setenv(tc.k, tc.v)
+			if _, err := loadMinimalErr(t); err == nil {
+				t.Fatalf("%s=%q accepted", tc.k, tc.v)
+			}
+		})
+	}
+}
