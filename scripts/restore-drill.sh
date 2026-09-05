@@ -48,9 +48,17 @@ func main() {
 	if err := os.WriteFile(os.Args[1], raw, 0600); err != nil {
 		panic(err)
 	}
-	// A capsule sealed to a key these shares do not open.
+	// A capsule sealed to a key these shares do not open, and one share of
+	// that other split for the mixed-shares case.
 	foreign, err := recoverykey.Generate()
 	if err != nil {
+		panic(err)
+	}
+	otherShares, err := recoverykey.Split(foreign, 2, 3)
+	if err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(os.Args[3], []byte(otherShares[1].String()+"\n"), 0600); err != nil {
 		panic(err)
 	}
 	raw, _, err = capsule.Seal("KyDNS", "drill", files, map[string]any{}, map[string]any{}, 2, 3, foreign.Public())
@@ -62,7 +70,7 @@ func main() {
 	}
 }
 EOF
-go run "./.superpowers/sdd/drill-gen-$$" "$work/kydns.kycap" "$work/foreign.kycap" 2> "$work/shares.txt"
+go run "./.superpowers/sdd/drill-gen-$$" "$work/kydns.kycap" "$work/foreign.kycap" "$work/other-share.txt" 2> "$work/shares.txt"
 [ "$(wc -l < "$work/shares.txt")" -eq 3 ]
 
 # Happy path: two shares on stdin.
@@ -76,6 +84,13 @@ mkdir -m 700 "$work/one"
 if head -1 "$work/shares.txt" | "$work/kydns" restore --capsule "$work/kydns.kycap" --out "$work/one"; then
 	echo "one share was accepted" >&2; exit 1
 fi
+
+# Shares from two different splits: refused.
+mkdir -m 700 "$work/mixed"
+if { head -1 "$work/shares.txt"; cat "$work/other-share.txt"; } | "$work/kydns" restore --capsule "$work/kydns.kycap" --out "$work/mixed" 2> "$work/mixed.err"; then
+	echo "shares from two splits were accepted" >&2; exit 1
+fi
+grep -q "shares belong to different splits" "$work/mixed.err"
 
 # A capsule sealed to another key: refused, and nothing is written.
 mkdir -m 700 "$work/foreign"

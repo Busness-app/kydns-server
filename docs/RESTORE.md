@@ -74,6 +74,7 @@ Ctrl-D. The command prints the restore directory and exits 0.
 | --- | --- |
 | Fewer than k shares (here, one) | `kydns: shamir: fewer shares than the threshold requires: got 1` |
 | Shares from two different splits | `kydns: shamir: shares belong to different splits` |
+| The same card typed twice | `kydns: shamir: shares repeat an index` |
 | A capsule sealed to a different recovery key | `kydns: capsule is sealed to a different recovery key` |
 | The target directory is not empty | `kydns: restore directory must be empty` |
 | A share passed as an argument | the usage text above, exit 2 |
@@ -103,47 +104,70 @@ you opened; the digest KyRecovery shows is of the same bytes you fed to
 
 ## Step 3: put it in service
 
-The restored `data/` becomes the contents of the `kydns-data` volume, mounted
-at `/var/lib/kydns`.
+The restored `data/` becomes the contents of the `kydns-data` volume, which the
+service mounts at `/var/lib/kydns`.
 
-**Gate: the volume must be empty first.**
+The runtime image is distroless: it holds the `kydns` binary and nothing else —
+no shell, no `cp`, no `ls`. So every step below that has to look at or move
+files uses a throwaway `busybox` container with the volume mounted, not the
+KyDNS container.
+
+**Find the volume's real name first.** Compose prefixes the project name, which
+defaults to the directory name:
 
 ```bash
-docker compose run --rm --no-deps --entrypoint sh kydns -c 'ls -A /var/lib/kydns'
+docker volume ls | grep kydns-data          # e.g. kydns-server_kydns-data
+vol=$(docker volume ls --format '{{.Name}}' | grep -m1 kydns-data)
+```
+
+Everything below uses `$vol`. If nothing matches, the stack has never run here
+and the volume does not exist yet; skip to the copy-in.
+
+**Gate: the volume must be empty before you copy anything in.**
+
+```bash
+docker compose stop kydns
+docker run --rm -v "$vol:/data:ro" busybox ls -A /data
 ```
 
 That must print nothing. A leftover `kydns.db-wal` next to a restored
-`kydns.db` is the hazard here: SQLite will replay the old write-ahead log into
-the restored database on the first open and you get a silent hybrid of two
-servers, not the one you restored.
+`kydns.db` is the hazard: SQLite replays the old write-ahead log into the
+restored database on the first open, and you get a silent hybrid of two
+servers instead of the one you restored.
 
-If it printed anything, copy the old volume out before destroying it:
+If it printed anything, copy the old volume out **before** destroying it:
 
 ```bash
 mkdir -m 700 old-data
-docker compose run --rm --no-deps --user root --entrypoint sh \
-  -v "$PWD/old-data:/old" kydns -c 'cp -a /var/lib/kydns/. /old/ && ls -A /old | wc -l'
-sudo ls -A old-data | wc -l    # must match the count printed above
-docker compose down -v
+docker run --rm -v "$vol:/data:ro" -v "$PWD/old-data:/old" busybox \
+  sh -c 'cp -a /data/. /old/ && find /old -type f | wc -l'
+sudo find old-data -type f | wc -l      # must match the count printed above
 ```
 
-Only when the counts match do you run `down -v`; it deletes the volume.
-
-Then copy the restored data in. This runs as root because the volume is
-root-owned and the service container drops every capability except
-`NET_BIND_SERVICE` — it has no `CAP_DAC_OVERRIDE` to write into a directory it
-does not own:
+`busybox` runs as root, which is what lets it read a root-owned volume; the
+files land in `old-data` owned by root, and mode 700 keeps them yours. Compare
+the two counts yourself. Only when they match:
 
 ```bash
-docker compose run --rm --no-deps --user root --entrypoint sh \
-  -v "$PWD/restored/data:/new:ro" kydns -c 'cp -a /new/. /var/lib/kydns/ && ls -A /var/lib/kydns'
+docker compose down -v                   # deletes the volume
+docker volume create "$vol"              # recreate it empty, same name
+```
+
+Now copy the restored data in — again as root, because the volume is
+root-owned and the KyDNS container drops every capability except
+`NET_BIND_SERVICE`, so it has no `CAP_DAC_OVERRIDE` to fix ownership later:
+
+```bash
+docker run --rm -v "$vol:/data" -v "$PWD/restored/data:/new:ro" busybox \
+  sh -c 'cp -a /new/. /data/ && ls -A /data'
 docker compose up -d
 docker compose logs kydns | head
 ```
 
-The logs should show the DNS and admin listeners coming up with no setup token:
-a setup token means the database was not seen, which means the copy went to the
-wrong place.
+The `ls -A` should list `kydns.db`, `backup_key`, and `node_key` if the capsule
+had one — names only, never contents. The logs should show the DNS and admin
+listeners coming up with **no setup token**: a setup token means the database
+was not found, which means the copy went somewhere other than `$vol`.
 
 ## Step 4: prove it
 
