@@ -17,7 +17,7 @@ loses the backup, so treat the cards as seriously as the server.
 | Member | What it is |
 | --- | --- |
 | `data/kydns.db` | the whole server: views, services, records, aliases, blacklist lists and rules, settings and local settings, the admin password hash, API tokens, SSO settings, DHCP leases, replication peers, and the audit log |
-| `data/backup_key` | 32 bytes. The KyRecovery token stored sealed in the database opens **only** with this file; without it a restored node cannot talk to KyRecovery |
+| `data/backup_key` | A 32-byte secret stored as hex. The KyRecovery token stored sealed in the database opens **only** with this file; without it a restored node cannot talk to KyRecovery |
 | `data/node_key` | this node's replication identity. Present only when the node has joined or hosted replication; a standalone node has none |
 | `data/recovery.pub` | the pinned suite recovery public key. Present only when the node had a pinned key; it is what the restored node seals its next capsule to |
 | `config/kydns.yaml` | a record of `data_dir`, `dns.listen` and `admin.listen` as they were. Reference only — it is not the file the server reads |
@@ -281,3 +281,10 @@ still have them.
 Between drills, Settings → **Run drill** (or `kydns backup-drill`) seals and
 reopens a capsule with an ephemeral key inside the running server, which proves
 collection and SQLite integrity without touching the recovery key.
+
+The scripted fixture uses the real KyDNS collector and a SQLite snapshot with a
+sentinel service. After extraction it opens the snapshot read-only and verifies
+integrity and the sentinel. The server-side drill also checks the opened manifest
+recipe, restored configuration and key formats, and whether a restored pairing
+opens with the restored hex-encoded deployment key. These synthetic checks do
+not prove a live deposit or the custodians’ real cards.

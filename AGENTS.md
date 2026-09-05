@@ -63,6 +63,8 @@ Keep these aligned:
   copies, admin schedule, pin by hand, unpair, restore runbook. Phase B is on
   ky-primitives v0.5.0.
 - `docs/RESTORE.md` — restore runbook; `scripts/restore-drill.sh` proves Step 1.
+- `docs/superpowers/plans/2026-09-05-kydns-recoveryclient-v051.md` — v0.5.1
+  drill migration, existing-pairing compatibility, and separate fixture/live proof.
 
 Code, one concern per package:
 
@@ -82,6 +84,7 @@ Code, one concern per package:
 - `internal/store` — SQLite schema and migrations, the single write chokepoint.
   `SnapshotTo` delegates to `recoveryclient.SQLiteSnapshot`, which binds the
   `VACUUM INTO` destination path rather than interpolating it.
+  `OpenSnapshot` verifies and opens restored artifacts read-only without migrations.
 - `internal/registry`, `internal/zone` — services, records, views, validation,
   and the immutable zone snapshot the DNS server reads.
 - `internal/backup` — the KyDNS adapter over `ky-primitives/recoveryclient`: what a

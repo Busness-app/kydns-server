@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Busness-app/ky-primitives/capsule"
@@ -36,6 +37,7 @@ type Service struct {
 	Client  *recoveryclient.Client
 	Version string
 	sealer  recoveryclient.Sealer
+	drillMu sync.Mutex
 }
 
 func New(cfg *config.Config, st *store.Store, version string) (*Service, error) {
@@ -146,37 +148,6 @@ func (s *Service) Export() ([]byte, capsule.Manifest, error) {
 		return nil, capsule.Manifest{}, err
 	}
 	return recoveryclient.Seal(p, key)
-}
-
-// Drill scratch space lives under DataDir: the decrypted payload never lands in the
-// system temp directory.
-func (s *Service) Drill(ctx context.Context) (*recoveryclient.DrillResult, error) {
-	p, err := s.Collect()
-	if err != nil {
-		return nil, err
-	}
-	return recoveryclient.Drill(ctx, s.Cfg.DataDir, p, drillChecks(p))
-}
-
-// drillChecks are the KyDNS assertions about an extracted capsule. They only read: the
-// database is verified in place, never opened through store.Open, which would create the
-// schema in an empty file and call the hole it just filled intact.
-func drillChecks(p recoveryclient.Payload) func(dir string) []recoveryclient.Check {
-	return func(dir string) []recoveryclient.Check {
-		missing := ""
-		for _, f := range p.Files {
-			if _, err := os.Stat(filepath.Join(dir, f.Path)); err != nil {
-				missing = f.Path
-			}
-		}
-		checks := []recoveryclient.Check{{Name: "required files", Passed: missing == "", Message: missing}}
-		detail := ""
-		err := store.VerifySnapshot(filepath.Join(dir, "data", "kydns.db"))
-		if err != nil {
-			detail = recoveryclient.AuditSafe(err.Error())
-		}
-		return append(checks, recoveryclient.Check{Name: "sqlite integrity", Passed: err == nil, Message: detail})
-	}
 }
 
 func (s *Service) Pair(ctx context.Context, url, code string) (recoveryclient.RecoveryKey, error) {

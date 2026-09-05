@@ -1,12 +1,52 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestOpenSnapshotReadsWithoutWriting(t *testing.T) {
+	s := open(t)
+	if err := s.SetLocalSetting("sentinel", "preserved"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := s.SnapshotTo(path); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy, err := OpenSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := copy.GetLocalSetting("sentinel"); err != nil || got != "preserved" {
+		t.Fatalf("read = %q, %v", got, err)
+	}
+	if err := copy.SetLocalSetting("sentinel", "overwritten"); err == nil {
+		t.Fatal("snapshot allowed a write")
+	}
+	if err := copy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("snapshot was modified")
+	}
+	missing := filepath.Join(t.TempDir(), "missing.db")
+	if _, err := OpenSnapshot(missing); err == nil {
+		t.Fatal("opened absent database")
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("created absent database")
+	}
+}
 
 func TestLocalSettingsAndAuditSurviveSnapshotApply(t *testing.T) {
 	s := open(t)
@@ -95,7 +135,18 @@ func TestVerifySnapshotRefusesWhatIsNotAKyDNSDatabase(t *testing.T) {
 	if err := os.WriteFile(junk, make([]byte, 4096), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{empty, junk, filepath.Join(dir, "absent.db")} {
+	foreign := filepath.Join(dir, "foreign.db")
+	db, err := sql.Open("sqlite", foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE unrelated (id INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{empty, junk, foreign, filepath.Join(dir, "absent.db")} {
 		if err := VerifySnapshot(path); err == nil {
 			t.Errorf("VerifySnapshot(%s) accepted", filepath.Base(path))
 		}

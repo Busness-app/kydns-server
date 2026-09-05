@@ -11,8 +11,10 @@ behaviour that belongs to every product in the suite is fixed there, not here.
 ## Ownership
 
 - `Collect` — the capsule's members and its verification recipe.
-- `Drill` — the KyDNS checks (`required files`, `sqlite integrity`) run against the
-  scratch directory the library extracts into. They only read: the database is verified
+- `Drill` and `drill.go` — checks driven by the opened capsule manifest and its
+  validated recipe, run against the scratch directory the library extracts into.
+  Required members, SQLite, configuration, identity and pairing are checked.
+  They only read: the database is verified
   with `store.VerifySnapshot`, never opened through `store.Open`, which creates the schema
   in an empty file and would report the hole it just filled as intact.
 - `Service` — construction from `config.Config` and `store.Store`, the `Settings` and
@@ -23,12 +25,21 @@ behaviour that belongs to every product in the suite is fixed there, not here.
 - `ServiceName` is both the name claimed at pairing and the name sealed into every
   manifest. KyRecovery refuses a deposit whose manifest names anything else.
 - `backup_key` is created by `New` and is a required capsule member: it opens the sealed
-  KyRecovery token, so a restore without it cannot resume deposits.
+  KyRecovery token, so a restore without it cannot resume deposits. It stores a 32-byte
+  secret as hex; checks use `keyfile.Load`, preserving the existing encoding.
 - `node_key` and `recovery.pub` are included when they exist and are then listed in
   `required_files`. A restored node needs `recovery.pub` beside its pin row or it cannot
   seal its next backup.
 - The KyRecovery token is sealed with `NewAESGCMSealer(backup_key, "KyDNS:kyrecovery_token")`.
   Neither its plaintext nor its ciphertext appears in `Status` or in an error.
+- Drills serialize on the shared Service across collection and extraction, check
+  cancellation after acquiring the guard, and leave library scratch under DataDir.
+- Opened recipes require correctly typed lists and mandatory KyDNS members. Paths
+  must be clean relative paths present in the manifest; member and parent symlinks
+  are refused before reads. Malformed recipes cannot disable required checks.
+- Restored pairing checks use `store.OpenSnapshot`, without migrations or writes,
+  and the restored deployment key. A partial pairing, invalid topology, missing
+  public key, or mismatched pin fails without exposing the token.
 - The library reports a missing `recovery.pub` as `ErrNotPaired`. `Status` checks the
   `kyrecovery_key_id` row itself and reports `key_pin_missing` for a pin whose key file
   is gone: backups have stopped on an instance the operator believes is covered.
@@ -46,6 +57,10 @@ behaviour that belongs to every product in the suite is fixed there, not here.
 `go test -race ./internal/backup`. `nodecrypt_test.go` is the decrypt guard: it runs
 `guardtest.NoDecryptOutside` over the whole repository and fails if anything but
 `cmd/kydns/main.go`'s `run` reaches a share-combining or capsule-opening call.
+`drill_test.go` covers malformed opened recipes, corrupted/missing members, sandbox
+cleanup, serialization, and a frozen synthetic pairing produced with v0.5.0 in
+`testdata/`. Retain the fixture's key encoding, token label, and ciphertext across
+dependency upgrades; generating a replacement with the new release proves no compatibility.
 
 ## Child DOX Index
 

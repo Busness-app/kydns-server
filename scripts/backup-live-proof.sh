@@ -101,6 +101,8 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' -c "$work/cookies" -X POST \
 	--data-urlencode 'confirm=a-long-throwaway-password')
 [ "$code" = "303" ] || fail "POST /setup = $code"
 
+# Consume the complete HTML in grep checks: grep -q can close the pipe early
+# and make curl fail under pipefail even when the expected text was found.
 settings() { curl -sS -b "$work/cookies" "http://$admin_addr/settings"; }
 
 echo "== before pinning: no recovery key"
@@ -109,7 +111,7 @@ echo "$status"
 echo "$status" | grep -q '"key_pinned":false' || fail "key_pinned should be false"
 echo "$status" | grep -q '"paired":false' || fail "paired should be false"
 echo "$status" | grep -q '"has_destination":true' || fail "the local dir is a destination"
-settings | grep -q 'No recovery key' || fail "the screen should warn about the missing key"
+settings | grep 'No recovery key' > /dev/null || fail "the screen should warn about the missing key"
 
 echo "== pin the key by hand"
 api POST /api/v1/backup/pin-key \
@@ -159,12 +161,12 @@ echo "== schedule: 900 seconds, then off"
 api PUT /api/v1/backup/schedule '{"interval_sec":900}' | tee "$work/sched.json"
 grep -q '"interval_sec":900' "$work/sched.json" || fail "schedule did not read back as 900"
 api GET /api/v1/backup/status | grep -q '"interval_sec":900' || fail "status does not show 900"
-settings | grep -q 'every 15 minutes' || fail "the screen does not show every 15 minutes"
+settings | grep 'every 15 minutes' > /dev/null || fail "the screen does not show every 15 minutes"
 
 api PUT /api/v1/backup/schedule '{"interval_sec":0}' | tee "$work/sched0.json"
 grep -q '"interval_sec":0' "$work/sched0.json" || fail "schedule did not read back as off"
 api GET /api/v1/backup/status | grep -q '"interval_sec":0' || fail "status does not show off"
-settings | grep -q 'Schedule is off' || fail "the screen does not warn that the schedule is off"
+settings | grep 'Schedule is off' > /dev/null || fail "the screen does not warn that the schedule is off"
 
 echo "== SIGTERM"
 kill -TERM "$pid"
