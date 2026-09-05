@@ -414,28 +414,33 @@ func backupLoop(ctx context.Context, svc *backup.Service, logger *slog.Logger) {
 			return
 		case <-ticker.C:
 		}
-		st, err := svc.Status()
-		if err != nil {
-			logger.Error("backup schedule unreadable", "error", recoveryclient.AuditSafe(err.Error()))
-			continue
-		}
-		if st.NextRun == nil || time.Now().Before(*st.NextRun) {
-			continue
-		}
-		upload, cancel := context.WithTimeout(context.WithoutCancel(ctx), 16*time.Minute)
-		res, err := svc.Run(upload)
-		cancel()
-		// Not configured is not a failure to report every interval.
-		if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrNoDestination) {
-			continue
-		}
-		action, outcome, details := recoveryclient.Outcome(res, err)
-		b, _ := json.Marshal(details)
-		_ = svc.Store.RecordAudit(store.AuditEvent{Actor: "scheduler", Action: action,
-			Resource: recoveryclient.AuditSafe(res.Manifest.CapsuleID), Details: string(b), Outcome: outcome})
-		if err != nil {
-			logger.Error("scheduled backup failed", "error", recoveryclient.AuditSafe(err.Error()))
-		}
+		backupLoopOnce(ctx, svc, logger)
+	}
+}
+
+func backupLoopOnce(ctx context.Context, svc *backup.Service, logger *slog.Logger) {
+	status, err := svc.Status()
+	if err != nil {
+		logger.Error("backup schedule unreadable", "error", recoveryclient.AuditSafe(err.Error()))
+		return
+	}
+	if status.NextRun == nil || time.Now().Before(*status.NextRun) {
+		return
+	}
+	upload, cancel := context.WithTimeout(context.WithoutCancel(ctx), 16*time.Minute)
+	res, err := svc.Run(upload)
+	cancel()
+	// Not configured is not a failure to report every interval. A pinned key whose file is
+	// missing is configured but broken, so it falls through to audit and logs.
+	if (errors.Is(err, recoveryclient.ErrNotPaired) && !status.KeyPinned) || errors.Is(err, recoveryclient.ErrNoDestination) {
+		return
+	}
+	action, outcome, details := recoveryclient.Outcome(res, err)
+	b, _ := json.Marshal(details)
+	_ = svc.Store.RecordAudit(store.AuditEvent{Actor: "scheduler", Action: action,
+		Resource: recoveryclient.AuditSafe(res.Manifest.CapsuleID), Details: string(b), Outcome: outcome})
+	if err != nil {
+		logger.Error("scheduled backup failed", "error", recoveryclient.AuditSafe(err.Error()))
 	}
 }
 
