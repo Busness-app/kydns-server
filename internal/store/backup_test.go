@@ -76,3 +76,32 @@ func userVersion(t *testing.T, db *sql.DB) int {
 	}
 	return version
 }
+
+func TestVerifySnapshotRefusesWhatIsNotAKyDNSDatabase(t *testing.T) {
+	s := open(t)
+	dst := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := s.SnapshotTo(dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifySnapshot(dst); err != nil {
+		t.Fatalf("VerifySnapshot(good) = %v", err)
+	}
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "empty.db")
+	if err := os.WriteFile(empty, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	junk := filepath.Join(dir, "junk.db")
+	if err := os.WriteFile(junk, make([]byte, 4096), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{empty, junk, filepath.Join(dir, "absent.db")} {
+		if err := VerifySnapshot(path); err == nil {
+			t.Errorf("VerifySnapshot(%s) accepted", filepath.Base(path))
+		}
+	}
+	// Verifying must not conjure the file it was asked about.
+	if _, err := os.Stat(filepath.Join(dir, "absent.db")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("absent.db after verify: %v", err)
+	}
+}

@@ -150,7 +150,14 @@ func (s *Service) Drill(ctx context.Context) (*recoveryclient.DrillResult, error
 	if err != nil {
 		return nil, err
 	}
-	return recoveryclient.Drill(ctx, s.Cfg.DataDir, p, func(dir string) []recoveryclient.Check {
+	return recoveryclient.Drill(ctx, s.Cfg.DataDir, p, drillChecks(p))
+}
+
+// drillChecks are the KyDNS assertions about an extracted capsule. They only read: the
+// database is verified in place, never opened through store.Open, which would create the
+// schema in an empty file and call the hole it just filled intact.
+func drillChecks(p recoveryclient.Payload) func(dir string) []recoveryclient.Check {
+	return func(dir string) []recoveryclient.Check {
 		missing := ""
 		for _, f := range p.Files {
 			if _, err := os.Stat(filepath.Join(dir, f.Path)); err != nil {
@@ -158,17 +165,13 @@ func (s *Service) Drill(ctx context.Context) (*recoveryclient.DrillResult, error
 			}
 		}
 		checks := []recoveryclient.Check{{Name: "required files", Passed: missing == "", Message: missing}}
-		db, err := store.Open(filepath.Join(dir, "data", "kydns.db"))
-		if err == nil {
-			defer db.Close()
-			err = db.IntegrityCheck()
-		}
 		detail := ""
+		err := store.VerifySnapshot(filepath.Join(dir, "data", "kydns.db"))
 		if err != nil {
 			detail = recoveryclient.AuditSafe(err.Error())
 		}
 		return append(checks, recoveryclient.Check{Name: "sqlite integrity", Passed: err == nil, Message: detail})
-	})
+	}
 }
 
 func (s *Service) Pair(ctx context.Context, url, code string) (recoveryclient.RecoveryKey, error) {
@@ -242,9 +245,11 @@ func (s *Service) Status() (Status, error) {
 	}
 	st.Paired = recoveryclient.HasPairing(s.Settings())
 	if st.Paired {
-		if u, err := s.Settings().Get(settingURL); err == nil {
-			st.RecoveryURL = u
+		u, err := s.Settings().Get(settingURL)
+		if err != nil && !errors.Is(err, recoveryclient.ErrNotFound) {
+			return st, err
 		}
+		st.RecoveryURL = u
 	}
 	if r, ok, err := recoveryclient.LastDeposit(s.Settings()); err != nil {
 		return st, err

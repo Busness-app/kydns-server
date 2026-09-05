@@ -12,7 +12,9 @@ behaviour that belongs to every product in the suite is fixed there, not here.
 
 - `Collect` — the capsule's members and its verification recipe.
 - `Drill` — the KyDNS checks (`required files`, `sqlite integrity`) run against the
-  scratch directory the library extracts into.
+  scratch directory the library extracts into. They only read: the database is verified
+  with `store.VerifySnapshot`, never opened through `store.Open`, which creates the schema
+  in an empty file and would report the hole it just filled as intact.
 - `Service` — construction from `config.Config` and `store.Store`, the `Settings` and
   `Sealer` adapters, and `Status` for the admin screen.
 

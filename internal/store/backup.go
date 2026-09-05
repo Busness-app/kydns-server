@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
+	"os"
 	"path/filepath"
 
 	"github.com/Busness-app/ky-primitives/recoveryclient"
@@ -57,6 +60,54 @@ func (s *Store) IntegrityCheck() error {
 	}
 	if result != "ok" {
 		return fmt.Errorf("sqlite integrity check: %s", result)
+	}
+	return nil
+}
+
+// sqliteHeader is the magic every SQLite database starts with. A zero-length file is a
+// valid empty database to SQLite and any open would create the schema in it, so the
+// magic, not a successful open, is what tells a real snapshot from a truncated one.
+const sqliteHeader = "SQLite format 3\x00"
+
+// VerifySnapshot reports whether path holds an intact KyDNS database. It opens read-only
+// and never creates or migrates: the file is an artifact under test, not this node's store.
+func VerifySnapshot(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	head := make([]byte, len(sqliteHeader))
+	if _, err := io.ReadFull(f, head); err != nil || info.Size() < 100 || string(head) != sqliteHeader {
+		return fmt.Errorf("%s is not a SQLite database (%d bytes)", filepath.Base(abs), info.Size())
+	}
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: abs, RawQuery: "mode=ro"}).String())
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var result string
+	if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("sqlite integrity check: %s", result)
+	}
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name IN ('services', 'local_settings')`).Scan(&tables); err != nil {
+		return err
+	}
+	if tables < 2 {
+		return fmt.Errorf("%s is not a KyDNS database", filepath.Base(abs))
 	}
 	return nil
 }
