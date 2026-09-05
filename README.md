@@ -46,9 +46,9 @@ them typed on stdin, see [docs/RESTORE.md](docs/RESTORE.md).
 **KyRecovery must be reached over HTTPS, and by default at a public address.** TLS is not
 for the capsule, which is already sealed. It protects the public key that arrives at
 pairing (trust on first use), the deposit token, and the receipts. For a KyRecovery on your
-own network behind a TLS proxy, set `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY=true`; HTTPS is
-still required and loopback stays refused. Whatever the wire, compare the key fingerprint
-Settings shows with the one in the KyRecovery dashboard; a swapped key then fails at
+own network behind a TLS proxy, (Phase B) set `KYDNS_BACKUP_ALLOW_PRIVATE_RECOVERY=true`;
+HTTPS is still required and loopback stays refused. Whatever the wire, compare the key
+fingerprint Settings shows with the one in the KyRecovery dashboard; a swapped key then fails at
 pairing instead of at restore. In Docker, names that exist only on your LAN need
 `docker-compose.lan-dns.yml` with `KYDNS_DNS` on the command line.
 
