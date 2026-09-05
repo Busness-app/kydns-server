@@ -165,7 +165,8 @@ KyRecovery pairing accepts only HTTPS origins resolving to public, non-reserved 
 and refuses redirects. Its bearer token is encrypted under a mode-0600 node-local key and
 is never returned by status endpoints or rendered in HTML. Capsules are sealed to the
 pinned suite recovery public key; receipt digest, size, and capsule ID must match before a
-deposit is recorded. Restore shares are accepted on standard input, never command arguments.
+deposit is recorded. Capsule downloads are marked no-store and nosniff. Restore shares are
+accepted on standard input, never command arguments.
 
 See [DESGINE.md](DESGINE.md) for the architecture and
 [LOGGING.md](LOGGING.md) for privacy-safe logging requirements.

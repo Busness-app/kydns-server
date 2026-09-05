@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 type AuditEvent struct {
@@ -45,8 +44,7 @@ func (s *Store) SnapshotTo(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("snapshot path must be absolute")
 	}
-	quoted := strings.ReplaceAll(path, "'", "''")
-	if _, err := s.db.Exec(`VACUUM INTO '` + quoted + `'`); err != nil {
+	if _, err := s.db.Exec(`VACUUM INTO ?`, path); err != nil {
 		return fmt.Errorf("snapshot database: %w", err)
 	}
 	return nil
